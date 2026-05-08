@@ -123,7 +123,14 @@ class Shape:
     depth: int
     logical_size: int
 
-    def __init__(self, iterable: Any = ()):
+    def __init__(self, *items: Any):
+        if len(items) == 0:
+            iterable = ()
+        elif len(items) == 1:
+            iterable = items[0]
+        else:
+            iterable = items
+
         if isinstance(iterable, int):
             iterable = [iterable]
         normalized, depth = Shape.normalize_input(iterable, 0)
@@ -245,7 +252,14 @@ class Stride:
     top_level: _StrideLevel
     depth: int
 
-    def __init__(self, iterable: Any = ()):
+    def __init__(self, *items: Any):
+        if len(items) == 0:
+            iterable = ()
+        elif len(items) == 1:
+            iterable = items[0]
+        else:
+            iterable = items
+
         if isinstance(iterable, int):
             iterable = [iterable]
         normalized, depth = Stride.normalize_input(iterable)

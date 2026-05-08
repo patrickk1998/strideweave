@@ -21,6 +21,10 @@ def test_shape_creation_and_indexing():
     assert shape[1][0] == Shape(2)
 
 
+def test_shape_variadic_creation_matches_list_creation():
+    assert Shape(1, 2, [3, 4]) == Shape([1, 2, [3, 4]])
+
+
 def test_shape_concat():
     assert Shape([1, 2, 3]) == Shape.concat(Shape(1), Shape([2, 3]))
 
@@ -34,6 +38,10 @@ def test_stride_creation_and_indexing():
 
     assert stride[0] == Stride(1)
     assert stride[1][0] == Stride(2)
+
+
+def test_stride_variadic_creation_matches_list_creation():
+    assert Stride(1, 2, [3, 4]) == Stride([1, 2, [3, 4]])
 
 
 def test_layout_slicing():
