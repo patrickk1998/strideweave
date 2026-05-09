@@ -417,7 +417,15 @@ class Layout:
         return cord
 
     @staticmethod
-    def get_index(shape: _ShapeLevel, stride: _StrideLevel, key: Any) -> int:
+    def get_index(layout: Layout, key: Any) -> int:
+        if not isinstance(layout, Layout):
+            raise ValueError("layout input must be a Layout object")
+        return Layout._get_index_levels(
+            layout.shape.top_level, layout.stride.top_level, key
+        )
+
+    @staticmethod
+    def _get_index_levels(shape: _ShapeLevel, stride: _StrideLevel, key: Any) -> int:
         if len(shape) != len(stride):
             raise ValueError("Shape and Stride Lengths do not match")
 
@@ -433,12 +441,12 @@ class Layout:
                     raise ValueError("Key is not in domain of shape")
                 idx += stride_value * k
             else:
-                idx += Layout.get_index(sh, stride_value, k)
+                idx += Layout._get_index_levels(sh, stride_value, k)
 
         return idx
 
     def index(self, key: Any) -> int:
-        return Layout.get_index(self.shape.top_level, self.stride.top_level, key)
+        return Layout.get_index(self, key)
 
     def __eq__(self, other: object):
         if not isinstance(other, Layout):
@@ -449,7 +457,7 @@ class Layout:
         return len(self.shape.top_level)
 
     def __call__(self, key: int | Any) -> int:
-        return Layout.get_index(self.shape.top_level, self.stride.top_level, key)
+        return Layout.get_index(self, key)
 
     def __copy__(self) -> Layout:
         return Layout(self.shape, self.stride)

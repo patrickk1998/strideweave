@@ -1,5 +1,16 @@
+from importlib import import_module
+from typing import Any, Protocol, cast
+
 import neotorch
+import pytest
 from neotorch import Layout, Node, Shape, Stride, Tree
+
+
+class NativeIndexModule(Protocol):
+    def get_index(self, layout: Layout, key: Any) -> int: ...
+
+
+native_index = cast(NativeIndexModule, import_module("neotorch._index"))
 
 
 def test_public_api_imports():
@@ -76,6 +87,73 @@ def test_layout_divide_tiler_and_index():
     tiler = [Layout.leaf(3, 3), Layout(Shape([2, 4]), Stride([1, 8]))]
 
     assert Layout.divide_tiler(layout_a, tiler).index([1, 1]) == 177 + 13
+
+
+def test_layout_get_index_flat_coordinate_key():
+    layout = Layout(Shape([3, 4]), Stride([2, 10]))
+
+    assert Layout.get_index(layout, [2, 3]) == 34
+
+
+def test_layout_get_index_flat_integer_key_expansion():
+    layout = Layout(Shape([3, 4]), Stride([2, 10]))
+
+    assert Layout.get_index(layout, 5) == 14
+
+
+def test_layout_get_index_nested_coordinate_key():
+    layout = Layout(Shape([2, [3, 4]]), Stride([1, [10, 100]]))
+
+    assert Layout.get_index(layout, [1, [2, 3]]) == 321
+
+
+def test_layout_get_index_out_of_domain_key_raises_value_error():
+    layout = Layout(Shape([3, 4]), Stride([2, 10]))
+
+    with pytest.raises(ValueError):
+        Layout.get_index(layout, [3, 0])
+
+    with pytest.raises(ValueError):
+        Layout.get_index(layout, 12)
+
+
+def test_layout_index_and_call_match_static_get_index():
+    layout = Layout(Shape([2, [3, 4]]), Stride([1, [10, 100]]))
+    key = [1, [2, 3]]
+
+    assert layout.index(key) == Layout.get_index(layout, key)
+    assert layout(key) == Layout.get_index(layout, key)
+
+
+def test_native_get_index_matches_python_get_index():
+    flat_layout = Layout(Shape([3, 4]), Stride([2, 10]))
+    nested_layout = Layout(Shape([2, [3, 4]]), Stride([1, [10, 100]]))
+
+    cases = [
+        (flat_layout, [2, 3]),
+        (flat_layout, 5),
+        (nested_layout, [1, [2, 3]]),
+    ]
+
+    for layout, key in cases:
+        assert native_index.get_index(layout, key) == Layout.get_index(layout, key)
+
+
+def test_native_get_index_matches_python_value_error_cases():
+    flat_layout = Layout(Shape([3, 4]), Stride([2, 10]))
+    nested_layout = Layout(Shape([2, [3, 4]]), Stride([1, [10, 100]]))
+
+    cases = [
+        (flat_layout, [3, 0]),
+        (flat_layout, 12),
+        (nested_layout, [1, [3, 0]]),
+    ]
+
+    for layout, key in cases:
+        with pytest.raises(ValueError):
+            Layout.get_index(layout, key)
+        with pytest.raises(ValueError):
+            native_index.get_index(layout, key)
 
 
 def test_layout_leaf_edge_case():
