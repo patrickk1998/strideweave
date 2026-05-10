@@ -16,6 +16,7 @@ public:
     virtual py::object type() const = 0;
     virtual py::object get_value(Index index) const = 0;
     virtual bool is_evictable() const { return false; }
+    virtual bool is_mutable() const { return false; }
 
     py::object get_item(Index index) const {
         const Index data_size = size();
@@ -23,6 +24,17 @@ public:
             throw py::index_error("Data index out of range");
         }
         return get_value(index);
+    }
+
+    void set_item(Index index, py::object value) {
+        if (!is_mutable()) {
+            throw std::runtime_error("Data is not mutable");
+        }
+        const Index data_size = size();
+        if (index < 0 || index >= data_size) {
+            throw py::index_error("Data index out of range");
+        }
+        set_value(index, value);
     }
 
     bool is_evicted() const { return is_evicted_; }
@@ -50,6 +62,10 @@ public:
     }
 
 protected:
+    virtual void set_value(Index, py::object) {
+        throw std::runtime_error("Data is not mutable");
+    }
+
     virtual void _evict() { throw std::runtime_error("Data is not evictable"); }
 
     virtual void _promote() { throw std::runtime_error("Data is not evictable"); }
@@ -76,7 +92,15 @@ public:
         PYBIND11_OVERRIDE(bool, Data, is_evictable);
     }
 
+    bool is_mutable() const override {
+        PYBIND11_OVERRIDE(bool, Data, is_mutable);
+    }
+
 protected:
+    void set_value(Index index, py::object value) override {
+        PYBIND11_OVERRIDE(void, Data, set_value, index, value);
+    }
+
     void _evict() override { PYBIND11_OVERRIDE(void, Data, _evict); }
 
     void _promote() override { PYBIND11_OVERRIDE(void, Data, _promote); }
@@ -111,10 +135,12 @@ PYBIND11_MODULE(_data, module) {
         .def("type", &Data::type)
         .def("get_value", &Data::get_value, py::arg("index"))
         .def("is_evictable", &Data::is_evictable)
+        .def("is_mutable", &Data::is_mutable)
         .def("is_evicted", &Data::is_evicted)
         .def("evict", &Data::evict)
         .def("promote", &Data::promote)
-        .def("__getitem__", &Data::get_item, py::arg("index"));
+        .def("__getitem__", &Data::get_item, py::arg("index"))
+        .def("__setitem__", &Data::set_item, py::arg("index"), py::arg("value"));
 
     py::class_<VectorDataForTest, Data>(module, "_VectorDataForTest")
         .def(py::init<py::iterable>(), py::arg("values"));

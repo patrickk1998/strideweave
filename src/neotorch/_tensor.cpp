@@ -56,13 +56,25 @@ public:
             );
         }
 
-        const Index layout_index = neotorch::layout_index::get_index(layout_, key);
-        const Index data_index = offset_ + layout_index;
-        return data_.attr("__getitem__")(py::int_(data_index));
+        return data_.attr("__getitem__")(py::int_(data_index(key)));
+    }
+
+    void set_item(py::object key, py::object value) const {
+        if (!is_tensor_key(key)) {
+            throw py::type_error(
+                "Tensor indices must be integers or tuples/lists of integers"
+            );
+        }
+
+        data_.attr("__setitem__")(py::int_(data_index(key)), value);
     }
 
     Index size() const {
         return py::cast<Index>(layout_.attr("shape").attr("logical_size"));
+    }
+
+    bool is_mutable() const {
+        return py::cast<bool>(data_.attr("is_mutable")());
     }
 
     py::object dtype() const { return data_.attr("type")(); }
@@ -72,6 +84,11 @@ public:
     }
 
 private:
+    Index data_index(py::object key) const {
+        const Index layout_index = neotorch::layout_index::get_index(layout_, key);
+        return offset_ + layout_index;
+    }
+
     py::object data_;
     Index offset_;
     py::object layout_;
@@ -93,7 +110,9 @@ PYBIND11_MODULE(_tensor, module) {
         .def_property_readonly("offset", &Tensor::offset)
         .def_property_readonly("layout", &Tensor::layout)
         .def("__getitem__", &Tensor::get_item, py::arg("key"))
+        .def("__setitem__", &Tensor::set_item, py::arg("key"), py::arg("value"))
         .def("size", &Tensor::size)
+        .def("is_mutable", &Tensor::is_mutable)
         .def("dtype", &Tensor::dtype)
         .def("device", &Tensor::device);
 }
