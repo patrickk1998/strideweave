@@ -1,5 +1,6 @@
 from .data import Data, DataType, Generic, GenericEvictable
 from .layout import Layout, Node, Shape, Stride, Tree
+from .tensor import Tensor
 
 __all__ = [
     "Data",
@@ -10,5 +11,6 @@ __all__ = [
     "Node",
     "Shape",
     "Stride",
+    "Tensor",
     "Tree",
 ]
