@@ -6,7 +6,7 @@ from numbers import Number
 from typing import Any, cast
 
 from .data import Generic
-from .layout import Layout, Shape, Stride
+from .layout import Layout, Shape, Stride, Tree
 
 _get_index = cast(Any, import_module("neotorch._index")).get_index
 
@@ -127,6 +127,12 @@ def _copy_gradient_for(target: Any, gradient: Any) -> Any:
     return _detached_tensor_like(target, _logical_values(gradient))
 
 
+def _copy_gradient_to_layout(target: Any, gradient: Any) -> Any:
+    if target.size() != gradient.size():
+        raise ValueError("Tensor layouts must have the same logical size")
+    return _tensor_with_layout_like(target, target.layout, _logical_values(gradient))
+
+
 class GenericAddOperation(Operation):
     def forward(self, lhs: Any, rhs: Any) -> Any:
         lhs = _require_exact_generic_tensor(lhs, "lhs")
@@ -244,6 +250,48 @@ class GenericMatmulOperation(Operation):
         )
 
 
+class RearrangeOperation(Operation):
+    def forward(self, tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
+        from .tensor import Tensor
+
+        tensor = _as_tensor(tensor, "tensor")
+        if not isinstance(output, Tree):
+            raise TypeError("output must be a Tree")
+        if selection is not None and not isinstance(selection, Tree):
+            raise TypeError("selection must be a Tree or None")
+
+        effective_selection = selection
+        if effective_selection is None:
+            effective_selection = Layout._default_selection_tree(tensor.layout)
+
+        output_layout = Layout.rearrange(tensor.layout, output, effective_selection)
+
+        self.store_inputs(tensor)
+        self.ctx["output"] = output
+        self.ctx["selection"] = effective_selection
+        self.ctx["output_layout"] = output_layout
+        result = Tensor(tensor.data, tensor.offset, output_layout)
+        result.autograd_ctx = self
+        return result
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _as_tensor(gradient, "gradient")
+        _require_layout(gradient, self.ctx["output_layout"])
+
+        reverse_output, reverse_selection = Layout.reverse_rearrange(
+            self.ctx["output"], self.ctx["selection"]
+        )
+        inverse_layout = Layout.rearrange(
+            gradient.layout, reverse_output, reverse_selection
+        )
+
+        from .tensor import Tensor
+
+        inverse_gradient = Tensor(gradient.data, gradient.offset, inverse_layout)
+        return (_copy_gradient_to_layout(tensor, inverse_gradient),)
+
+
 def add(lhs: Any, rhs: Any) -> Any:
     return GenericAddOperation().forward(lhs, rhs)
 
@@ -260,14 +308,20 @@ def matmul(lhs: Any, rhs: Any) -> Any:
     return GenericMatmulOperation().forward(lhs, rhs)
 
 
+def rearrange(tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
+    return RearrangeOperation().forward(tensor, output, selection)
+
+
 __all__ = [
     "GenericAddOperation",
     "GenericMatmulOperation",
     "GenericReduceSumOperation",
     "GenericScalarMulOperation",
     "Operation",
+    "RearrangeOperation",
     "add",
     "matmul",
     "mul",
+    "rearrange",
     "reduce",
 ]

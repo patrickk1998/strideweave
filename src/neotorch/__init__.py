@@ -6,9 +6,11 @@ from .operation import (
     GenericReduceSumOperation,
     GenericScalarMulOperation,
     Operation,
+    RearrangeOperation,
     add,
     matmul,
     mul,
+    rearrange,
     reduce,
 )
 from .tensor import Tensor
@@ -25,6 +27,7 @@ __all__ = [
     "Layout",
     "Node",
     "Operation",
+    "RearrangeOperation",
     "Shape",
     "Stride",
     "Tensor",
@@ -32,5 +35,6 @@ __all__ = [
     "add",
     "matmul",
     "mul",
+    "rearrange",
     "reduce",
 ]

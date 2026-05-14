@@ -25,6 +25,23 @@ def test_tree_reshape():
     assert Tree(1, Tree(1, 1)).reshape(["A", "B", "C"]) == ["A", ["B", "C"]]
 
 
+def test_tree_id_leaf_marker():
+    marker = Node.id(2)
+
+    assert marker.id == 2
+    assert Tree(marker).recipe == [Node.Leaf]
+    assert Tree(marker).size == 1
+
+
+def test_tree_id_leaf_rejects_invalid_ids():
+    invalid_id: Any = "0"
+
+    with pytest.raises(TypeError):
+        Node.id(invalid_id)
+    with pytest.raises(ValueError):
+        Node.id(-1)
+
+
 def test_shape_creation_and_indexing():
     shape = Shape([1, [2, [3, 3], [3, 3], [3, 3]]])
 
@@ -53,6 +70,13 @@ def test_stride_creation_and_indexing():
 
 def test_stride_variadic_creation_matches_list_creation():
     assert Stride(1, 2, [3, 4]) == Stride([1, 2, [3, 4]])
+
+
+def test_stride_allows_zero_for_singleton_layouts():
+    assert Stride(0) == Stride([0])
+
+    with pytest.raises(ValueError):
+        Stride(-1)
 
 
 def test_layout_slicing():
@@ -180,6 +204,155 @@ def test_layout_extract_profile():
 
     assert extracted[0] == Layout(Shape(1), Stride(1))
     assert extracted[1] == Layout(Shape([2, 3]), Stride([2, 6]))
+
+
+def test_layout_extract_profile_defaults_to_prefix_leaf_traversal():
+    extracted = Layout.extract_profile(Layout(Shape([1, [2, 3]]), Stride([5, [7, 11]])))
+
+    assert extracted == [
+        Layout(Shape(1), Stride(5)),
+        Layout(Shape(2), Stride(7)),
+        Layout(Shape(3), Stride(11)),
+    ]
+
+
+def test_layout_extract_profile_ignores_id_leaf_values():
+    extracted = Layout.extract_profile(
+        Layout(Shape([1, [2, 3]]), Stride([1, [2, 6]])),
+        Tree(Node.id(7), Node.id(0)),
+    )
+
+    assert extracted[0] == Layout(Shape(1), Stride(1))
+    assert extracted[1] == Layout(Shape([2, 3]), Stride([2, 6]))
+
+
+def test_layout_rearrange_default_selection_permute_flat_leaves():
+    layout = Layout(Shape([2, 3, 4]), Stride([1, 2, 6]))
+
+    assert Layout.rearrange(layout, Tree(Node.id(2), Node.id(0), Node.id(1))) == Layout(
+        Shape([4, 2, 3]), Stride([6, 1, 2])
+    )
+
+
+def test_layout_rearrange_selection_extracts_subtrees():
+    layout = Layout(Shape([1, [2, 3]]), Stride([5, [7, 14]]))
+
+    assert Layout.rearrange(
+        layout,
+        Tree(Node.id(1), Node.id(0)),
+        Tree(1, 1),
+    ) == Layout(Shape([[2, 3], 1]), Stride([[7, 14], 5]))
+
+
+def test_layout_rearrange_plain_leaves_insert_singleton_modes():
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+
+    assert Layout.rearrange(layout, Tree(Node.id(1), Node.Leaf, Node.id(0))) == Layout(
+        Shape([3, 1, 2]), Stride([2, 0, 1])
+    )
+
+
+def test_layout_rearrange_preserves_nested_output_structure():
+    layout = Layout(Shape([2, 3, 4]), Stride([1, 2, 6]))
+
+    assert Layout.rearrange(
+        layout,
+        Tree(Tree(Node.id(1), Node.id(2)), Node.id(0)),
+    ) == Layout(Shape([[3, 4], 2]), Stride([[2, 6], 1]))
+
+
+def test_layout_rearrange_allows_omitting_singleton_leaf_ids():
+    layout = Layout(Shape([1, 2, 1, 3]), Stride([7, 1, 11, 2]))
+
+    assert Layout.rearrange(layout, Tree(Node.id(3), Node.id(1))) == Layout(
+        Shape([3, 2]), Stride([2, 1])
+    )
+
+
+def test_layout_rearrange_rejects_invalid_id_coverage():
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+
+    with pytest.raises(ValueError):
+        Layout.rearrange(layout, Tree(Node.id(0), Node.id(0)))
+    with pytest.raises(ValueError):
+        Layout.rearrange(layout, Tree(Node.id(0)))
+    with pytest.raises(ValueError):
+        Layout.rearrange(layout, Tree(Node.id(2), Node.id(0), Node.id(1)))
+
+
+def test_layout_reverse_rearrange_inverts_simple_permutation():
+    reverse_output, reverse_selection = Layout.reverse_rearrange(
+        Tree(Node.id(2), Node.id(0), Node.id(1)),
+        Tree(1, 1, 1),
+    )
+
+    assert reverse_output == Tree(Node.id(1), Node.id(2), Node.id(0))
+    assert reverse_selection == Tree(1, 1, 1)
+
+
+def test_layout_reverse_rearrange_inverts_inserted_singletons():
+    reverse_output, reverse_selection = Layout.reverse_rearrange(
+        Tree(Node.id(1), Node.Leaf, Node.id(0)),
+        Tree(1, 1),
+    )
+
+    assert reverse_output == Tree(Node.id(2), Node.id(0))
+    assert reverse_selection == Tree(1, 1, 1)
+
+
+def test_layout_reverse_rearrange_preserves_nested_output_structure():
+    reverse_output, reverse_selection = Layout.reverse_rearrange(
+        Tree(Tree(Node.id(1), Node.id(2)), Node.id(0)),
+        Tree(1, 1, 1),
+    )
+
+    assert reverse_output == Tree(Node.id(2), Node.id(0), Node.id(1))
+    assert reverse_selection == Tree(Tree(1, 1), 1)
+
+
+def test_layout_reverse_rearrange_reconstructs_omitted_singleton_ids():
+    reverse_output, reverse_selection = Layout.reverse_rearrange(
+        Tree(Node.id(0)),
+        Tree(1, 1),
+    )
+
+    assert reverse_output == Tree(Node.id(0), Node.Leaf)
+    assert reverse_selection == Tree(1)
+
+
+def test_layout_reverse_rearrange_composes_to_identity_for_permutation():
+    layout = Layout(Shape([2, 3, 4]), Stride([1, 2, 6]))
+    output = Tree(Node.id(2), Node.id(0), Node.id(1))
+    selection = Tree(1, 1, 1)
+
+    forward = Layout.rearrange(layout, output, selection)
+    reverse_output, reverse_selection = Layout.reverse_rearrange(output, selection)
+
+    assert Layout.rearrange(forward, reverse_output, reverse_selection) == layout
+
+
+def test_layout_reverse_rearrange_composes_to_identity_with_inserted_singleton():
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+    output = Tree(Node.id(1), Node.Leaf, Node.id(0))
+    selection = Tree(1, 1)
+
+    forward = Layout.rearrange(layout, output, selection)
+    reverse_output, reverse_selection = Layout.reverse_rearrange(output, selection)
+
+    assert Layout.rearrange(forward, reverse_output, reverse_selection) == layout
+
+
+def test_layout_reverse_rearrange_restores_omitted_singleton_shape():
+    layout = Layout(Shape([2, 1, 3]), Stride([1, 99, 2]))
+    output = Tree(Node.id(2), Node.id(0))
+    selection = Tree(1, 1, 1)
+
+    forward = Layout.rearrange(layout, output, selection)
+    reverse_output, reverse_selection = Layout.reverse_rearrange(output, selection)
+    restored = Layout.rearrange(forward, reverse_output, reverse_selection)
+
+    assert restored.shape == layout.shape
+    assert restored == Layout(Shape([2, 1, 3]), Stride([1, 0, 2]))
 
 
 def test_layout_compose_with_leaf_left_hand_side():

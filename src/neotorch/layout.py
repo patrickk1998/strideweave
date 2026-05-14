@@ -2,8 +2,23 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
+
+
+@dataclass(frozen=True)
+class _NodeLeaf:
+    id: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, int):
+            raise TypeError("Node leaf id must be an integer")
+        if self.id < 0:
+            raise ValueError("Node leaf id must be non-negative")
+
+    def __repr__(self) -> str:
+        return f"Node.id({self.id})"
 
 
 class Node(Enum):
@@ -11,12 +26,20 @@ class Node(Enum):
     Push = 2
     Pop = 3
 
+    @staticmethod
+    def id(id_: int) -> _NodeLeaf:
+        return _NodeLeaf(id_)
+
+
+def _is_leaf_marker(value: object) -> bool:
+    return value == Node.Leaf or isinstance(value, _NodeLeaf)
+
 
 class Tree(tuple):
     size: int
     depth: int
 
-    def __new__(cls, *args: int | Node | Tree) -> Tree:
+    def __new__(cls, *args: int | Node | _NodeLeaf | Tree) -> Tree:
         normalized_iterable, depth, size = Tree.norm(args)
         obj = super().__new__(cls, normalized_iterable)
         object.__setattr__(obj, "size", size)
@@ -24,13 +47,18 @@ class Tree(tuple):
         return obj
 
     @staticmethod
-    def norm(level: Iterable[int | Node | Tree]) -> tuple[list[Node | Tree], int, int]:
+    def norm(
+        level: Iterable[int | Node | _NodeLeaf | Tree],
+    ) -> tuple[list[Node | _NodeLeaf | Tree], int, int]:
         normalized = []
         max_depth = 0
         size = 0
         for el in level:
-            if isinstance(el, int) or el == Node.Leaf:
+            if isinstance(el, int):
                 normalized.append(Node.Leaf)
+                size += 1
+            elif _is_leaf_marker(el):
+                normalized.append(el)
                 size += 1
             elif isinstance(el, Tree):
                 max_depth = el.depth if el.depth > max_depth else max_depth
@@ -47,7 +75,7 @@ class Tree(tuple):
     def get_recipe(t: Tree) -> list[Node]:
         recipe = []
         for el in t:
-            if el == Node.Leaf:
+            if _is_leaf_marker(el):
                 recipe.append(Node.Leaf)
             else:
                 recipe.append(Node.Push)
@@ -299,8 +327,8 @@ class Stride:
                 )
             if isinstance(el, int) or (isinstance(el, Stride) and el.is_int):
                 el = int(el)
-                if el < 1:
-                    raise ValueError("Stride value must not be less than 1")
+                if el < 0:
+                    raise ValueError("Stride value must not be negative")
                 current_level.append(el)
             elif Stride.is_iterable(el):
                 lower_level, this_depth = Stride.normalize_input(el)
@@ -549,16 +577,160 @@ class Layout:
         return Layout(Shape(new_shape), Stride(new_stride))
 
     @staticmethod
-    def extract_profile(layout: Layout, profile: Tree) -> list[Layout]:
+    def extract_profile(layout: Layout, profile: Tree | None = None) -> list[Layout]:
+        if profile is None:
+            return Layout._prefix_layout_leaves(layout)
+
         extracted = []
         if len(layout) != len(profile):
             raise ValueError("layout and tree profile do not match")
         for node, marker in zip(layout, profile):
-            if marker == Node.Leaf:
+            if _is_leaf_marker(marker):
                 extracted.append(node)
             if isinstance(marker, Tree):
                 extracted = [*extracted, *Layout.extract_profile(node, marker)]
         return extracted
+
+    @staticmethod
+    def _prefix_layout_leaves(layout: Layout) -> list[Layout]:
+        if layout.is_leaf:
+            return [copy.copy(layout)]
+
+        extracted = []
+        for node in layout:
+            extracted = [*extracted, *Layout._prefix_layout_leaves(node)]
+        return extracted
+
+    @staticmethod
+    def _default_selection_tree(layout: Layout) -> Tree:
+        if layout.is_leaf:
+            return Tree(Node.Leaf)
+
+        selection = []
+        for node in layout:
+            if node.is_leaf:
+                selection.append(Node.Leaf)
+            else:
+                selection.append(Layout._default_selection_tree(node))
+        return Tree(*selection)
+
+    @staticmethod
+    def rearrange(
+        layout: Layout, output: Tree, selection: Tree | None = None
+    ) -> Layout:
+        if not isinstance(output, Tree):
+            raise ValueError("output must be a Tree")
+
+        extracted = Layout.extract_profile(layout, selection)
+        used_ids: list[int] = []
+        rearranged = Layout._rearrange_from_tree(output, extracted, used_ids)
+        Layout._validate_rearrange_ids(used_ids, extracted)
+        return rearranged
+
+    @staticmethod
+    def _rearrange_from_tree(
+        output: Tree, extracted: list[Layout], used_ids: list[int]
+    ) -> Layout:
+        rearranged = Layout.empty()
+        for marker in output:
+            if isinstance(marker, _NodeLeaf):
+                if marker.id >= len(extracted):
+                    raise ValueError("Layout rearrange id is out of range")
+                child = extracted[marker.id]
+                used_ids.append(marker.id)
+            elif marker == Node.Leaf:
+                child = Layout(Shape(1), Stride(0))
+            elif isinstance(marker, Tree):
+                child = Layout._rearrange_from_tree(marker, extracted, used_ids)
+            else:
+                raise ValueError("output tree contains an invalid marker")
+            rearranged = Layout.append(rearranged, child)
+        return rearranged
+
+    @staticmethod
+    def _validate_rearrange_ids(used_ids: list[int], extracted: list[Layout]) -> None:
+        seen = set()
+        for id_ in used_ids:
+            if id_ in seen:
+                raise ValueError("Layout rearrange ids must not be duplicated")
+            seen.add(id_)
+
+        missing_non_singleton_ids = [
+            id_
+            for id_, layout in enumerate(extracted)
+            if id_ not in seen and layout.shape.logical_size != 1
+        ]
+        if missing_non_singleton_ids:
+            raise ValueError("Layout rearrange ids must include every extracted layout")
+
+    @staticmethod
+    def reverse_rearrange(output: Tree, selection: Tree) -> tuple[Tree, Tree]:
+        if not isinstance(output, Tree):
+            raise ValueError("output must be a Tree")
+        if not isinstance(selection, Tree):
+            raise ValueError("selection must be a Tree")
+
+        source_to_output: dict[int, int] = {}
+        reverse_selection, output_leaf_count = Layout._strip_rearrange_ids(
+            output, source_to_output, 0
+        )
+        for source_id in source_to_output:
+            if source_id >= selection.size:
+                raise ValueError("Layout rearrange id is out of range")
+
+        reverse_output, source_count = Layout._invert_rearrange_selection(
+            selection, source_to_output, 0
+        )
+        if source_count != selection.size:
+            raise ValueError("selection tree is inconsistent")
+        if output_leaf_count != reverse_selection.size:
+            raise ValueError("output tree is inconsistent")
+        return reverse_output, reverse_selection
+
+    @staticmethod
+    def _strip_rearrange_ids(
+        output: Tree, source_to_output: dict[int, int], output_id: int
+    ) -> tuple[Tree, int]:
+        stripped = []
+        for marker in output:
+            if isinstance(marker, Tree):
+                child, output_id = Layout._strip_rearrange_ids(
+                    marker, source_to_output, output_id
+                )
+                stripped.append(child)
+            elif isinstance(marker, _NodeLeaf):
+                if marker.id in source_to_output:
+                    raise ValueError("Layout rearrange ids must not be duplicated")
+                source_to_output[marker.id] = output_id
+                stripped.append(Node.Leaf)
+                output_id += 1
+            elif marker == Node.Leaf:
+                stripped.append(Node.Leaf)
+                output_id += 1
+            else:
+                raise ValueError("output tree contains an invalid marker")
+        return Tree(*stripped), output_id
+
+    @staticmethod
+    def _invert_rearrange_selection(
+        selection: Tree, source_to_output: dict[int, int], source_id: int
+    ) -> tuple[Tree, int]:
+        inverted = []
+        for marker in selection:
+            if isinstance(marker, Tree):
+                child, source_id = Layout._invert_rearrange_selection(
+                    marker, source_to_output, source_id
+                )
+                inverted.append(child)
+            elif _is_leaf_marker(marker):
+                if source_id in source_to_output:
+                    inverted.append(Node.id(source_to_output[source_id]))
+                else:
+                    inverted.append(Node.Leaf)
+                source_id += 1
+            else:
+                raise ValueError("selection tree contains an invalid marker")
+        return Tree(*inverted), source_id
 
     @property
     def depth(self) -> int:
