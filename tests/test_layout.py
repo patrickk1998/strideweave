@@ -355,6 +355,51 @@ def test_layout_reverse_rearrange_restores_omitted_singleton_shape():
     assert restored == Layout(Shape([2, 1, 3]), Stride([1, 0, 2]))
 
 
+def test_layout_permute_reorders_top_level_modes():
+    layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
+
+    assert Layout.permute(layout, (1, 0, 2)) == Layout(
+        Shape([[3, 4], 2, 5]), Stride([[2, 6], 1, 24])
+    )
+
+
+def test_layout_permute_accepts_variadic_and_list_orders():
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+
+    assert Layout.permute(layout, 1, 0) == Layout(Shape([3, 2]), Stride([2, 1]))
+    assert Layout.permute(layout, [1, 0]) == Layout(Shape([3, 2]), Stride([2, 1]))
+
+
+def test_layout_permute_identity_order_returns_equal_layout():
+    layout = Layout(Shape([[2, 3], 4]), Stride([[1, 2], 6]))
+
+    assert Layout.permute(layout, 0, 1) == layout
+
+
+def test_layout_permute_rejects_invalid_orders():
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+    non_integer_dim: Any = "0"
+
+    with pytest.raises(ValueError):
+        Layout.permute(layout, 0, 0)
+    with pytest.raises(ValueError):
+        Layout.permute(layout, 0)
+    with pytest.raises(ValueError):
+        Layout.permute(layout, -1, 0)
+    with pytest.raises(ValueError):
+        Layout.permute(layout, 0, 2)
+    with pytest.raises(TypeError):
+        Layout.permute(layout, non_integer_dim, 1)
+
+
+def test_layout_permute_composes_with_inverse_to_identity():
+    layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
+    order = (1, 2, 0)
+    inverse_order = (2, 0, 1)
+
+    assert Layout.permute(Layout.permute(layout, order), inverse_order) == layout
+
+
 def test_layout_compose_with_leaf_left_hand_side():
     l1 = Layout(Shape([5]), Stride([2]))
     l2 = Layout(Shape([3, [5, 2]]), Stride([2, [6, 30]]))

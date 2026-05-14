@@ -6,10 +6,12 @@ from .operation import (
     GenericReduceSumOperation,
     GenericScalarMulOperation,
     Operation,
+    PermuteOperation,
     RearrangeOperation,
     add,
     matmul,
     mul,
+    permute,
     rearrange,
     reduce,
 )
@@ -27,6 +29,7 @@ __all__ = [
     "Layout",
     "Node",
     "Operation",
+    "PermuteOperation",
     "RearrangeOperation",
     "Shape",
     "Stride",
@@ -35,6 +38,7 @@ __all__ = [
     "add",
     "matmul",
     "mul",
+    "permute",
     "rearrange",
     "reduce",
 ]

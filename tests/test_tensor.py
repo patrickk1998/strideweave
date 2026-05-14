@@ -12,6 +12,7 @@ from neotorch import (
     GenericScalarMulOperation,
     Layout,
     Node,
+    PermuteOperation,
     RearrangeOperation,
     Shape,
     Stride,
@@ -255,11 +256,13 @@ def test_tensor_add_public_api_imports():
     assert neotorch.GenericReduceSumOperation is GenericReduceSumOperation
     assert neotorch.GenericMatmulOperation is GenericMatmulOperation
     assert neotorch.RearrangeOperation is RearrangeOperation
+    assert neotorch.PermuteOperation is PermuteOperation
     assert neotorch.add is not None
     assert neotorch.mul is not None
     assert neotorch.reduce is not None
     assert neotorch.matmul is not None
     assert neotorch.rearrange is not None
+    assert neotorch.permute is not None
 
 
 def test_tensor_add_with_generic_data_returns_autograd_tensor():
@@ -555,6 +558,85 @@ def test_tensor_rearrange_rejects_invalid_inputs():
         neotorch.rearrange(tensor, Tree(Node.id(0), Node.id(1)), invalid_selection)
     with pytest.raises(ValueError):
         neotorch.rearrange(tensor, Tree(Node.id(0)))
+
+
+def test_tensor_permute_forward_returns_view_with_permuted_layout():
+    data = Generic([1, 2, 3, 4, 5, 6])
+    tensor = Tensor(data, 0, Layout(Shape([2, 3]), Stride([1, 2])))
+
+    result = neotorch.permute(tensor, 1, 0)
+
+    assert result.data is data
+    assert result.offset == tensor.offset
+    assert result.layout == Layout(Shape([3, 2]), Stride([2, 1]))
+    assert result[2, 1] == tensor[1, 2]
+    assert isinstance(result.autograd_ctx, PermuteOperation)
+    assert result.autograd_ctx.inputs() == (tensor,)
+
+
+def test_tensor_permute_accepts_tuple_and_list_orders():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+
+    tuple_result = neotorch.permute(tensor, (1, 0))
+    list_result = neotorch.permute(tensor, [1, 0])
+
+    assert tuple_result.layout == Layout(Shape([3, 2]), Stride([2, 1]))
+    assert list_result.layout == tuple_result.layout
+
+
+def test_tensor_permute_preserves_hierarchical_modes():
+    tensor = Tensor(
+        Generic(range(120)),
+        0,
+        Layout(Shape([[2, 3], 4, 5]), Stride([[1, 2], 6, 24])),
+    )
+    nested_key = [1, 2]
+
+    result = neotorch.permute(tensor, 1, 0, 2)
+
+    assert result.layout == Layout(Shape([4, [2, 3], 5]), Stride([6, [1, 2], 24]))
+    assert result[3, nested_key, 4] == tensor[nested_key, 3, 4]
+
+
+def test_tensor_permute_backward_inverts_permutation():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    result = neotorch.permute(tensor, 1, 0)
+    gradient = Tensor(Generic([10, 40, 20, 50, 30, 60]), 0, result.layout)
+
+    result.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    assert tensor_grad.layout == tensor.layout
+    assert tensor_values(tensor_grad) == [10, 40, 20, 50, 30, 60]
+    assert type(tensor_grad.data) is type(tensor.data)
+
+
+def test_tensor_permute_backward_accumulates_repeated_calls():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    result = neotorch.permute(tensor, 1, 0)
+    gradient = Tensor(Generic([1, 4, 2, 5, 3, 6]), 0, result.layout)
+
+    result.backward(gradient)
+    result.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    assert tensor_values(tensor_grad) == [2, 8, 4, 10, 6, 12]
+
+
+def test_tensor_permute_rejects_invalid_orders():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    non_integer_dim: Any = "0"
+
+    with pytest.raises(ValueError):
+        neotorch.permute(tensor, 0, 0)
+    with pytest.raises(ValueError):
+        neotorch.permute(tensor, 0)
+    with pytest.raises(ValueError):
+        neotorch.permute(tensor, -1, 0)
+    with pytest.raises(ValueError):
+        neotorch.permute(tensor, 0, 2)
+    with pytest.raises(TypeError):
+        neotorch.permute(tensor, non_integer_dim, 1)
 
 
 def test_tensor_backward_on_leaf_creates_detached_generic_grad():

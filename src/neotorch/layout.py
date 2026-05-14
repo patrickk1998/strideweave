@@ -732,6 +732,31 @@ class Layout:
                 raise ValueError("selection tree contains an invalid marker")
         return Tree(*inverted), source_id
 
+    @staticmethod
+    def permute(layout: Layout, *order: Any) -> Layout:
+        normalized_order = Layout._normalize_permute_order(order, len(layout))
+        output = Tree(*(Node.id(dim) for dim in normalized_order))
+        selection = Tree(*(Node.Leaf for _ in range(len(layout))))
+        return Layout.rearrange(layout, output, selection)
+
+    @staticmethod
+    def _normalize_permute_order(order: tuple[Any, ...], rank: int) -> tuple[int, ...]:
+        if len(order) == 1 and not isinstance(order[0], int):
+            try:
+                order = tuple(order[0])
+            except TypeError:
+                pass
+
+        for dim in order:
+            if type(dim) is not int:
+                raise TypeError("Permutation dimensions must be integers")
+
+        normalized_order = tuple(order)
+        expected = set(range(rank))
+        if len(normalized_order) != rank or set(normalized_order) != expected:
+            raise ValueError("Permutation dimensions must reorder every layout mode")
+        return normalized_order
+
     @property
     def depth(self) -> int:
         return self.shape.depth

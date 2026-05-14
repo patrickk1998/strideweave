@@ -292,6 +292,38 @@ class RearrangeOperation(Operation):
         return (_copy_gradient_to_layout(tensor, inverse_gradient),)
 
 
+class PermuteOperation(Operation):
+    def forward(self, tensor: Any, *order: Any) -> Any:
+        from .tensor import Tensor
+
+        tensor = _as_tensor(tensor, "tensor")
+        normalized_order = Layout._normalize_permute_order(order, len(tensor.layout))
+        output_layout = Layout.permute(tensor.layout, normalized_order)
+
+        self.store_inputs(tensor)
+        self.ctx["order"] = normalized_order
+        self.ctx["output_layout"] = output_layout
+        result = Tensor(tensor.data, tensor.offset, output_layout)
+        result.autograd_ctx = self
+        return result
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _as_tensor(gradient, "gradient")
+        _require_layout(gradient, self.ctx["output_layout"])
+
+        order = self.ctx["order"]
+        inverse_order = [0] * len(order)
+        for output_mode, input_mode in enumerate(order):
+            inverse_order[input_mode] = output_mode
+        inverse_layout = Layout.permute(gradient.layout, inverse_order)
+
+        from .tensor import Tensor
+
+        inverse_gradient = Tensor(gradient.data, gradient.offset, inverse_layout)
+        return (_copy_gradient_to_layout(tensor, inverse_gradient),)
+
+
 def add(lhs: Any, rhs: Any) -> Any:
     return GenericAddOperation().forward(lhs, rhs)
 
@@ -312,16 +344,22 @@ def rearrange(tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
     return RearrangeOperation().forward(tensor, output, selection)
 
 
+def permute(tensor: Any, *order: Any) -> Any:
+    return PermuteOperation().forward(tensor, *order)
+
+
 __all__ = [
     "GenericAddOperation",
     "GenericMatmulOperation",
     "GenericReduceSumOperation",
     "GenericScalarMulOperation",
     "Operation",
+    "PermuteOperation",
     "RearrangeOperation",
     "add",
     "matmul",
     "mul",
+    "permute",
     "rearrange",
     "reduce",
 ]
