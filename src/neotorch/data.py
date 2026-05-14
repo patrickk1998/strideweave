@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pickle
 from collections.abc import Iterable
 from enum import Enum
@@ -76,6 +78,13 @@ class Generic(Data):
 
     def set_value(self, index: int, value: Any) -> None:
         self._require_mutable_values()[index] = value
+
+    def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> Generic:
+        if type(self) is not Generic:
+            raise NotImplementedError(
+                "Generic data factory only supports exact Generic data"
+            )
+        return Generic(values, mutable=mutable)
 
 
 class GenericEvictable(Generic):
