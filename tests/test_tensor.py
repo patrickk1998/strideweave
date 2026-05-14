@@ -77,7 +77,7 @@ def test_tensor_indexes_flat_coordinate_key():
     layout = Layout(Shape([3, 4]), Stride([2, 10]))
     tensor = Tensor(data, 5, layout)
 
-    assert tensor[[2, 3]] == data[5 + layout.index([2, 3])]
+    assert tensor[2, 3] == data[5 + layout.index([2, 3])]
 
 
 def test_tensor_single_integer_key_uses_layout_expansion():
@@ -93,7 +93,7 @@ def test_tensor_indexes_nested_layout_key():
     layout = Layout(Shape([2, [3, 4]]), Stride([1, [10, 100]]))
     tensor = Tensor(data, 7, layout)
 
-    assert tensor[[1, [2, 3]]] == data[7 + layout.index([1, [2, 3]])]
+    assert tensor[1, [2, 3]] == data[7 + layout.index([1, [2, 3]])]
 
 
 def test_tensor_accepts_tuple_and_list_coordinate_keys():
@@ -103,6 +103,14 @@ def test_tensor_accepts_tuple_and_list_coordinate_keys():
 
     assert tensor[1, 2] == data[layout.index([1, 2])]
     assert tensor[[1, 2]] == data[layout.index([1, 2])]
+    assert tensor[[1, 2]] == tensor[1, 2]
+
+
+def test_tensor_list_coordinate_key_matches_tuple_key_for_hierarchical_mode():
+    layout = Layout(Shape([2, 3, [2, 2]]), Stride([1, 2, [6, 12]]))
+    tensor = Tensor(Generic(range(24)), 0, layout)
+
+    assert tensor[[1, 2, [1, 1]]] == tensor[1, 2, [1, 1]]
 
 
 def test_tensor_out_of_domain_keys_raise_layout_errors():
@@ -111,7 +119,7 @@ def test_tensor_out_of_domain_keys_raise_layout_errors():
     tensor = Tensor(data, 0, layout)
 
     with pytest.raises(ValueError):
-        tensor[[3, 0]]
+        tensor[3, 0]
     with pytest.raises(ValueError):
         tensor[12]
 
@@ -139,10 +147,10 @@ def test_tensor_setitem_updates_flat_coordinate_key():
     tensor = Tensor(data, 5, layout)
     data_index = 5 + layout.index([2, 3])
 
-    tensor[[2, 3]] = "updated"
+    tensor[2, 3] = "updated"
 
     assert values[data_index] == "updated"
-    assert tensor[[2, 3]] == "updated"
+    assert tensor[2, 3] == "updated"
 
 
 def test_tensor_setitem_uses_integer_key_expansion():
@@ -165,10 +173,10 @@ def test_tensor_setitem_updates_nested_layout_key():
     tensor = Tensor(data, 7, layout)
     data_index = 7 + layout.index([1, [2, 3]])
 
-    tensor[[1, [2, 3]]] = "updated"
+    tensor[1, [2, 3]] = "updated"
 
     assert values[data_index] == "updated"
-    assert tensor[[1, [2, 3]]] == "updated"
+    assert tensor[1, [2, 3]] == "updated"
 
 
 def test_tensor_setitem_accepts_tuple_and_list_coordinate_keys():
@@ -179,9 +187,24 @@ def test_tensor_setitem_accepts_tuple_and_list_coordinate_keys():
 
     tensor[1, 2] = "tuple"
     tensor[[2, 3]] = "list"
+    tensor[[1, 2]] = "list-overwrite"
 
-    assert values[layout.index([1, 2])] == "tuple"
+    assert values[layout.index([1, 2])] == "list-overwrite"
+    assert tensor[1, 2] == "list-overwrite"
+    assert tensor[[1, 2]] == tensor[1, 2]
     assert values[layout.index([2, 3])] == "list"
+
+
+def test_tensor_setitem_list_coordinate_key_matches_tuple_key_for_hierarchical_mode():
+    values: list[Any] = list(range(24))
+    layout = Layout(Shape([2, 3, [2, 2]]), Stride([1, 2, [6, 12]]))
+    tensor = Tensor(Generic(values), 0, layout)
+
+    tensor[[1, 2, [1, 1]]] = "updated"
+
+    assert tensor[1, 2, [1, 1]] == "updated"
+    assert tensor[[1, 2, [1, 1]]] == tensor[1, 2, [1, 1]]
+    assert values[layout.index([1, 2, [1, 1]])] == "updated"
 
 
 def test_tensor_setitem_out_of_domain_keys_raise_layout_errors():
@@ -190,7 +213,7 @@ def test_tensor_setitem_out_of_domain_keys_raise_layout_errors():
     tensor = Tensor(data, 0, layout)
 
     with pytest.raises(ValueError):
-        tensor[[3, 0]] = "updated"
+        tensor[3, 0] = "updated"
     with pytest.raises(ValueError):
         tensor[12] = "updated"
 
@@ -217,7 +240,7 @@ def test_tensor_setitem_rejects_immutable_backing_data():
     tensor = Tensor(data, 0, layout)
 
     with pytest.raises(RuntimeError):
-        tensor[[1, 2]] = "updated"
+        tensor[1, 2] = "updated"
 
 
 def test_tensor_add_public_api_imports():
@@ -377,7 +400,7 @@ def test_tensor_storage_validation_uses_cosize_not_logical_size():
         Tensor(Generic(range(11)), 0, layout)
 
     tensor = Tensor(Generic(range(12)), 0, layout)
-    assert tensor[[1, 1]] == 11
+    assert tensor[1, 1] == 11
 
 
 def test_tensor_propagates_backing_data_lifecycle_errors(tmp_path):
@@ -386,14 +409,14 @@ def test_tensor_propagates_backing_data_lifecycle_errors(tmp_path):
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(data, 3, layout)
 
-    assert tensor[[1, 1]] == 6
+    assert tensor[1, 1] == 6
 
     data.evict()
     with pytest.raises(RuntimeError):
-        tensor[[1, 1]]
+        tensor[1, 1]
 
     data.promote()
-    assert tensor[[1, 1]] == 6
+    assert tensor[1, 1] == 6
 
 
 def test_tensor_setitem_propagates_backing_data_lifecycle_errors(tmp_path):
@@ -402,12 +425,12 @@ def test_tensor_setitem_propagates_backing_data_lifecycle_errors(tmp_path):
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(data, 3, layout)
 
-    tensor[[1, 1]] = "updated"
-    assert tensor[[1, 1]] == "updated"
+    tensor[1, 1] = "updated"
+    assert tensor[1, 1] == "updated"
 
     data.evict()
     with pytest.raises(RuntimeError):
-        tensor[[1, 1]] = "evicted"
+        tensor[1, 1] = "evicted"
 
     data.promote()
-    assert tensor[[1, 1]] == "updated"
+    assert tensor[1, 1] == "updated"

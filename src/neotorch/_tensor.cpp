@@ -34,6 +34,14 @@ bool is_tensor_key(py::handle key) {
     return false;
 }
 
+void validate_tensor_key(py::handle key) {
+    if (!is_tensor_key(key)) {
+        throw py::type_error(
+            "Tensor indices must be integers or tuples/lists of integers"
+        );
+    }
+}
+
 bool layouts_equal(py::handle left, py::handle right) {
     const int result = PyObject_RichCompareBool(left.ptr(), right.ptr(), Py_EQ);
     if (result < 0) {
@@ -86,21 +94,13 @@ public:
     }
 
     py::object get_item(py::object key) const {
-        if (!is_tensor_key(key)) {
-            throw py::type_error(
-                "Tensor indices must be integers or tuples/lists of integers"
-            );
-        }
+        validate_tensor_key(key);
 
         return data_.attr("__getitem__")(py::int_(data_index(key)));
     }
 
     void set_item(py::object key, py::object value) const {
-        if (!is_tensor_key(key)) {
-            throw py::type_error(
-                "Tensor indices must be integers or tuples/lists of integers"
-            );
-        }
+        validate_tensor_key(key);
 
         data_.attr("__setitem__")(py::int_(data_index(key)), value);
     }
