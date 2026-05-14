@@ -1,6 +1,16 @@
 from .data import Data, DataType, Generic, GenericEvictable
 from .layout import Layout, Node, Shape, Stride, Tree
-from .operation import GenericAddOperation, Operation, add
+from .operation import (
+    GenericAddOperation,
+    GenericMatmulOperation,
+    GenericReduceSumOperation,
+    GenericScalarMulOperation,
+    Operation,
+    add,
+    matmul,
+    mul,
+    reduce,
+)
 from .tensor import Tensor
 
 __all__ = [
@@ -9,6 +19,9 @@ __all__ = [
     "Generic",
     "GenericAddOperation",
     "GenericEvictable",
+    "GenericMatmulOperation",
+    "GenericReduceSumOperation",
+    "GenericScalarMulOperation",
     "Layout",
     "Node",
     "Operation",
@@ -17,4 +30,7 @@ __all__ = [
     "Tensor",
     "Tree",
     "add",
+    "matmul",
+    "mul",
+    "reduce",
 ]

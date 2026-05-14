@@ -169,10 +169,16 @@ private:
             throw py::type_error("Tensor data does not support gradient data creation");
         }
 
+        const Index storage_size = neotorch::layout_index::cosize(layout_);
         py::list values;
+        for (Index i = 0; i < storage_size; ++i) {
+            values.append(py::none());
+        }
+
         const Index tensor_size = size();
         for (Index i = 0; i < tensor_size; ++i) {
-            values.append(gradient.attr("__getitem__")(py::int_(i)));
+            values[neotorch::layout_index::get_index(layout_, py::int_(i))] =
+                gradient.attr("__getitem__")(py::int_(i));
         }
 
         py::object grad_data = data_.attr("new_like")(values);
@@ -225,6 +231,29 @@ PYBIND11_MODULE(_tensor, module) {
             "__add__",
             [](py::object self, py::object other) {
                 return py::module_::import("neotorch.operation").attr("add")(self, other);
+            },
+            py::is_operator()
+        )
+        .def(
+            "__mul__",
+            [](py::object self, py::object other) {
+                return py::module_::import("neotorch.operation").attr("mul")(self, other);
+            },
+            py::is_operator()
+        )
+        .def(
+            "__rmul__",
+            [](py::object self, py::object other) {
+                return py::module_::import("neotorch.operation").attr("mul")(self, other);
+            },
+            py::is_operator()
+        )
+        .def(
+            "__matmul__",
+            [](py::object self, py::object other) {
+                return py::module_::import("neotorch.operation").attr("matmul")(
+                    self, other
+                );
             },
             py::is_operator()
         )
