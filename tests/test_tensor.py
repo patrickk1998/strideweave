@@ -101,6 +101,48 @@ def test_tensor_mutability_delegates_to_backing_data():
     assert not immutable_tensor.is_mutable()
 
 
+def test_tensor_non_evictable_lifecycle_delegates_to_backing_data():
+    tensor = Tensor(Generic(range(4)), 0, Layout(Shape([2, 2]), Stride([1, 2])))
+
+    assert not tensor.is_evictable()
+    assert not tensor.is_evicted()
+
+    with pytest.raises(RuntimeError):
+        tensor.evict()
+
+    with pytest.raises(RuntimeError):
+        tensor.promote()
+
+    assert not tensor.is_evicted()
+
+
+def test_tensor_evictable_lifecycle_delegates_to_backing_data(tmp_path):
+    data = GenericEvictable(range(4), tmp_path / "data.pkl")
+    tensor = Tensor(data, 0, Layout(Shape([2, 2]), Stride([1, 2])))
+
+    assert tensor.is_evictable()
+    assert not tensor.is_evicted()
+
+    tensor.evict()
+
+    assert data.is_evicted()
+    assert tensor.is_evicted()
+    with pytest.raises(RuntimeError):
+        tensor[1, 1]
+
+    tensor.evict()
+    assert tensor.is_evicted()
+
+    tensor.promote()
+
+    assert not data.is_evicted()
+    assert not tensor.is_evicted()
+    assert tensor[1, 1] == 3
+
+    tensor.promote()
+    assert not tensor.is_evicted()
+
+
 def test_tensor_indexes_flat_coordinate_key():
     data = Generic(range(64))
     layout = Layout(Shape([3, 4]), Stride([2, 10]))
