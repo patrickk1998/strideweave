@@ -1,4 +1,4 @@
-from .data import Data, DataType, Generic, GenericEvictable
+from .data import CPU, Data, DataType, Generic, GenericEvictable
 from .layout import Layout, Node, Shape, Stride, Tree
 from .operation import (
     GenericAddOperation,
@@ -22,6 +22,7 @@ from .tensor import Tensor
 
 __all__ = [
     "Data",
+    "CPU",
     "DataType",
     "Generic",
     "GenericAddOperation",

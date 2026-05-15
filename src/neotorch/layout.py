@@ -4,6 +4,7 @@ import copy
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from importlib import import_module
 from typing import Any
 
 
@@ -403,6 +404,8 @@ class LayoutIterable:
 
 
 class Layout:
+    _cache: Any
+
     def __init__(self, shape: Shape, stride: Stride):
         if not isinstance(shape, Shape):
             raise ValueError("shape input must be a Shape object")
@@ -412,6 +415,7 @@ class Layout:
             raise ValueError("Shape and Stride do not match in Structure")
         self.shape = shape
         self.stride = stride
+        self._cache = import_module("neotorch._index")._LayoutCache(self)
 
     @staticmethod
     def check_tree(shape: _ShapeLevel, stride: _StrideLevel) -> bool:
@@ -448,9 +452,7 @@ class Layout:
     def get_index(layout: Layout, key: Any) -> int:
         if not isinstance(layout, Layout):
             raise ValueError("layout input must be a Layout object")
-        return Layout._get_index_levels(
-            layout.shape.top_level, layout.stride.top_level, key
-        )
+        return layout._cache.get_index(key)
 
     @staticmethod
     def _get_index_levels(shape: _ShapeLevel, stride: _StrideLevel, key: Any) -> int:

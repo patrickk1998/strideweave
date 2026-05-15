@@ -4,7 +4,7 @@ from typing import Any, Protocol, cast
 
 import neotorch
 import pytest
-from neotorch import Data, DataType, Generic, GenericEvictable
+from neotorch import CPU, Data, DataType, Generic, GenericEvictable
 
 
 class NativeDataModule(Protocol):
@@ -42,10 +42,12 @@ class PythonMutableData(PythonData):
 
 def test_data_public_api_imports():
     assert neotorch.Data is Data
+    assert neotorch.CPU is CPU
     assert neotorch.DataType is DataType
     assert neotorch.Generic is Generic
     assert neotorch.GenericEvictable is GenericEvictable
     assert DataType.Any.value == "Any"
+    assert DataType.Float32.value == "Float32"
 
 
 def test_data_default_dispatch_op_raises_not_implemented():

@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
 from uuid import uuid4
 
-Data = cast(type[Any], import_module("neotorch._data").Data)
+_data = import_module("neotorch._data")
+Data = cast(type[Any], _data.Data)
+CPU = cast(type[Any], _data.CPU)
 
 
 @runtime_checkable
@@ -25,6 +27,7 @@ class _MutableSizedIndexable(_SizedIndexable, Protocol):
 
 class DataType(Enum):
     Any = "Any"
+    Float32 = "Float32"
 
 
 def _as_sized_indexable(
@@ -149,6 +152,7 @@ class GenericEvictable(Generic):
 
 __all__ = [
     "Data",
+    "CPU",
     "DataType",
     "Generic",
     "GenericEvictable",

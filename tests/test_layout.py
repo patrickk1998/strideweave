@@ -7,6 +7,8 @@ from neotorch import Layout, Node, Shape, Stride, Tree
 
 
 class NativeIndexModule(Protocol):
+    _LayoutCache: type[Any]
+
     def get_index(self, layout: Layout, key: Any) -> int: ...
 
 
@@ -129,6 +131,58 @@ def test_layout_get_index_nested_coordinate_key():
     layout = Layout(Shape([2, [3, 4]]), Stride([1, [10, 100]]))
 
     assert Layout.get_index(layout, [1, [2, 3]]) == 321
+
+
+def test_layout_constructs_native_cache():
+    layout = Layout(Shape([2, [3, 4]]), Stride([1, [10, 100]]))
+
+    assert isinstance(layout._cache, native_index._LayoutCache)
+    assert layout._cache.logical_size == 24
+    assert layout._cache.cosize == 322
+    assert layout._cache.rank == 2
+    assert layout._cache.leaf_rank == 3
+
+
+def test_layout_cache_expands_integer_keys_and_indexes_coordinates():
+    layout = Layout(Shape([3, 4]), Stride([2, 10]))
+
+    assert layout._cache.expand_key(5) == [2, 1]
+    assert layout._cache.get_index(5) == Layout.get_index(layout, 5)
+    assert layout._cache.get_index([2, 3]) == Layout.get_index(layout, [2, 3])
+
+
+def test_layout_cache_indexes_nested_coordinates():
+    layout = Layout(Shape([2, [3, 4]]), Stride([1, [10, 100]]))
+
+    assert layout._cache.expand_key(23) == [1, 2, 3]
+    assert layout._cache.get_index([1, [2, 3]]) == 321
+    assert layout._cache.get_index([1, 11]) == 321
+
+
+def test_layout_cache_indexes_expanded_coordinates_with_arbitrary_strides():
+    layout = Layout(Shape([2, [3, 4]]), Stride([7, [11, 13]]))
+
+    assert layout._cache.index_expanded([1, 2, 3]) == 68
+    assert layout._cache.index_expanded([1, 2, 3]) == Layout.get_index(
+        layout, [1, [2, 3]]
+    )
+
+
+def test_layout_cache_increments_flat_expanded_key():
+    layout = Layout(Shape([4, 10, 2]), Stride([1, 4, 40]))
+
+    assert layout._cache.increment_key([2, 3, 1]) == [3, 3, 1]
+    assert layout._cache.increment_key([3, 3, 1]) == [0, 4, 1]
+
+
+def test_layout_cache_increments_hierarchical_modes_in_expanded_key():
+    layout = Layout(Shape([10, [3, 100]]), Stride([7, [11, 13]]))
+
+    assert layout._cache.increment_mode([1, 2, 5], 0) == [2, 2, 5]
+    assert layout._cache.increment_mode([1, 2, 5], 1) == [1, 0, 6]
+    assert layout._cache.index_expanded([1, 0, 6]) == Layout.get_index(
+        layout, [1, [0, 6]]
+    )
 
 
 def test_layout_get_index_out_of_domain_key_raises_value_error():

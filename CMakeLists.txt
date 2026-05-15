@@ -7,7 +7,7 @@ find_package(pybind11 CONFIG REQUIRED)
 pybind11_add_module(_index src/neotorch/_index.cpp)
 target_compile_features(_index PRIVATE cxx_std_17)
 
-pybind11_add_module(_data src/neotorch/_data.cpp)
+pybind11_add_module(_data src/neotorch/_data.cpp src/neotorch/_cpu.cpp)
 target_compile_features(_data PRIVATE cxx_std_17)
 
 pybind11_add_module(_operation src/neotorch/_operation.cpp)
