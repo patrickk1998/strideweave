@@ -1,8 +1,10 @@
+from collections.abc import Iterable
 from typing import Any
 
 import neotorch
 import pytest
 from neotorch import (
+    Data,
     DataType,
     Generic,
     GenericAddOperation,
@@ -19,6 +21,26 @@ from neotorch import (
     Tree,
 )
 from neotorch.tensor import Tensor
+
+
+class UnsupportedData(Data):
+    def __init__(self, values: list[Any]):
+        super().__init__()
+        self.values = values
+
+    def size(self) -> int:
+        return len(self.values)
+
+    def type(self) -> DataType:
+        return DataType.Any
+
+    def get_value(self, index: int) -> Any:
+        return self.values[index]
+
+    def new_like(
+        self, values: Iterable[Any], *, mutable: bool = True
+    ) -> "UnsupportedData":
+        return UnsupportedData(list(values))
 
 
 def tensor_values(tensor: Tensor) -> list[Any]:
@@ -291,6 +313,17 @@ def test_tensor_add_function_matches_operator():
     assert isinstance(result.autograd_ctx, GenericAddOperation)
 
 
+def test_tensor_add_accepts_unevicted_generic_evictable_data(tmp_path):
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(GenericEvictable([1, 2, 3, 4], tmp_path / "lhs.pkl"), 0, layout)
+    rhs = Tensor(GenericEvictable([10, 20, 30, 40], tmp_path / "rhs.pkl"), 0, layout)
+
+    result = lhs + rhs
+
+    assert tensor_values(result) == [11, 22, 33, 44]
+    assert type(result.data) is GenericEvictable
+
+
 def test_tensor_add_rejects_mismatched_layouts():
     lhs = Tensor(Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([1, 2])))
     rhs = Tensor(Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([2, 1])))
@@ -313,6 +346,15 @@ def test_tensor_add_rejects_non_generic_data(tmp_path):
     rhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
 
     with pytest.raises(TypeError):
+        _ = lhs + rhs
+
+
+def test_tensor_add_rejects_unsupported_data_class():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(UnsupportedData([1, 2, 3, 4]), 0, layout)
+    rhs = Tensor(UnsupportedData([1, 2, 3, 4]), 0, layout)
+
+    with pytest.raises(NotImplementedError):
         _ = lhs + rhs
 
 
@@ -346,7 +388,20 @@ def test_tensor_scalar_mul_backward_scales_gradient():
     assert type(tensor_grad.data) is type(tensor.data)
 
 
-def test_tensor_scalar_mul_rejects_non_numeric_scalar_and_non_generic_data(tmp_path):
+def test_tensor_scalar_mul_backward_preserves_generic_evictable_data_class(tmp_path):
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = Tensor(GenericEvictable([1, 2, 3, 4], tmp_path / "data.pkl"), 0, layout)
+    result = tensor * 5
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+
+    result.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    assert tensor_values(tensor_grad) == [5, 5, 5, 5]
+    assert type(tensor_grad.data) is GenericEvictable
+
+
+def test_tensor_scalar_mul_rejects_non_numeric_scalar_and_evicted_data(tmp_path):
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
     evictable = Tensor(GenericEvictable([1, 2, 3, 4], tmp_path / "data.pkl"), 0, layout)
@@ -354,7 +409,8 @@ def test_tensor_scalar_mul_rejects_non_numeric_scalar_and_non_generic_data(tmp_p
     with pytest.raises(TypeError):
         _ = tensor * "x"
 
-    with pytest.raises(TypeError):
+    evictable.data.evict()
+    with pytest.raises(RuntimeError):
         _ = evictable * 2
 
 
@@ -379,6 +435,18 @@ def test_tensor_reduce_preserves_hierarchical_first_mode_with_column_major_layou
     assert tensor_values(result) == [15, 18, 21, 24]
 
 
+def test_tensor_reduce_accepts_unevicted_generic_evictable_data(tmp_path):
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+    tensor = Tensor(
+        GenericEvictable([1, 2, 3, 4, 5, 6], tmp_path / "data.pkl"), 0, layout
+    )
+
+    result = neotorch.reduce(tensor)
+
+    assert tensor_values(result) == [9, 12]
+    assert type(result.data) is GenericEvictable
+
+
 def test_tensor_reduce_backward_copies_gradient_over_second_mode():
     layout = Layout(Shape([2, 3]), Stride([1, 2]))
     tensor = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, layout)
@@ -392,7 +460,7 @@ def test_tensor_reduce_backward_copies_gradient_over_second_mode():
     assert type(tensor_grad.data) is type(tensor.data)
 
 
-def test_tensor_reduce_rejects_non_two_mode_or_non_generic_data(tmp_path):
+def test_tensor_reduce_rejects_non_two_mode_or_evicted_data(tmp_path):
     one_mode = Tensor(Generic([1, 2]), 0, Layout(Shape(2), Stride(1)))
     evictable = Tensor(
         GenericEvictable([1, 2, 3, 4], tmp_path / "data.pkl"),
@@ -403,7 +471,8 @@ def test_tensor_reduce_rejects_non_two_mode_or_non_generic_data(tmp_path):
     with pytest.raises(ValueError):
         neotorch.reduce(one_mode)
 
-    with pytest.raises(TypeError):
+    evictable.data.evict()
+    with pytest.raises(RuntimeError):
         neotorch.reduce(evictable)
 
 
@@ -438,6 +507,24 @@ def test_tensor_matmul_preserves_hierarchical_row_modes():
 
     assert result.layout == Layout(Shape([[2, 2], [2, 1]]), Stride([[1, 2], [4, 8]]))
     assert tensor_values(result) == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_tensor_matmul_accepts_unevicted_generic_evictable_data(tmp_path):
+    a = Tensor(
+        GenericEvictable([1, 2, 3, 4, 5, 6], tmp_path / "a.pkl"),
+        0,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+    )
+    b = Tensor(
+        GenericEvictable([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1], tmp_path / "b.pkl"),
+        0,
+        Layout(Shape([4, 3]), Stride([1, 4])),
+    )
+
+    result = a @ b
+
+    assert tensor_values(result) == [1, 2, 3, 4, 5, 6, 9, 12]
+    assert type(result.data) is GenericEvictable
 
 
 def test_tensor_matmul_backward_computes_input_gradients():

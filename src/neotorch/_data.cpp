@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 
 #include <stdexcept>
+#include <string>
 
 namespace py = pybind11;
 
@@ -15,8 +16,18 @@ public:
     virtual Index size() const = 0;
     virtual py::object type() const = 0;
     virtual py::object get_value(Index index) const = 0;
+    virtual py::object new_like(py::iterable values, bool is_mutable) const = 0;
     virtual bool is_evictable() const { return false; }
     virtual bool is_mutable() const { return false; }
+
+    static py::object dispatch_op(const std::string& operation_name) {
+        PyErr_Format(
+            PyExc_NotImplementedError,
+            "Data class does not support operation '%s'",
+            operation_name.c_str()
+        );
+        throw py::error_already_set();
+    }
 
     py::object get_item(Index index) const {
         const Index data_size = size();
@@ -88,6 +99,10 @@ public:
         PYBIND11_OVERRIDE_PURE(py::object, Data, get_value, index);
     }
 
+    py::object new_like(py::iterable values, bool is_mutable) const override {
+        PYBIND11_OVERRIDE_PURE(py::object, Data, new_like, values, is_mutable);
+    }
+
     bool is_evictable() const override {
         PYBIND11_OVERRIDE(bool, Data, is_evictable);
     }
@@ -120,6 +135,10 @@ public:
         return py::reinterpret_borrow<py::object>(values_[index]);
     }
 
+    py::object new_like(py::iterable values, bool) const override {
+        return py::cast(VectorDataForTest(values));
+    }
+
 private:
     py::list values_;
 };
@@ -134,11 +153,19 @@ PYBIND11_MODULE(_data, module) {
         .def("size", &Data::size)
         .def("type", &Data::type)
         .def("get_value", &Data::get_value, py::arg("index"))
+        .def(
+            "new_like",
+            &Data::new_like,
+            py::arg("values"),
+            py::kw_only(),
+            py::arg("mutable") = true
+        )
         .def("is_evictable", &Data::is_evictable)
         .def("is_mutable", &Data::is_mutable)
         .def("is_evicted", &Data::is_evicted)
         .def("evict", &Data::evict)
         .def("promote", &Data::promote)
+        .def_static("dispatch_op", &Data::dispatch_op, py::arg("operation_name"))
         .def("__getitem__", &Data::get_item, py::arg("index"))
         .def("__setitem__", &Data::set_item, py::arg("index"), py::arg("value"));
 

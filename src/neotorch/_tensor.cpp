@@ -165,9 +165,6 @@ private:
 
     py::object detached_gradient_copy(py::handle gradient) const {
         validate_gradient(gradient);
-        if (!py::hasattr(data_, "new_like")) {
-            throw py::type_error("Tensor data does not support gradient data creation");
-        }
 
         const Index storage_size = neotorch::layout_index::cosize(layout_);
         py::list values;

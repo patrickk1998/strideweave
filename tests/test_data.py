@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from importlib import import_module
 from typing import Any, Protocol, cast
 
@@ -28,6 +28,9 @@ class PythonData(Data):
     def get_value(self, index: int) -> Any:
         return self.values[index]
 
+    def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> "PythonData":
+        return type(self)(list(values))
+
 
 class PythonMutableData(PythonData):
     def is_mutable(self) -> bool:
@@ -45,6 +48,30 @@ def test_data_public_api_imports():
     assert DataType.Any.value == "Any"
 
 
+def test_data_default_dispatch_op_raises_not_implemented():
+    with pytest.raises(NotImplementedError):
+        Data.dispatch_op("add")
+
+
+def test_generic_data_dispatch_op_returns_supported_operations():
+    cases = {
+        "add": neotorch.GenericAddOperation,
+        "matmul": neotorch.GenericMatmulOperation,
+        "mul": neotorch.GenericScalarMulOperation,
+        "permute": neotorch.PermuteOperation,
+        "rearrange": neotorch.RearrangeOperation,
+        "reduce": neotorch.GenericReduceSumOperation,
+    }
+
+    for operation_name, operation_type in cases.items():
+        assert isinstance(Generic.dispatch_op(operation_name), operation_type)
+
+
+def test_generic_data_dispatch_op_rejects_unknown_operation():
+    with pytest.raises(NotImplementedError):
+        Generic.dispatch_op("unknown")
+
+
 def test_python_data_subclass_implements_data_contract():
     data = PythonData(["alpha", 2, None])
 
@@ -55,6 +82,26 @@ def test_python_data_subclass_implements_data_contract():
     assert data.get_value(1) == 2
     assert data[0] == "alpha"
     assert data[2] is None
+
+
+def test_python_data_subclass_new_like_creates_matching_data_class():
+    data = PythonData(["alpha"])
+
+    new_data = data.new_like(["beta", "gamma"])
+
+    assert type(new_data) is PythonData
+    assert new_data.size() == 2
+    assert new_data[0] == "beta"
+
+
+def test_native_data_subclass_new_like_creates_matching_data_class():
+    data = native_data._VectorDataForTest(["alpha"])
+
+    new_data = data.new_like(["beta", "gamma"])
+
+    assert type(new_data) is type(data)
+    assert new_data.size() == 2
+    assert new_data[0] == "beta"
 
 
 def test_python_data_subclass_getitem_validates_index():
@@ -302,6 +349,18 @@ def test_generic_evictable_data_lifecycle(tmp_path):
 
     data.promote()
     assert not data.is_evicted()
+
+
+def test_generic_evictable_new_like_preserves_data_class(tmp_path):
+    data = GenericEvictable(["alpha", "beta"], tmp_path / "data.pkl")
+
+    new_data = data.new_like(["gamma", "delta"])
+
+    assert type(new_data) is GenericEvictable
+    assert new_data.path != data.path
+    assert new_data.size() == 2
+    assert new_data[0] == "gamma"
+    assert new_data.is_mutable()
 
 
 def test_generic_evictable_mutation_lifecycle(tmp_path):

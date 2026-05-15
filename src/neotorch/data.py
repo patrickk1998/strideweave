@@ -5,7 +5,9 @@ from collections.abc import Iterable
 from enum import Enum
 from importlib import import_module
 from os import PathLike, fspath
+from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
+from uuid import uuid4
 
 Data = cast(type[Any], import_module("neotorch._data").Data)
 
@@ -86,6 +88,33 @@ class Generic(Data):
             )
         return Generic(values, mutable=mutable)
 
+    @staticmethod
+    def dispatch_op(operation_name: str) -> Any:
+        from .operation import (
+            GenericAddOperation,
+            GenericMatmulOperation,
+            GenericReduceSumOperation,
+            GenericScalarMulOperation,
+            PermuteOperation,
+            RearrangeOperation,
+        )
+
+        operations = {
+            "add": GenericAddOperation,
+            "matmul": GenericMatmulOperation,
+            "mul": GenericScalarMulOperation,
+            "permute": PermuteOperation,
+            "rearrange": RearrangeOperation,
+            "reduce": GenericReduceSumOperation,
+        }
+        try:
+            operation_type = operations[operation_name]
+        except KeyError as exc:
+            raise NotImplementedError(
+                f"Generic data does not support operation '{operation_name}'"
+            ) from exc
+        return operation_type()
+
 
 class GenericEvictable(Generic):
     def __init__(
@@ -100,6 +129,13 @@ class GenericEvictable(Generic):
 
     def is_evictable(self) -> bool:
         return True
+
+    def new_like(
+        self, values: Iterable[Any], *, mutable: bool = True
+    ) -> GenericEvictable:
+        path = Path(self.path)
+        new_path = path.with_name(f"{path.stem}-{uuid4().hex}{path.suffix}")
+        return GenericEvictable(values, new_path, mutable=mutable)
 
     def _evict(self) -> None:
         with open(self.path, "wb") as file:

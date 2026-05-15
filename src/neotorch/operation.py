@@ -5,7 +5,6 @@ from importlib import import_module
 from numbers import Number
 from typing import Any, cast
 
-from .data import Generic
 from .layout import Layout, Shape, Stride, Tree
 
 _get_index = cast(Any, import_module("neotorch._index")).get_index
@@ -21,10 +20,23 @@ def _as_tensor(value: Any, name: str) -> Any:
     return value
 
 
-def _require_exact_generic_tensor(value: Any, name: str) -> Any:
+def _dispatch_unary(operation_name: str, tensor: Any) -> Any:
+    tensor = _as_tensor(tensor, "tensor")
+    return type(tensor.data).dispatch_op(operation_name)
+
+
+def _dispatch_binary(operation_name: str, lhs: Any, rhs: Any) -> Any:
+    lhs = _as_tensor(lhs, "lhs")
+    rhs = _as_tensor(rhs, "rhs")
+    if type(lhs.data) is not type(rhs.data):
+        raise TypeError("Tensor backing data classes must match")
+    return type(lhs.data).dispatch_op(operation_name)
+
+
+def _require_unevicted_tensor(value: Any, name: str) -> Any:
     tensor = _as_tensor(value, name)
-    if type(tensor.data) is not Generic:
-        raise TypeError(f"{name} must be backed by exact Generic data")
+    if tensor.data.is_evicted():
+        raise RuntimeError(f"{name} data is evicted")
     return tensor
 
 
@@ -39,7 +51,7 @@ def _require_layout(tensor: Any, layout: Layout) -> None:
 
 
 def _require_two_mode_tensor(tensor: Any, name: str) -> Any:
-    tensor = _require_exact_generic_tensor(tensor, name)
+    tensor = _require_unevicted_tensor(tensor, name)
     if len(tensor.layout) != 2:
         raise ValueError(f"{name} must have a two-mode layout")
     return tensor
@@ -135,8 +147,8 @@ def _copy_gradient_to_layout(target: Any, gradient: Any) -> Any:
 
 class GenericAddOperation(Operation):
     def forward(self, lhs: Any, rhs: Any) -> Any:
-        lhs = _require_exact_generic_tensor(lhs, "lhs")
-        rhs = _require_exact_generic_tensor(rhs, "rhs")
+        lhs = _require_unevicted_tensor(lhs, "lhs")
+        rhs = _require_unevicted_tensor(rhs, "rhs")
         _require_same_layout(lhs, rhs)
 
         self.store_inputs(lhs, rhs)
@@ -147,13 +159,13 @@ class GenericAddOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
-        gradient = _require_exact_generic_tensor(gradient, "gradient")
+        gradient = _require_unevicted_tensor(gradient, "gradient")
         return _copy_gradient_for(lhs, gradient), _copy_gradient_for(rhs, gradient)
 
 
 class GenericScalarMulOperation(Operation):
     def forward(self, tensor: Any, scalar: Any) -> Any:
-        tensor = _require_exact_generic_tensor(tensor, "tensor")
+        tensor = _require_unevicted_tensor(tensor, "tensor")
         scalar = _require_number(scalar, "scalar")
 
         self.store_inputs(tensor)
@@ -165,7 +177,7 @@ class GenericScalarMulOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
-        gradient = _require_exact_generic_tensor(gradient, "gradient")
+        gradient = _require_unevicted_tensor(gradient, "gradient")
         _require_same_layout(tensor, gradient)
 
         scalar = self.ctx["scalar"]
@@ -190,7 +202,7 @@ class GenericReduceSumOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
-        gradient = _require_exact_generic_tensor(gradient, "gradient")
+        gradient = _require_unevicted_tensor(gradient, "gradient")
         _require_layout(gradient, self.ctx["output_layout"])
 
         n_size = _mode_logical_size(tensor.layout, 0)
@@ -228,7 +240,7 @@ class GenericMatmulOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
-        gradient = _require_exact_generic_tensor(gradient, "gradient")
+        gradient = _require_unevicted_tensor(gradient, "gradient")
         _require_layout(gradient, self.ctx["output_layout"])
 
         n_size = _mode_logical_size(lhs.layout, 0)
@@ -325,27 +337,27 @@ class PermuteOperation(Operation):
 
 
 def add(lhs: Any, rhs: Any) -> Any:
-    return GenericAddOperation().forward(lhs, rhs)
+    return _dispatch_binary("add", lhs, rhs).forward(lhs, rhs)
 
 
 def mul(tensor: Any, scalar: Any) -> Any:
-    return GenericScalarMulOperation().forward(tensor, scalar)
+    return _dispatch_unary("mul", tensor).forward(tensor, scalar)
 
 
 def reduce(tensor: Any) -> Any:
-    return GenericReduceSumOperation().forward(tensor)
+    return _dispatch_unary("reduce", tensor).forward(tensor)
 
 
 def matmul(lhs: Any, rhs: Any) -> Any:
-    return GenericMatmulOperation().forward(lhs, rhs)
+    return _dispatch_binary("matmul", lhs, rhs).forward(lhs, rhs)
 
 
 def rearrange(tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
-    return RearrangeOperation().forward(tensor, output, selection)
+    return _dispatch_unary("rearrange", tensor).forward(tensor, output, selection)
 
 
 def permute(tensor: Any, *order: Any) -> Any:
-    return PermuteOperation().forward(tensor, *order)
+    return _dispatch_unary("permute", tensor).forward(tensor, *order)
 
 
 __all__ = [
