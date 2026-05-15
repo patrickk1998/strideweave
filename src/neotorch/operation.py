@@ -146,16 +146,13 @@ def _copy_gradient_to_layout(target: Any, gradient: Any) -> Any:
 
 
 class GenericAddOperation(Operation):
-    def forward(self, lhs: Any, rhs: Any) -> Any:
+    def _forward(self, lhs: Any, rhs: Any) -> Any:
         lhs = _require_unevicted_tensor(lhs, "lhs")
         rhs = _require_unevicted_tensor(rhs, "rhs")
         _require_same_layout(lhs, rhs)
 
-        self.store_inputs(lhs, rhs)
         values = [lhs[i] + rhs[i] for i in range(lhs.size())]
-        result = _detached_tensor_like(lhs, values)
-        result.autograd_ctx = self
-        return result
+        return _detached_tensor_like(lhs, values)
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
@@ -164,16 +161,13 @@ class GenericAddOperation(Operation):
 
 
 class GenericScalarMulOperation(Operation):
-    def forward(self, tensor: Any, scalar: Any) -> Any:
+    def _forward(self, tensor: Any, scalar: Any) -> Any:
         tensor = _require_unevicted_tensor(tensor, "tensor")
         scalar = _require_number(scalar, "scalar")
 
-        self.store_inputs(tensor)
         self.ctx["scalar"] = scalar
         values = [tensor[i] * scalar for i in range(tensor.size())]
-        result = _detached_tensor_like(tensor, values)
-        result.autograd_ctx = self
-        return result
+        return _detached_tensor_like(tensor, values)
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
@@ -186,19 +180,16 @@ class GenericScalarMulOperation(Operation):
 
 
 class GenericReduceSumOperation(Operation):
-    def forward(self, tensor: Any) -> Any:
+    def _forward(self, tensor: Any) -> Any:
         tensor = _require_two_mode_tensor(tensor, "tensor")
 
         n_size = _mode_logical_size(tensor.layout, 0)
         m_size = _mode_logical_size(tensor.layout, 1)
         output_layout = _canonical_layout_from_modes(_mode_shape(tensor.layout, 0))
 
-        self.store_inputs(tensor)
         self.ctx["output_layout"] = output_layout
         values = [sum(tensor[i, j] for j in range(m_size)) for i in range(n_size)]
-        result = _tensor_with_layout_like(tensor, output_layout, values)
-        result.autograd_ctx = self
-        return result
+        return _tensor_with_layout_like(tensor, output_layout, values)
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
@@ -212,7 +203,7 @@ class GenericReduceSumOperation(Operation):
 
 
 class GenericMatmulOperation(Operation):
-    def forward(self, lhs: Any, rhs: Any) -> Any:
+    def _forward(self, lhs: Any, rhs: Any) -> Any:
         lhs = _require_two_mode_tensor(lhs, "lhs")
         rhs = _require_two_mode_tensor(rhs, "rhs")
 
@@ -227,16 +218,13 @@ class GenericMatmulOperation(Operation):
             _mode_shape(lhs.layout, 0), _mode_shape(rhs.layout, 0)
         )
 
-        self.store_inputs(lhs, rhs)
         self.ctx["output_layout"] = output_layout
         values = [
             sum(lhs[i, k] * rhs[j, k] for k in range(lhs_k_size))
             for j in range(m_size)
             for i in range(n_size)
         ]
-        result = _tensor_with_layout_like(lhs, output_layout, values)
-        result.autograd_ctx = self
-        return result
+        return _tensor_with_layout_like(lhs, output_layout, values)
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
@@ -263,7 +251,7 @@ class GenericMatmulOperation(Operation):
 
 
 class RearrangeOperation(Operation):
-    def forward(self, tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
+    def _forward(self, tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
         from .tensor import Tensor
 
         tensor = _as_tensor(tensor, "tensor")
@@ -278,13 +266,10 @@ class RearrangeOperation(Operation):
 
         output_layout = Layout.rearrange(tensor.layout, output, effective_selection)
 
-        self.store_inputs(tensor)
         self.ctx["output"] = output
         self.ctx["selection"] = effective_selection
         self.ctx["output_layout"] = output_layout
-        result = Tensor(tensor.data, tensor.offset, output_layout)
-        result.autograd_ctx = self
-        return result
+        return Tensor(tensor.data, tensor.offset, output_layout)
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
@@ -305,19 +290,16 @@ class RearrangeOperation(Operation):
 
 
 class PermuteOperation(Operation):
-    def forward(self, tensor: Any, *order: Any) -> Any:
+    def _forward(self, tensor: Any, *order: Any) -> Any:
         from .tensor import Tensor
 
         tensor = _as_tensor(tensor, "tensor")
         normalized_order = Layout._normalize_permute_order(order, len(tensor.layout))
         output_layout = Layout.permute(tensor.layout, normalized_order)
 
-        self.store_inputs(tensor)
         self.ctx["order"] = normalized_order
         self.ctx["output_layout"] = output_layout
-        result = Tensor(tensor.data, tensor.offset, output_layout)
-        result.autograd_ctx = self
-        return result
+        return Tensor(tensor.data, tensor.offset, output_layout)
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()

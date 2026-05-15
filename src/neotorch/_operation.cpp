@@ -1,8 +1,15 @@
 #include <pybind11/pybind11.h>
 
+#include <utility>
+#include <vector>
+
 namespace py = pybind11;
 
 namespace {
+
+py::object tensor_type() {
+    return py::module_::import("neotorch.tensor").attr("Tensor");
+}
 
 class Operation {
 public:
@@ -10,7 +17,18 @@ public:
 
     virtual ~Operation() = default;
 
-    virtual py::object forward(py::args inputs) = 0;
+    py::object forward(py::args inputs) {
+        store_tensor_inputs(inputs);
+        py::object result = _forward(inputs);
+        if (!py::isinstance(result, tensor_type())) {
+            throw py::type_error("Operation._forward must return a Tensor");
+        }
+        result.attr("autograd_ctx") =
+            py::cast(this, py::return_value_policy::reference);
+        return result;
+    }
+
+    virtual py::object _forward(py::args inputs) = 0;
     virtual py::object backward(py::object gradient) = 0;
 
     py::dict ctx() const { return ctx_; }
@@ -22,6 +40,22 @@ public:
     py::tuple inputs() const { return inputs_; }
 
 private:
+    void store_tensor_inputs(py::args inputs) {
+        py::object tensor = tensor_type();
+        std::vector<py::object> tensors;
+        for (py::handle input : inputs) {
+            if (py::isinstance(input, tensor)) {
+                tensors.push_back(py::reinterpret_borrow<py::object>(input));
+            }
+        }
+
+        py::tuple stored(tensors.size());
+        for (std::size_t i = 0; i < tensors.size(); ++i) {
+            stored[i] = tensors[i];
+        }
+        inputs_ = std::move(stored);
+    }
+
     py::dict ctx_;
     py::tuple inputs_;
 };
@@ -30,11 +64,11 @@ class PyOperation : public Operation {
 public:
     using Operation::Operation;
 
-    py::object forward(py::args inputs) override {
+    py::object _forward(py::args inputs) override {
         py::gil_scoped_acquire gil;
-        py::function override = py::get_override(this, "forward");
+        py::function override = py::get_override(this, "_forward");
         if (!override) {
-            throw py::type_error("Operation.forward must be implemented");
+            throw py::type_error("Operation._forward must be implemented");
         }
 
         PyObject* result = PyObject_CallObject(override.ptr(), inputs.ptr());
@@ -60,6 +94,12 @@ PYBIND11_MODULE(_operation, module) {
             "forward",
             [](Operation& operation, py::args inputs) {
                 return operation.forward(inputs);
+            }
+        )
+        .def(
+            "_forward",
+            [](Operation& operation, py::args inputs) {
+                return operation._forward(inputs);
             }
         )
         .def("backward", &Operation::backward, py::arg("gradient"))
