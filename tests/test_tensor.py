@@ -790,15 +790,44 @@ def test_tensor_backward_through_add_sets_input_grads():
     gradient = Tensor(Generic([1, 2, 3, 4]), 0, layout)
 
     result.backward(gradient)
-    result_grad = require_grad(result)
     lhs_grad = require_grad(lhs)
     rhs_grad = require_grad(rhs)
 
-    assert tensor_values(result_grad) == [1, 2, 3, 4]
+    assert result.grad is None
     assert tensor_values(lhs_grad) == [1, 2, 3, 4]
     assert tensor_values(rhs_grad) == [1, 2, 3, 4]
     assert type(lhs_grad.data) is type(lhs.data)
     assert type(rhs_grad.data) is type(rhs.data)
+
+
+def test_tensor_retain_grad_keeps_non_leaf_gradient():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    rhs = Tensor(Generic([10, 20, 30, 40]), 0, layout)
+    result = lhs + rhs
+    gradient = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+
+    result.retain_grad()
+    result.backward(gradient)
+    result_grad = require_grad(result)
+
+    assert tensor_values(result_grad) == [1, 2, 3, 4]
+
+
+def test_tensor_retain_grad_false_disables_non_leaf_gradient_retention():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    rhs = Tensor(Generic([10, 20, 30, 40]), 0, layout)
+    result = lhs + rhs
+    gradient = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+
+    result.retain_grad()
+    result.retain_grad(False)
+    result.backward(gradient)
+
+    assert result.grad is None
+    assert tensor_values(require_grad(lhs)) == [1, 2, 3, 4]
+    assert tensor_values(require_grad(rhs)) == [1, 2, 3, 4]
 
 
 def test_tensor_backward_on_no_grad_result_does_not_propagate_to_inputs():
@@ -829,13 +858,57 @@ def test_tensor_backward_accumulates_repeated_calls():
 
     result.backward(gradient)
     result.backward(gradient)
-    result_grad = require_grad(result)
     lhs_grad = require_grad(lhs)
     rhs_grad = require_grad(rhs)
 
-    assert tensor_values(result_grad) == [2, 2, 2, 2]
+    assert result.grad is None
     assert tensor_values(lhs_grad) == [2, 2, 2, 2]
     assert tensor_values(rhs_grad) == [2, 2, 2, 2]
+
+
+def test_tensor_retained_non_leaf_grad_accumulates_repeated_calls():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    rhs = Tensor(Generic([10, 20, 30, 40]), 0, layout)
+    result = lhs + rhs
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+
+    result.retain_grad()
+    result.backward(gradient)
+    result.backward(gradient)
+    result_grad = require_grad(result)
+
+    assert tensor_values(result_grad) == [2, 2, 2, 2]
+
+
+def test_tensor_backward_only_retains_selected_non_leaf_grads_in_chain():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    x = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    y = x * 2
+    z = y * 3
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+
+    z.backward(gradient)
+
+    assert z.grad is None
+    assert y.grad is None
+    assert tensor_values(require_grad(x)) == [6, 6, 6, 6]
+
+
+def test_tensor_backward_retains_requested_non_leaf_grads_in_chain():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    x = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    y = x * 2
+    z = y * 3
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+
+    y.retain_grad()
+    z.retain_grad()
+    z.backward(gradient)
+
+    assert tensor_values(require_grad(z)) == [1, 1, 1, 1]
+    assert tensor_values(require_grad(y)) == [3, 3, 3, 3]
+    assert tensor_values(require_grad(x)) == [6, 6, 6, 6]
 
 
 def test_tensor_backward_accumulates_shared_input_contributions():

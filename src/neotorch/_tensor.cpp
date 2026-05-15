@@ -61,7 +61,8 @@ public:
           offset_(offset),
           layout_(std::move(layout)),
           autograd_ctx_(py::none()),
-          grad_(py::none()) {
+          grad_(py::none()),
+          retain_grad_(false) {
         if (offset_ < 0) {
             throw py::value_error("Tensor offset must be non-negative");
         }
@@ -91,6 +92,10 @@ public:
 
     void set_grad(py::object grad) {
         grad_ = std::move(grad);
+    }
+
+    void retain_grad(bool retain) {
+        retain_grad_ = retain;
     }
 
     py::object get_item(py::object key) const {
@@ -132,7 +137,10 @@ public:
     }
 
     void backward(py::object gradient) {
-        accumulate_grad(gradient);
+        validate_gradient(gradient);
+        if (should_accumulate_grad()) {
+            accumulate_grad(gradient);
+        }
         backwards_traversal(std::move(gradient), autograd_ctx_);
     }
 
@@ -195,7 +203,6 @@ private:
     }
 
     void accumulate_grad(py::handle gradient) {
-        validate_gradient(gradient);
         if (grad_.is_none()) {
             grad_ = detached_gradient_copy(gradient);
             return;
@@ -210,11 +217,16 @@ private:
         }
     }
 
+    bool should_accumulate_grad() const {
+        return autograd_ctx_.is_none() || retain_grad_;
+    }
+
     py::object data_;
     Index offset_;
     py::object layout_;
     py::object autograd_ctx_;
     py::object grad_;
+    bool retain_grad_;
 };
 
 }  // namespace
@@ -234,6 +246,7 @@ PYBIND11_MODULE(_tensor, module) {
         .def_property_readonly("layout", &Tensor::layout)
         .def_property("autograd_ctx", &Tensor::autograd_ctx, &Tensor::set_autograd_ctx)
         .def_property("grad", &Tensor::grad, &Tensor::set_grad)
+        .def("retain_grad", &Tensor::retain_grad, py::arg("retain") = true)
         .def("__getitem__", &Tensor::get_item, py::arg("key"))
         .def("__setitem__", &Tensor::set_item, py::arg("key"), py::arg("value"))
         .def(
