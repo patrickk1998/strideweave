@@ -9,11 +9,14 @@ from .operation import (
     PermuteOperation,
     RearrangeOperation,
     add,
+    is_grad_enabled,
     matmul,
     mul,
+    no_grad,
     permute,
     rearrange,
     reduce,
+    set_grad_enabled,
 )
 from .tensor import Tensor
 
@@ -36,9 +39,12 @@ __all__ = [
     "Tensor",
     "Tree",
     "add",
+    "is_grad_enabled",
     "matmul",
     "mul",
+    "no_grad",
     "permute",
     "rearrange",
     "reduce",
+    "set_grad_enabled",
 ]

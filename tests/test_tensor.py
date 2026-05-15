@@ -759,6 +759,25 @@ def test_tensor_backward_through_add_sets_input_grads():
     assert type(rhs_grad.data) is type(rhs.data)
 
 
+def test_tensor_backward_on_no_grad_result_does_not_propagate_to_inputs():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    rhs = Tensor(Generic([10, 20, 30, 40]), 0, layout)
+    gradient = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+
+    with neotorch.no_grad():
+        result = lhs + rhs
+
+    assert result.autograd_ctx is None
+
+    result.backward(gradient)
+    result_grad = require_grad(result)
+
+    assert tensor_values(result_grad) == [1, 2, 3, 4]
+    assert lhs.grad is None
+    assert rhs.grad is None
+
+
 def test_tensor_backward_accumulates_repeated_calls():
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     lhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)

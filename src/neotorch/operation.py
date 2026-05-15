@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from importlib import import_module
 from numbers import Number
 from typing import Any, cast
@@ -9,7 +10,20 @@ from .layout import Layout, Shape, Stride, Tree
 
 _get_index = cast(Any, import_module("neotorch._index")).get_index
 
-Operation = cast(type[Any], import_module("neotorch._operation").Operation)
+_operation = import_module("neotorch._operation")
+Operation = cast(type[Any], _operation.Operation)
+is_grad_enabled = cast(Callable[[], bool], _operation.is_grad_enabled)
+set_grad_enabled = cast(Callable[[bool], None], _operation.set_grad_enabled)
+
+
+@contextmanager
+def no_grad() -> Iterator[None]:
+    previous = is_grad_enabled()
+    set_grad_enabled(False)
+    try:
+        yield
+    finally:
+        set_grad_enabled(previous)
 
 
 def _as_tensor(value: Any, name: str) -> Any:
@@ -351,9 +365,12 @@ __all__ = [
     "PermuteOperation",
     "RearrangeOperation",
     "add",
+    "is_grad_enabled",
     "matmul",
     "mul",
+    "no_grad",
     "permute",
     "rearrange",
     "reduce",
+    "set_grad_enabled",
 ]

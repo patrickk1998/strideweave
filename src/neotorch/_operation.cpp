@@ -11,6 +11,12 @@ py::object tensor_type() {
     return py::module_::import("neotorch.tensor").attr("Tensor");
 }
 
+thread_local bool grad_enabled = true;
+
+bool is_grad_enabled() { return grad_enabled; }
+
+void set_grad_enabled(bool enabled) { grad_enabled = enabled; }
+
 class Operation {
 public:
     Operation() : ctx_(py::dict()), inputs_(py::tuple()) {}
@@ -18,13 +24,21 @@ public:
     virtual ~Operation() = default;
 
     py::object forward(py::args inputs) {
-        store_tensor_inputs(inputs);
+        const bool build_autograd_graph = is_grad_enabled();
+        if (build_autograd_graph) {
+            store_tensor_inputs(inputs);
+        } else {
+            clear_inputs();
+        }
+
         py::object result = _forward(inputs);
         if (!py::isinstance(result, tensor_type())) {
             throw py::type_error("Operation._forward must return a Tensor");
         }
-        result.attr("autograd_ctx") =
-            py::cast(this, py::return_value_policy::reference);
+        if (build_autograd_graph) {
+            result.attr("autograd_ctx") =
+                py::cast(this, py::return_value_policy::reference);
+        }
         return result;
     }
 
@@ -40,6 +54,8 @@ public:
     py::tuple inputs() const { return inputs_; }
 
 private:
+    void clear_inputs() { inputs_ = py::tuple(); }
+
     void store_tensor_inputs(py::args inputs) {
         py::object tensor = tensor_type();
         std::vector<py::object> tensors;
@@ -87,6 +103,9 @@ public:
 
 PYBIND11_MODULE(_operation, module) {
     module.doc() = "Native operation base class for neotorch autograd";
+
+    module.def("is_grad_enabled", &is_grad_enabled);
+    module.def("set_grad_enabled", &set_grad_enabled, py::arg("enabled"));
 
     py::class_<Operation, PyOperation>(module, "Operation")
         .def(py::init<>())
