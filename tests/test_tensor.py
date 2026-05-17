@@ -1,3 +1,4 @@
+import math
 from collections.abc import Iterable
 from typing import Any
 
@@ -8,8 +9,12 @@ from neotorch import (
     DataType,
     Generic,
     GenericAddOperation,
+    GenericDivOperation,
+    GenericElementwiseMulOperation,
     GenericEvictable,
+    GenericExpOperation,
     GenericMatmulOperation,
+    GenericPowOperation,
     GenericReduceSumOperation,
     GenericScalarMulOperation,
     GenericViewOperation,
@@ -406,13 +411,21 @@ def test_tensor_setitem_rejects_immutable_backing_data():
 
 def test_tensor_add_public_api_imports():
     assert neotorch.GenericAddOperation is GenericAddOperation
+    assert neotorch.GenericElementwiseMulOperation is GenericElementwiseMulOperation
+    assert neotorch.GenericDivOperation is GenericDivOperation
+    assert neotorch.GenericExpOperation is GenericExpOperation
+    assert neotorch.GenericPowOperation is GenericPowOperation
     assert neotorch.GenericScalarMulOperation is GenericScalarMulOperation
     assert neotorch.GenericReduceSumOperation is GenericReduceSumOperation
     assert neotorch.GenericMatmulOperation is GenericMatmulOperation
     assert neotorch.RearrangeOperation is RearrangeOperation
     assert neotorch.PermuteOperation is PermuteOperation
     assert neotorch.add is not None
+    assert neotorch.elementwise_mul is not None
     assert neotorch.mul is not None
+    assert neotorch.div is not None
+    assert neotorch.exp is not None
+    assert neotorch.pow is not None
     assert neotorch.reduce is not None
     assert neotorch.matmul is not None
     assert neotorch.rearrange is not None
@@ -544,6 +557,86 @@ def test_tensor_scalar_mul_rejects_non_numeric_scalar_and_evicted_data(tmp_path)
     evictable.data.evict()
     with pytest.raises(RuntimeError):
         _ = evictable * 2
+
+
+def test_tensor_elementwise_mul_forward_and_backward():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    rhs = Tensor(Generic([5, 6, 7, 8]), 0, layout)
+    gradient = Tensor(Generic([10, 20, 30, 40]), 0, layout)
+
+    result = lhs * rhs
+    function_result = neotorch.elementwise_mul(lhs, rhs)
+    result.backward(gradient)
+
+    assert tensor_values(result) == [5, 12, 21, 32]
+    assert tensor_values(function_result) == [5, 12, 21, 32]
+    assert isinstance(result.autograd_ctx, GenericElementwiseMulOperation)
+    assert tensor_values(require_grad(lhs)) == [50, 120, 210, 320]
+    assert tensor_values(require_grad(rhs)) == [10, 40, 90, 160]
+
+
+def test_tensor_div_forward_and_backward():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(Generic([8, 9, 10, 12]), 0, layout)
+    rhs = Tensor(Generic([2, 3, 5, 4]), 0, layout)
+    gradient = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+
+    result = lhs / rhs
+    function_result = neotorch.div(lhs, rhs)
+    result.backward(gradient)
+
+    assert tensor_values(result) == pytest.approx([4, 3, 2, 3])
+    assert tensor_values(function_result) == pytest.approx([4, 3, 2, 3])
+    assert isinstance(result.autograd_ctx, GenericDivOperation)
+    assert tensor_values(require_grad(lhs)) == pytest.approx([0.5, 2 / 3, 0.6, 1])
+    assert tensor_values(require_grad(rhs)) == pytest.approx([-2, -2, -1.2, -3])
+
+
+def test_tensor_exp_forward_and_backward():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = Tensor(Generic([0, 1, 2, 3]), 0, layout)
+    gradient = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+
+    result = neotorch.exp(tensor)
+    result.backward(gradient)
+
+    expected = [math.exp(value) for value in [0, 1, 2, 3]]
+    assert tensor_values(result) == pytest.approx(expected)
+    assert isinstance(result.autograd_ctx, GenericExpOperation)
+    assert tensor_values(require_grad(tensor)) == pytest.approx(
+        [grad * value for grad, value in zip([1, 2, 3, 4], expected)]
+    )
+
+
+def test_tensor_pow_scalar_forward_and_backward():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    gradient = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+
+    result = tensor**3
+    function_result = neotorch.pow(tensor, 3)
+    result.backward(gradient)
+
+    assert tensor_values(result) == [1, 8, 27, 64]
+    assert tensor_values(function_result) == [1, 8, 27, 64]
+    assert isinstance(result.autograd_ctx, GenericPowOperation)
+    assert tensor_values(require_grad(tensor)) == [3, 24, 81, 192]
+
+
+def test_tensor_elementwise_operations_reject_invalid_inputs():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    mismatched_layout = Tensor(
+        Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([2, 1]))
+    )
+
+    with pytest.raises(ValueError):
+        _ = tensor * mismatched_layout
+    with pytest.raises(TypeError):
+        _ = tensor / 2
+    with pytest.raises(TypeError):
+        _ = tensor ** "x"
 
 
 def test_tensor_reduce_sums_second_mode():

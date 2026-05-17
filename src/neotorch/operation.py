@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from importlib import import_module
@@ -278,6 +279,90 @@ class GenericScalarMulOperation(Operation):
         return (_detached_tensor_like(tensor, values),)
 
 
+class GenericElementwiseMulOperation(Operation):
+    def _forward(self, lhs: Any, rhs: Any) -> Any:
+        lhs = _require_unevicted_tensor(lhs, "lhs")
+        rhs = _require_unevicted_tensor(rhs, "rhs")
+        _require_same_layout(lhs, rhs)
+
+        values = [lhs[i] * rhs[i] for i in range(lhs.size())]
+        return _detached_tensor_like(lhs, values)
+
+    def backward(self, gradient: Any) -> tuple[Any, Any]:
+        lhs, rhs = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(lhs, gradient)
+
+        lhs_values = [gradient[i] * rhs[i] for i in range(gradient.size())]
+        rhs_values = [gradient[i] * lhs[i] for i in range(gradient.size())]
+        return _detached_tensor_like(lhs, lhs_values), _detached_tensor_like(
+            rhs, rhs_values
+        )
+
+
+class GenericDivOperation(Operation):
+    def _forward(self, lhs: Any, rhs: Any) -> Any:
+        lhs = _require_unevicted_tensor(lhs, "lhs")
+        rhs = _require_unevicted_tensor(rhs, "rhs")
+        _require_same_layout(lhs, rhs)
+
+        values = [lhs[i] / rhs[i] for i in range(lhs.size())]
+        return _detached_tensor_like(lhs, values)
+
+    def backward(self, gradient: Any) -> tuple[Any, Any]:
+        lhs, rhs = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(lhs, gradient)
+
+        lhs_values = [gradient[i] / rhs[i] for i in range(gradient.size())]
+        rhs_values = [
+            -gradient[i] * lhs[i] / (rhs[i] ** 2) for i in range(gradient.size())
+        ]
+        return _detached_tensor_like(lhs, lhs_values), _detached_tensor_like(
+            rhs, rhs_values
+        )
+
+
+class GenericExpOperation(Operation):
+    def _forward(self, tensor: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+
+        values = [math.exp(tensor[i]) for i in range(tensor.size())]
+        self.ctx["output_values"] = values
+        return _detached_tensor_like(tensor, values)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        output_values = self.ctx["output_values"]
+        values = [gradient[i] * output_values[i] for i in range(gradient.size())]
+        return (_detached_tensor_like(tensor, values),)
+
+
+class GenericPowOperation(Operation):
+    def _forward(self, tensor: Any, exponent: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+        exponent = _require_number(exponent, "exponent")
+
+        self.ctx["exponent"] = exponent
+        values = [tensor[i] ** exponent for i in range(tensor.size())]
+        return _detached_tensor_like(tensor, values)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        exponent = self.ctx["exponent"]
+        values = [
+            gradient[i] * exponent * (tensor[i] ** (exponent - 1))
+            for i in range(gradient.size())
+        ]
+        return (_detached_tensor_like(tensor, values),)
+
+
 class GenericReduceSumOperation(Operation):
     def _forward(self, tensor: Any) -> Any:
         tensor = _require_two_mode_tensor(tensor, "tensor")
@@ -448,8 +533,28 @@ def add(lhs: Any, rhs: Any) -> Any:
     return _dispatch_binary("add", lhs, rhs).forward(lhs, rhs)
 
 
+def elementwise_mul(lhs: Any, rhs: Any) -> Any:
+    return _dispatch_binary("elementwise_mul", lhs, rhs).forward(lhs, rhs)
+
+
 def mul(tensor: Any, scalar: Any) -> Any:
+    from .tensor import Tensor
+
+    if isinstance(scalar, Tensor):
+        return elementwise_mul(tensor, scalar)
     return _dispatch_unary("mul", tensor).forward(tensor, scalar)
+
+
+def div(lhs: Any, rhs: Any) -> Any:
+    return _dispatch_binary("div", lhs, rhs).forward(lhs, rhs)
+
+
+def exp(tensor: Any) -> Any:
+    return _dispatch_unary("exp", tensor).forward(tensor)
+
+
+def pow(tensor: Any, exponent: Any) -> Any:
+    return _dispatch_unary("pow", tensor).forward(tensor, exponent)
 
 
 def reduce(tensor: Any) -> Any:
@@ -474,7 +579,11 @@ def view(tensor: Any, key: Any) -> Any:
 
 __all__ = [
     "GenericAddOperation",
+    "GenericDivOperation",
+    "GenericElementwiseMulOperation",
+    "GenericExpOperation",
     "GenericMatmulOperation",
+    "GenericPowOperation",
     "GenericReduceSumOperation",
     "GenericScalarMulOperation",
     "GenericViewOperation",
@@ -482,11 +591,15 @@ __all__ = [
     "PermuteOperation",
     "RearrangeOperation",
     "add",
+    "div",
+    "elementwise_mul",
+    "exp",
     "is_grad_enabled",
     "matmul",
     "mul",
     "no_grad",
     "permute",
+    "pow",
     "rearrange",
     "reduce",
     "set_grad_enabled",

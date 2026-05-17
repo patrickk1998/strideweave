@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -155,11 +156,23 @@ public:
         if (operation_name == "add") {
             return native_data.attr("_CPUAddOperation")();
         }
+        if (operation_name == "div") {
+            return native_data.attr("_CPUDivOperation")();
+        }
+        if (operation_name == "elementwise_mul") {
+            return native_data.attr("_CPUElementwiseMulOperation")();
+        }
+        if (operation_name == "exp") {
+            return native_data.attr("_CPUExpOperation")();
+        }
         if (operation_name == "matmul") {
             return native_data.attr("_CPUMatmulOperation")();
         }
         if (operation_name == "mul") {
             return native_data.attr("_CPUScalarMulOperation")();
+        }
+        if (operation_name == "pow") {
+            return native_data.attr("_CPUPowOperation")();
         }
         if (operation_name == "reduce") {
             return native_data.attr("_CPUReduceSumOperation")();
@@ -634,6 +647,276 @@ private:
     float scalar_ = 0.0f;
 };
 
+class CpuElementwiseMulOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 2) {
+            throw py::type_error(
+                "CPU elementwise multiply requires lhs and rhs tensors"
+            );
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
+        py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
+        CpuTensorView<float> lhs_view = cpu_tensor_view<float>(lhs, "lhs");
+        CpuTensorView<float> rhs_view = cpu_tensor_view<float>(rhs, "rhs");
+        require_same_layout(lhs, rhs);
+
+        CpuTensorAllocation<float> result =
+            allocate_cpu_tensor<float>(tensor_layout(lhs));
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(lhs_view.leaf_rank(), 0);
+            for (Index i = 0; i < lhs_view.logical_size; ++i) {
+                result.view.write_expanded(
+                    key,
+                    lhs_view.read_expanded(key) * rhs_view.read_expanded(key)
+                );
+                lhs_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
+        require_same_layout(lhs, gradient);
+        require_same_layout(rhs, gradient);
+        CpuTensorView<float> lhs_view = cpu_tensor_view<float>(lhs, "lhs");
+        CpuTensorView<float> rhs_view = cpu_tensor_view<float>(rhs, "rhs");
+        CpuTensorView<float> gradient_view =
+            cpu_tensor_view<float>(gradient, "gradient");
+
+        CpuTensorAllocation<float> lhs_result =
+            allocate_cpu_tensor<float>(tensor_layout(lhs));
+        CpuTensorAllocation<float> rhs_result =
+            allocate_cpu_tensor<float>(tensor_layout(rhs));
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(lhs_view.leaf_rank(), 0);
+            for (Index i = 0; i < lhs_view.logical_size; ++i) {
+                const float gradient_value = gradient_view.read_expanded(key);
+                lhs_result.view.write_expanded(
+                    key, gradient_value * rhs_view.read_expanded(key)
+                );
+                rhs_result.view.write_expanded(
+                    key, gradient_value * lhs_view.read_expanded(key)
+                );
+                lhs_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+
+        return py::make_tuple(
+            make_tensor(
+                std::move(lhs_result.data_object), std::move(lhs_result.layout_object)
+            ),
+            make_tensor(
+                std::move(rhs_result.data_object), std::move(rhs_result.layout_object)
+            )
+        );
+    }
+};
+
+class CpuDivOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 2) {
+            throw py::type_error("CPU division requires lhs and rhs tensors");
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
+        py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
+        CpuTensorView<float> lhs_view = cpu_tensor_view<float>(lhs, "lhs");
+        CpuTensorView<float> rhs_view = cpu_tensor_view<float>(rhs, "rhs");
+        require_same_layout(lhs, rhs);
+
+        CpuTensorAllocation<float> result =
+            allocate_cpu_tensor<float>(tensor_layout(lhs));
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(lhs_view.leaf_rank(), 0);
+            for (Index i = 0; i < lhs_view.logical_size; ++i) {
+                result.view.write_expanded(
+                    key,
+                    lhs_view.read_expanded(key) / rhs_view.read_expanded(key)
+                );
+                lhs_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
+        require_same_layout(lhs, gradient);
+        require_same_layout(rhs, gradient);
+        CpuTensorView<float> lhs_view = cpu_tensor_view<float>(lhs, "lhs");
+        CpuTensorView<float> rhs_view = cpu_tensor_view<float>(rhs, "rhs");
+        CpuTensorView<float> gradient_view =
+            cpu_tensor_view<float>(gradient, "gradient");
+
+        CpuTensorAllocation<float> lhs_result =
+            allocate_cpu_tensor<float>(tensor_layout(lhs));
+        CpuTensorAllocation<float> rhs_result =
+            allocate_cpu_tensor<float>(tensor_layout(rhs));
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(lhs_view.leaf_rank(), 0);
+            for (Index i = 0; i < lhs_view.logical_size; ++i) {
+                const float lhs_value = lhs_view.read_expanded(key);
+                const float rhs_value = rhs_view.read_expanded(key);
+                const float gradient_value = gradient_view.read_expanded(key);
+                lhs_result.view.write_expanded(key, gradient_value / rhs_value);
+                rhs_result.view.write_expanded(
+                    key, -gradient_value * lhs_value / (rhs_value * rhs_value)
+                );
+                lhs_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+
+        return py::make_tuple(
+            make_tensor(
+                std::move(lhs_result.data_object), std::move(lhs_result.layout_object)
+            ),
+            make_tensor(
+                std::move(rhs_result.data_object), std::move(rhs_result.layout_object)
+            )
+        );
+    }
+};
+
+class CpuExpOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 1) {
+            throw py::type_error("CPU exp requires a tensor");
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
+        CpuTensorView<float> tensor_view = cpu_tensor_view<float>(tensor, "tensor");
+
+        CpuTensorAllocation<float> result =
+            allocate_cpu_tensor<float>(tensor_layout(tensor));
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                result.view.write_expanded(
+                    key, std::exp(tensor_view.read_expanded(key))
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        require_same_layout(tensor, gradient);
+        CpuTensorView<float> tensor_view = cpu_tensor_view<float>(tensor, "tensor");
+        CpuTensorView<float> gradient_view =
+            cpu_tensor_view<float>(gradient, "gradient");
+
+        CpuTensorAllocation<float> result =
+            allocate_cpu_tensor<float>(tensor_layout(tensor));
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                result.view.write_expanded(
+                    key,
+                    gradient_view.read_expanded(key) *
+                        std::exp(tensor_view.read_expanded(key))
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return py::make_tuple(
+            make_tensor(std::move(result.data_object), std::move(result.layout_object))
+        );
+    }
+};
+
+class CpuPowOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 2) {
+            throw py::type_error("CPU power requires a tensor and exponent");
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
+        CpuTensorView<float> tensor_view = cpu_tensor_view<float>(tensor, "tensor");
+        exponent_ = require_float(inputs[1], "exponent");
+        ctx_["exponent"] = py::float_(exponent_);
+
+        CpuTensorAllocation<float> result =
+            allocate_cpu_tensor<float>(tensor_layout(tensor));
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                result.view.write_expanded(
+                    key,
+                    std::pow(tensor_view.read_expanded(key), exponent_)
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        require_same_layout(tensor, gradient);
+        CpuTensorView<float> tensor_view = cpu_tensor_view<float>(tensor, "tensor");
+        CpuTensorView<float> gradient_view =
+            cpu_tensor_view<float>(gradient, "gradient");
+
+        CpuTensorAllocation<float> result =
+            allocate_cpu_tensor<float>(tensor_layout(tensor));
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                result.view.write_expanded(
+                    key,
+                    gradient_view.read_expanded(key) * exponent_ *
+                        std::pow(tensor_view.read_expanded(key), exponent_ - 1.0f)
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return py::make_tuple(
+            make_tensor(std::move(result.data_object), std::move(result.layout_object))
+        );
+    }
+
+private:
+    float exponent_ = 0.0f;
+};
+
 class CpuReduceSumOperation : public CpuOperation {
 public:
     py::object forward(py::args inputs) {
@@ -944,6 +1227,54 @@ void bind_cpu(py::module_& module) {
         .def("backward", &CpuScalarMulOperation::backward, py::arg("gradient"))
         .def_property_readonly("ctx", &CpuScalarMulOperation::ctx)
         .def("inputs", &CpuScalarMulOperation::inputs);
+
+    py::class_<CpuElementwiseMulOperation>(module, "_CPUElementwiseMulOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuElementwiseMulOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuElementwiseMulOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuElementwiseMulOperation::ctx)
+        .def("inputs", &CpuElementwiseMulOperation::inputs);
+
+    py::class_<CpuDivOperation>(module, "_CPUDivOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuDivOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuDivOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuDivOperation::ctx)
+        .def("inputs", &CpuDivOperation::inputs);
+
+    py::class_<CpuExpOperation>(module, "_CPUExpOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuExpOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuExpOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuExpOperation::ctx)
+        .def("inputs", &CpuExpOperation::inputs);
+
+    py::class_<CpuPowOperation>(module, "_CPUPowOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuPowOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuPowOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuPowOperation::ctx)
+        .def("inputs", &CpuPowOperation::inputs);
 
     py::class_<CpuReduceSumOperation>(module, "_CPUReduceSumOperation")
         .def(py::init<>())

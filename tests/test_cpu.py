@@ -1,3 +1,4 @@
+import math
 from array import array
 from collections.abc import Iterable
 from typing import Any
@@ -114,8 +115,12 @@ def test_cpu_new_like_allocates_cpu_and_zero_fills_gap_placeholders():
 def test_cpu_dispatch_op_returns_supported_operations():
     native_cases = {
         "add": "_CPUAddOperation",
+        "div": "_CPUDivOperation",
+        "elementwise_mul": "_CPUElementwiseMulOperation",
+        "exp": "_CPUExpOperation",
         "matmul": "_CPUMatmulOperation",
         "mul": "_CPUScalarMulOperation",
+        "pow": "_CPUPowOperation",
         "reduce": "_CPUReduceSumOperation",
     }
 
@@ -225,6 +230,79 @@ def test_cpu_scalar_mul_uses_expanded_keys_for_hierarchical_strides():
     assert tensor_values(result) == pytest.approx(
         [tensor[i] * 2 for i in range(tensor.size())]
     )
+
+
+def test_cpu_elementwise_mul_uses_native_operation_and_backpropagates():
+    layout = Layout(Shape([2, 3]), Stride([1, 4]))
+    lhs = make_cpu_tensor(range(layout._cache.cosize), layout)
+    rhs = make_cpu_tensor(range(10, 10 + layout._cache.cosize), layout)
+    gradient = make_cpu_tensor([1.0] * layout._cache.cosize, layout)
+
+    result = lhs * rhs
+    result.backward(gradient)
+    lhs_grad = require_grad(lhs)
+    rhs_grad = require_grad(rhs)
+
+    assert type(result.autograd_ctx).__name__ == "_CPUElementwiseMulOperation"
+    assert tensor_values(result) == pytest.approx(
+        [lhs[i] * rhs[i] for i in range(lhs.size())]
+    )
+    assert tensor_values(lhs_grad) == pytest.approx([rhs[i] for i in range(rhs.size())])
+    assert tensor_values(rhs_grad) == pytest.approx([lhs[i] for i in range(lhs.size())])
+    assert type(lhs_grad.data) is CPU
+    assert type(rhs_grad.data) is CPU
+
+
+def test_cpu_div_uses_native_operation_and_backpropagates():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = make_cpu_tensor([8.0, 9.0, 10.0, 12.0], layout)
+    rhs = make_cpu_tensor([2.0, 3.0, 5.0, 4.0], layout)
+    gradient = make_cpu_tensor([1.0, 2.0, 3.0, 4.0], layout)
+
+    result = lhs / rhs
+    result.backward(gradient)
+    lhs_grad = require_grad(lhs)
+    rhs_grad = require_grad(rhs)
+
+    assert type(result.autograd_ctx).__name__ == "_CPUDivOperation"
+    assert tensor_values(result) == pytest.approx([4.0, 3.0, 2.0, 3.0])
+    assert tensor_values(lhs_grad) == pytest.approx([0.5, 2.0 / 3.0, 0.6, 1.0])
+    assert tensor_values(rhs_grad) == pytest.approx([-2.0, -2.0, -1.2, -3.0])
+    assert type(lhs_grad.data) is CPU
+    assert type(rhs_grad.data) is CPU
+
+
+def test_cpu_exp_uses_native_operation_and_backpropagates():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = make_cpu_tensor([0.0, 1.0, 2.0, 3.0], layout)
+    gradient = make_cpu_tensor([1.0, 2.0, 3.0, 4.0], layout)
+
+    result = neotorch.exp(tensor)
+    result.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    expected = [math.exp(value) for value in [0.0, 1.0, 2.0, 3.0]]
+    assert type(result.autograd_ctx).__name__ == "_CPUExpOperation"
+    assert tensor_values(result) == pytest.approx(expected)
+    assert tensor_values(tensor_grad) == pytest.approx(
+        [grad * value for grad, value in zip([1.0, 2.0, 3.0, 4.0], expected)]
+    )
+    assert type(tensor_grad.data) is CPU
+
+
+def test_cpu_pow_scalar_uses_native_operation_and_backpropagates():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = make_cpu_tensor([1.0, 2.0, 3.0, 4.0], layout)
+    gradient = make_cpu_tensor([1.0, 2.0, 3.0, 4.0], layout)
+
+    result = tensor**3
+    result.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    assert type(result.autograd_ctx).__name__ == "_CPUPowOperation"
+    assert tensor_values(result) == pytest.approx([1.0, 8.0, 27.0, 64.0])
+    assert tensor_values(tensor_grad) == pytest.approx([3.0, 24.0, 81.0, 192.0])
+    assert type(tensor_grad.data) is CPU
 
 
 def test_cpu_reduce_sums_second_mode_and_backpropagates():

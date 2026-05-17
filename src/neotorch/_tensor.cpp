@@ -298,6 +298,22 @@ PYBIND11_MODULE(_tensor, module) {
             py::is_operator()
         )
         .def(
+            "__truediv__",
+            [](py::object self, py::object other) {
+                return py::module_::import("neotorch.operation").attr("div")(self, other);
+            },
+            py::is_operator()
+        )
+        .def(
+            "__pow__",
+            [](py::object self, py::object exponent) {
+                return py::module_::import("neotorch.operation").attr("pow")(
+                    self, exponent
+                );
+            },
+            py::is_operator()
+        )
+        .def(
             "__matmul__",
             [](py::object self, py::object other) {
                 return py::module_::import("neotorch.operation").attr("matmul")(

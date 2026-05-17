@@ -127,7 +127,11 @@ class Generic(Data):
     def dispatch_op(operation_name: str) -> Any:
         from .operation import (
             GenericAddOperation,
+            GenericDivOperation,
+            GenericElementwiseMulOperation,
+            GenericExpOperation,
             GenericMatmulOperation,
+            GenericPowOperation,
             GenericReduceSumOperation,
             GenericScalarMulOperation,
             GenericViewOperation,
@@ -137,9 +141,13 @@ class Generic(Data):
 
         operations = {
             "add": GenericAddOperation,
+            "div": GenericDivOperation,
+            "elementwise_mul": GenericElementwiseMulOperation,
+            "exp": GenericExpOperation,
             "matmul": GenericMatmulOperation,
             "mul": GenericScalarMulOperation,
             "permute": PermuteOperation,
+            "pow": GenericPowOperation,
             "rearrange": RearrangeOperation,
             "reduce": GenericReduceSumOperation,
             "view": GenericViewOperation,

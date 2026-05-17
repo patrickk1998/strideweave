@@ -77,9 +77,13 @@ def test_data_default_dispatch_op_raises_not_implemented():
 def test_generic_data_dispatch_op_returns_supported_operations():
     cases = {
         "add": neotorch.GenericAddOperation,
+        "div": neotorch.GenericDivOperation,
+        "elementwise_mul": neotorch.GenericElementwiseMulOperation,
+        "exp": neotorch.GenericExpOperation,
         "matmul": neotorch.GenericMatmulOperation,
         "mul": neotorch.GenericScalarMulOperation,
         "permute": neotorch.PermuteOperation,
+        "pow": neotorch.GenericPowOperation,
         "rearrange": neotorch.RearrangeOperation,
         "reduce": neotorch.GenericReduceSumOperation,
         "view": neotorch.GenericViewOperation,
