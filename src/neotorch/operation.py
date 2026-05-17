@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from importlib import import_module
 from numbers import Number
+from operator import index as operator_index
 from typing import Any, cast
 
 from .layout import Layout, Shape, Stride, Tree
@@ -92,6 +93,10 @@ def _mode_logical_size(layout: Layout, mode: int) -> int:
     return cast(int, shape.logical_size)
 
 
+def _mode_stride(layout: Layout, mode: int) -> Any:
+    return layout.stride.top_level[mode]
+
+
 def _shape_from_modes(*modes: Any) -> Shape:
     if len(modes) == 1:
         return Shape(modes[0])
@@ -114,6 +119,10 @@ def _canonical_layout_from_modes(*modes: Any) -> Layout:
     shape = _shape_from_modes(*modes)
     stride, _ = _canonical_stride_level(shape.top_level, 1)
     return Layout(shape, Stride(stride))
+
+
+def _layout_from_modes(shapes: Iterable[Any], strides: Iterable[Any]) -> Layout:
+    return Layout(Shape(list(shapes)), Stride(list(strides)))
 
 
 def _cosize(layout: Layout) -> int:
@@ -148,6 +157,10 @@ def _detached_tensor_like(target: Any, values: Iterable[Any]) -> Any:
     return _tensor_with_layout_like(target, target.layout, values)
 
 
+def _zero_tensor_like(target: Any) -> Any:
+    return _detached_tensor_like(target, [0] * target.size())
+
+
 def _copy_gradient_for(target: Any, gradient: Any) -> Any:
     _require_same_layout(target, gradient)
     return _detached_tensor_like(target, _logical_values(gradient))
@@ -157,6 +170,78 @@ def _copy_gradient_to_layout(target: Any, gradient: Any) -> Any:
     if target.size() != gradient.size():
         raise ValueError("Tensor layouts must have the same logical size")
     return _tensor_with_layout_like(target, target.layout, _logical_values(gradient))
+
+
+def _normalize_view_key(key: Any, rank: int) -> tuple[Any, ...]:
+    normalized = key if isinstance(key, tuple) else (key,)
+    if len(normalized) != rank:
+        raise ValueError("View keys must include exactly one key per top-level mode")
+    return normalized
+
+
+def _normalize_int_key(value: Any, extent: int, name: str) -> int:
+    try:
+        normalized = operator_index(value)
+    except TypeError as exc:
+        raise TypeError(f"{name} must be an integer or slice") from exc
+
+    if normalized < 0 or normalized >= extent:
+        raise ValueError("View integer key is out of domain")
+    return normalized
+
+
+def _normalize_leaf_slice(key: slice, extent: int) -> tuple[int, int]:
+    if key.step not in (None, 1):
+        raise ValueError("View slices do not support steps")
+    start, stop, _ = key.indices(extent)
+    if stop <= start:
+        raise ValueError("View slices must be non-empty")
+    return start, stop
+
+
+def _is_whole_slice(key: slice) -> bool:
+    return key.start is None and key.stop is None and key.step in (None, 1)
+
+
+def _view_layout_and_mapping(tensor: Any, key: Any) -> tuple[int, Layout]:
+    normalized_key = _normalize_view_key(key, len(tensor.layout))
+    offset_delta = 0
+    output_shapes = []
+    output_strides = []
+
+    for mode_index, mode_key in enumerate(normalized_key):
+        mode_layout = tensor.layout[mode_index]
+        mode_shape = _mode_shape(tensor.layout, mode_index)
+        mode_stride = _mode_stride(tensor.layout, mode_index)
+
+        if isinstance(mode_key, slice):
+            if mode_layout.is_leaf:
+                extent = int(mode_layout.shape)
+                stride = int(mode_layout.stride)
+                start, stop = _normalize_leaf_slice(mode_key, extent)
+                offset_delta += start * stride
+                output_shapes.append(stop - start)
+                output_strides.append(stride)
+                continue
+
+            if not _is_whole_slice(mode_key):
+                raise ValueError("Only whole slices are supported for non-leaf modes")
+            output_shapes.append(mode_shape)
+            output_strides.append(mode_stride)
+            continue
+
+        if mode_layout.is_leaf:
+            extent = int(mode_layout.shape)
+            stride = int(mode_layout.stride)
+            index = _normalize_int_key(mode_key, extent, "View key")
+            offset_delta += index * stride
+            continue
+
+        extent = mode_layout.shape.logical_size
+        index = _normalize_int_key(mode_key, extent, "View key")
+        offset_delta += mode_layout.index(index)
+
+    return offset_delta, _layout_from_modes(output_shapes, output_strides)
 
 
 class GenericAddOperation(Operation):
@@ -264,6 +349,33 @@ class GenericMatmulOperation(Operation):
         )
 
 
+class GenericViewOperation(Operation):
+    def _forward(self, tensor: Any, key: Any) -> Any:
+        from .tensor import Tensor
+
+        tensor = _as_tensor(tensor, "tensor")
+        offset_delta, output_layout = _view_layout_and_mapping(tensor, key)
+
+        self.ctx["key"] = _normalize_view_key(key, len(tensor.layout))
+        self.ctx["mapping_layout"] = output_layout
+        self.ctx["mapping_offset"] = offset_delta
+        self.ctx["output_layout"] = output_layout
+        return Tensor(tensor.data, tensor.offset + offset_delta, output_layout)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _as_tensor(gradient, "gradient")
+        _require_layout(gradient, self.ctx["output_layout"])
+        scatter_onto = _zero_tensor_like(tensor)
+        scatter_onto.data.scatter(
+            gradient,
+            scatter_onto,
+            self.ctx["mapping_layout"],
+            self.ctx["mapping_offset"],
+        )
+        return (scatter_onto,)
+
+
 class RearrangeOperation(Operation):
     def _forward(self, tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
         from .tensor import Tensor
@@ -356,11 +468,16 @@ def permute(tensor: Any, *order: Any) -> Any:
     return _dispatch_unary("permute", tensor).forward(tensor, *order)
 
 
+def view(tensor: Any, key: Any) -> Any:
+    return _dispatch_unary("view", tensor).forward(tensor, key)
+
+
 __all__ = [
     "GenericAddOperation",
     "GenericMatmulOperation",
     "GenericReduceSumOperation",
     "GenericScalarMulOperation",
+    "GenericViewOperation",
     "Operation",
     "PermuteOperation",
     "RearrangeOperation",
@@ -373,4 +490,5 @@ __all__ = [
     "rearrange",
     "reduce",
     "set_grad_enabled",
+    "view",
 ]

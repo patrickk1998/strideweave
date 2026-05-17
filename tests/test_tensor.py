@@ -12,6 +12,7 @@ from neotorch import (
     GenericMatmulOperation,
     GenericReduceSumOperation,
     GenericScalarMulOperation,
+    GenericViewOperation,
     Layout,
     Node,
     PermuteOperation,
@@ -42,9 +43,25 @@ class UnsupportedData(Data):
     ) -> "UnsupportedData":
         return UnsupportedData(list(values))
 
+    def scatter(
+        self,
+        to_scatter: Any,
+        scatter_onto: Any,
+        mapping: Any,
+        mapping_offset: int = 0,
+    ) -> None:
+        raise NotImplementedError("UnsupportedData does not implement scatter")
+
 
 def tensor_values(tensor: Tensor) -> list[Any]:
     return [tensor[i] for i in range(tensor.size())]
+
+
+def tensor_with_logical_values(values: Iterable[Any], layout: Layout) -> Tensor:
+    physical_values: list[Any] = [None] * layout._cache.cosize
+    for logical_index, value in enumerate(values):
+        physical_values[layout.index(logical_index)] = value
+    return Tensor(Generic(physical_values), 0, layout)
 
 
 def require_grad(tensor: Tensor) -> Tensor:
@@ -54,6 +71,8 @@ def require_grad(tensor: Tensor) -> Tensor:
 
 def test_tensor_public_api_imports():
     assert neotorch.Tensor is Tensor
+    assert neotorch.GenericViewOperation is GenericViewOperation
+    assert neotorch.view is not None
 
 
 def test_tensor_constructor_exposes_read_only_api():
@@ -177,6 +196,80 @@ def test_tensor_accepts_tuple_and_list_coordinate_keys():
     assert tensor[[1, 2]] == tensor[1, 2]
 
 
+def test_tensor_view_with_leaf_slice_shares_data_and_updates_layout_and_offset():
+    data = Generic(range(64))
+    layout = Layout(Shape([5, 10]), Stride([1, 5]))
+    tensor = Tensor(data, 3, layout)
+
+    view = tensor[2, 2:5]
+
+    assert view.data is data
+    assert view.offset == 3 + layout.index([2, 2])
+    assert view.layout == Layout(Shape(3), Stride(5))
+    assert tensor_values(view) == [tensor[2, j] for j in range(2, 5)]
+    assert isinstance(view.autograd_ctx, GenericViewOperation)
+
+
+def test_tensor_view_can_keep_non_leaf_mode_whole():
+    data = Generic(range(128))
+    layout = Layout(Shape([10, [2, 3]]), Stride([1, [10, 20]]))
+    tensor = Tensor(data, 0, layout)
+
+    view = tensor[0, :]
+
+    assert view.data is data
+    assert view.offset == tensor.offset
+    assert view.layout == Layout(Shape([[2, 3]]), Stride([[10, 20]]))
+    assert tensor_values(view) == [tensor[0, j] for j in range(6)]
+
+
+def test_tensor_view_with_full_slices_preserves_layout_and_offset():
+    data = Generic(range(64))
+    layout = Layout(Shape([3, 4]), Stride([2, 10]))
+    tensor = Tensor(data, 5, layout)
+
+    view = tensor[:, :]
+
+    assert view.data is data
+    assert view.offset == 5
+    assert view.layout == layout
+    assert tensor_values(view) == tensor_values(tensor)
+
+
+def test_tensor_view_requires_slice_for_getitem_dispatch():
+    data = Generic(range(64))
+    layout = Layout(Shape([5, 10]), Stride([1, 5]))
+    tensor = Tensor(data, 0, layout)
+
+    assert tensor[2, 3] == data[layout.index([2, 3])]
+    assert not isinstance(tensor[2, 3], Tensor)
+
+
+def test_tensor_view_rejects_missing_and_extra_modes():
+    tensor = Tensor(Generic(range(64)), 0, Layout(Shape([5, 10]), Stride([1, 5])))
+
+    with pytest.raises(ValueError):
+        tensor[2:5]
+    with pytest.raises(ValueError):
+        tensor[:, :, :]
+
+
+def test_tensor_view_rejects_invalid_slices_and_integer_keys():
+    nested_tensor = Tensor(
+        Generic(range(128)), 0, Layout(Shape([10, [2, 3]]), Stride([1, [10, 20]]))
+    )
+    flat_tensor = Tensor(Generic(range(64)), 0, Layout(Shape([5, 10]), Stride([1, 5])))
+
+    with pytest.raises(ValueError):
+        nested_tensor[:, 1:3]
+    with pytest.raises(ValueError):
+        flat_tensor[:, ::2]
+    with pytest.raises(ValueError):
+        flat_tensor[5, :]
+    with pytest.raises(ValueError):
+        flat_tensor[:, 3:3]
+
+
 def test_tensor_list_coordinate_key_matches_tuple_key_for_hierarchical_mode():
     layout = Layout(Shape([2, 3, [2, 2]]), Stride([1, 2, [6, 12]]))
     tensor = Tensor(Generic(range(24)), 0, layout)
@@ -195,16 +288,13 @@ def test_tensor_out_of_domain_keys_raise_layout_errors():
         tensor[12]
 
 
-def test_tensor_rejects_slice_and_non_integer_keys():
+def test_tensor_rejects_non_integer_scalar_keys():
     data = Generic(range(64))
     layout = Layout(Shape([3, 4]), Stride([2, 10]))
     tensor = Tensor(data, 0, layout)
     string_key: Any = "x"
     mixed_key: Any = [1, "x"]
-    slice_key: Any = slice(1, 2)
 
-    with pytest.raises(TypeError):
-        tensor[slice_key]
     with pytest.raises(TypeError):
         tensor[string_key]
     with pytest.raises(TypeError):
@@ -921,6 +1011,53 @@ def test_tensor_backward_accumulates_shared_input_contributions():
     tensor_grad = require_grad(tensor)
 
     assert tensor_values(tensor_grad) == [2, 4, 6, 8]
+
+
+def test_tensor_view_backward_scatters_gradient_into_source_layout():
+    layout = Layout(Shape([5, 10]), Stride([1, 5]))
+    tensor = Tensor(Generic(range(50)), 0, layout)
+    view = tensor[2, 2:5]
+    gradient = tensor_with_logical_values([10, 20, 30], view.layout)
+
+    view.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    expected = [0] * tensor.size()
+    for value, j in zip([10, 20, 30], range(2, 5)):
+        expected[layout.index([2, j])] = value
+    assert view.grad is None
+    assert tensor_values(tensor_grad) == expected
+    assert type(tensor_grad.data) is type(tensor.data)
+
+
+def test_tensor_view_backward_handles_non_leaf_whole_mode():
+    layout = Layout(Shape([10, [2, 3]]), Stride([1, [10, 20]]))
+    tensor = Tensor(Generic(range(128)), 0, layout)
+    view = tensor[0, :]
+    gradient = tensor_with_logical_values([1, 2, 3, 4, 5, 6], view.layout)
+
+    view.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    expected = [0] * tensor.size()
+    for j, value in enumerate([1, 2, 3, 4, 5, 6]):
+        expected[layout.index([0, j])] = value
+    assert tensor_values(tensor_grad) == expected
+
+
+def test_tensor_view_created_under_no_grad_does_not_propagate():
+    layout = Layout(Shape([5, 10]), Stride([1, 5]))
+    tensor = Tensor(Generic(range(50)), 0, layout)
+
+    with neotorch.no_grad():
+        view = tensor[2, 2:5]
+
+    gradient = tensor_with_logical_values([10, 20, 30], view.layout)
+    view.backward(gradient)
+
+    assert view.autograd_ctx is None
+    assert tensor_values(require_grad(view)) == [10, 20, 30]
+    assert tensor.grad is None
 
 
 def test_tensor_backward_rejects_invalid_gradient():

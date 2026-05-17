@@ -27,6 +27,17 @@ public:
         PYBIND11_OVERRIDE_PURE(py::object, Data, new_like, values, is_mutable);
     }
 
+    void scatter(
+        py::object to_scatter,
+        py::object scatter_onto,
+        py::object mapping,
+        Index mapping_offset
+    ) override {
+        PYBIND11_OVERRIDE_PURE(
+            void, Data, scatter, to_scatter, scatter_onto, mapping, mapping_offset
+        );
+    }
+
     bool is_evictable() const override {
         PYBIND11_OVERRIDE(bool, Data, is_evictable);
     }
@@ -63,6 +74,10 @@ public:
         return py::cast(VectorDataForTest(values));
     }
 
+    void scatter(py::object, py::object, py::object, Index) override {
+        throw py::type_error("_VectorDataForTest does not implement scatter");
+    }
+
 private:
     py::list values_;
 };
@@ -83,6 +98,14 @@ PYBIND11_MODULE(_data, module) {
             py::arg("values"),
             py::kw_only(),
             py::arg("mutable") = true
+        )
+        .def(
+            "scatter",
+            &Data::scatter,
+            py::arg("to_scatter"),
+            py::arg("scatter_onto"),
+            py::arg("mapping"),
+            py::arg("mapping_offset") = 0
         )
         .def("is_evictable", &Data::is_evictable)
         .def("is_mutable", &Data::is_mutable)

@@ -4,7 +4,16 @@ from typing import Any
 
 import neotorch
 import pytest
-from neotorch import CPU, Data, DataType, Layout, PermuteOperation, Shape, Stride
+from neotorch import (
+    CPU,
+    Data,
+    DataType,
+    GenericViewOperation,
+    Layout,
+    PermuteOperation,
+    Shape,
+    Stride,
+)
 from neotorch.tensor import Tensor
 
 
@@ -18,6 +27,15 @@ def make_cpu_data(values: Iterable[float]) -> CPU:
 
 def make_cpu_tensor(values: Iterable[float], layout: Layout) -> Tensor:
     return Tensor(make_cpu_data(values), 0, layout)
+
+
+def make_cpu_tensor_with_logical_values(
+    values: Iterable[float], layout: Layout
+) -> Tensor:
+    data = CPU(layout._cache.cosize)
+    for logical_index, value in enumerate(values):
+        data[layout.index(logical_index)] = value
+    return Tensor(data, 0, layout)
 
 
 def tensor_values(tensor: Tensor) -> list[Any]:
@@ -105,6 +123,7 @@ def test_cpu_dispatch_op_returns_supported_operations():
         assert type(CPU.dispatch_op(operation_name)).__name__ == operation_type_name
 
     assert isinstance(CPU.dispatch_op("permute"), PermuteOperation)
+    assert isinstance(CPU.dispatch_op("view"), GenericViewOperation)
 
     with pytest.raises(NotImplementedError):
         CPU.dispatch_op("unknown")
@@ -167,6 +186,20 @@ def test_cpu_operation_reads_external_float32_pointer_storage():
 
     assert tensor_values(result) == pytest.approx([2.0, 4.0, 6.0, 8.0])
     assert tensor_values(updated_result) == pytest.approx([2.0, 40.0, 6.0, 8.0])
+
+
+def test_cpu_tensor_view_uses_generic_operation_and_shares_storage():
+    data = make_cpu_data(range(50))
+    layout = Layout(Shape([5, 10]), Stride([1, 5]))
+    tensor = Tensor(data, 0, layout)
+
+    view = tensor[2, 2:5]
+
+    assert view.data is data
+    assert view.offset == layout.index([2, 2])
+    assert view.layout == Layout(Shape(3), Stride(5))
+    assert tensor_values(view) == pytest.approx([tensor[2, j] for j in range(2, 5)])
+    assert isinstance(view.autograd_ctx, GenericViewOperation)
 
 
 def test_cpu_scalar_mul_accepts_strided_layout_and_backpropagates_cpu_grad():

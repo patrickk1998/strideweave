@@ -4,6 +4,7 @@ import pickle
 from collections.abc import Iterable
 from enum import Enum
 from importlib import import_module
+from operator import index as operator_index
 from os import PathLike, fspath
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
@@ -91,6 +92,37 @@ class Generic(Data):
             )
         return Generic(values, mutable=mutable)
 
+    def scatter(
+        self,
+        to_scatter: Any,
+        scatter_onto: Any,
+        mapping: Any,
+        mapping_offset: int = 0,
+    ) -> None:
+        from .layout import Layout
+        from .tensor import Tensor
+
+        if not isinstance(to_scatter, Tensor):
+            raise TypeError("to_scatter must be a Tensor")
+        if not isinstance(scatter_onto, Tensor):
+            raise TypeError("scatter_onto must be a Tensor")
+        if not isinstance(mapping, Layout):
+            raise TypeError("mapping must be a Layout")
+        if scatter_onto.data is not self:
+            raise ValueError("scatter_onto must be backed by this data object")
+        if mapping.shape != to_scatter.layout.shape:
+            raise ValueError("mapping shape must match to_scatter layout shape")
+
+        normalized_offset = operator_index(mapping_offset)
+        if normalized_offset < 0:
+            raise ValueError("mapping_offset must be non-negative")
+
+        for logical_index in range(to_scatter.size()):
+            data_index = (
+                scatter_onto.offset + normalized_offset + mapping.index(logical_index)
+            )
+            self[data_index] = to_scatter[logical_index]
+
     @staticmethod
     def dispatch_op(operation_name: str) -> Any:
         from .operation import (
@@ -98,6 +130,7 @@ class Generic(Data):
             GenericMatmulOperation,
             GenericReduceSumOperation,
             GenericScalarMulOperation,
+            GenericViewOperation,
             PermuteOperation,
             RearrangeOperation,
         )
@@ -109,6 +142,7 @@ class Generic(Data):
             "permute": PermuteOperation,
             "rearrange": RearrangeOperation,
             "reduce": GenericReduceSumOperation,
+            "view": GenericViewOperation,
         }
         try:
             operation_type = operations[operation_name]

@@ -4,7 +4,17 @@ from typing import Any, Protocol, cast
 
 import neotorch
 import pytest
-from neotorch import CPU, Data, DataType, Generic, GenericEvictable
+from neotorch import (
+    CPU,
+    Data,
+    DataType,
+    Generic,
+    GenericEvictable,
+    Layout,
+    Shape,
+    Stride,
+)
+from neotorch.tensor import Tensor
 
 
 class NativeDataModule(Protocol):
@@ -30,6 +40,15 @@ class PythonData(Data):
 
     def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> "PythonData":
         return type(self)(list(values))
+
+    def scatter(
+        self,
+        to_scatter: Any,
+        scatter_onto: Any,
+        mapping: Any,
+        mapping_offset: int = 0,
+    ) -> None:
+        raise NotImplementedError("PythonData does not implement scatter")
 
 
 class PythonMutableData(PythonData):
@@ -63,6 +82,7 @@ def test_generic_data_dispatch_op_returns_supported_operations():
         "permute": neotorch.PermuteOperation,
         "rearrange": neotorch.RearrangeOperation,
         "reduce": neotorch.GenericReduceSumOperation,
+        "view": neotorch.GenericViewOperation,
     }
 
     for operation_name, operation_type in cases.items():
@@ -293,6 +313,69 @@ def test_generic_data_setitem_validates_index():
 
     with pytest.raises(TypeError):
         data[non_int_index] = "non-int"
+
+
+def test_generic_data_scatter_maps_source_values_into_destination_storage():
+    source = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
+    destination_values = [0] * 50
+    destination_data = Generic(destination_values)
+    destination = Tensor(destination_data, 0, Layout(Shape([5, 10]), Stride([1, 5])))
+    mapping = Layout(Shape(3), Stride(5))
+
+    destination_data.scatter(source, destination, mapping, 12)
+
+    assert destination_values[12] == 10
+    assert destination_values[17] == 20
+    assert destination_values[22] == 30
+    assert sum(destination_values) == 60
+
+
+def test_generic_data_scatter_validates_mapping_shape():
+    source = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
+    destination_data = Generic([0] * 50)
+    destination = Tensor(destination_data, 0, Layout(Shape([5, 10]), Stride([1, 5])))
+    mapping = Layout(Shape(4), Stride(5))
+
+    with pytest.raises(ValueError):
+        destination_data.scatter(source, destination, mapping, 12)
+
+
+def test_generic_data_scatter_uses_destination_mutability_and_lifecycle(tmp_path):
+    source = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
+    mapping = Layout(Shape(3), Stride(5))
+    immutable_data = Generic([0] * 50, mutable=False)
+    immutable_destination = Tensor(
+        immutable_data, 0, Layout(Shape([5, 10]), Stride([1, 5]))
+    )
+
+    with pytest.raises(RuntimeError):
+        immutable_data.scatter(source, immutable_destination, mapping, 12)
+
+    evictable_data = GenericEvictable([0] * 50, tmp_path / "scatter.pkl")
+    evictable_destination = Tensor(
+        evictable_data, 0, Layout(Shape([5, 10]), Stride([1, 5]))
+    )
+    evictable_data.evict()
+
+    with pytest.raises(RuntimeError):
+        evictable_data.scatter(source, evictable_destination, mapping, 12)
+
+
+def test_cpu_data_scatter_maps_source_values_into_destination_storage():
+    source_data = CPU(3)
+    for index, value in enumerate([10.0, 20.0, 30.0]):
+        source_data[index] = value
+    source = Tensor(source_data, 0, Layout(Shape(3), Stride(1)))
+    destination_data = CPU(50)
+    destination = Tensor(destination_data, 0, Layout(Shape([5, 10]), Stride([1, 5])))
+    mapping = Layout(Shape(3), Stride(5))
+
+    destination_data.scatter(source, destination, mapping, 12)
+
+    assert destination_data[12] == pytest.approx(10.0)
+    assert destination_data[17] == pytest.approx(20.0)
+    assert destination_data[22] == pytest.approx(30.0)
+    assert destination_data[0] == pytest.approx(0.0)
 
 
 def test_non_evictable_data_rejects_lifecycle_methods():

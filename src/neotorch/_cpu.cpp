@@ -88,6 +88,13 @@ public:
         return result;
     }
 
+    void scatter(
+        py::object to_scatter,
+        py::object scatter_onto,
+        py::object mapping,
+        Index mapping_offset
+    ) override;
+
     bool is_mutable() const override { return is_mutable_; }
 
     std::uintptr_t pointer() const {
@@ -163,6 +170,11 @@ public:
         if (operation_name == "rearrange") {
             return py::module_::import("neotorch.operation").attr(
                 "RearrangeOperation"
+            )();
+        }
+        if (operation_name == "view") {
+            return py::module_::import("neotorch.operation").attr(
+                "GenericViewOperation"
             )();
         }
 
@@ -290,6 +302,61 @@ CpuTensorView<T> cpu_tensor_view(py::handle tensor, const char* name) {
         &cache,
         cache.logical_size(),
     };
+}
+
+void CPU::scatter(
+    py::object to_scatter,
+    py::object scatter_onto,
+    py::object mapping,
+    Index mapping_offset
+) {
+    if (mapping_offset < 0) {
+        throw py::value_error("mapping_offset must be non-negative");
+    }
+    CPU& destination_data = cpu_data_from_tensor(scatter_onto, "scatter_onto");
+    if (&destination_data != this) {
+        throw py::value_error("scatter_onto must be backed by this data object");
+    }
+    if (!is_mutable()) {
+        throw std::runtime_error("Data is not mutable");
+    }
+
+    CpuTensorView<float> source = cpu_tensor_view<float>(to_scatter, "to_scatter");
+    py::object source_layout = tensor_layout(to_scatter);
+    py::object source_shape = source_layout.attr("shape");
+    py::object mapping_shape = mapping.attr("shape");
+    if (!layouts_equal(mapping_shape, source_shape)) {
+        throw py::value_error("mapping shape must match to_scatter layout shape");
+    }
+
+    py::object mapping_cache_owner = mapping.attr("_cache");
+    auto& mapping_cache =
+        py::cast<neotorch::layout_index::LayoutCache&>(mapping_cache_owner);
+    const Index destination_offset = tensor_offset(scatter_onto);
+    const Index mapped_storage_size = mapping_cache.cosize();
+    const bool storage_exceeds_data =
+        destination_offset > size_ ||
+        mapping_offset > size_ - destination_offset ||
+        mapped_storage_size > size_ - destination_offset - mapping_offset;
+    if (storage_exceeds_data) {
+        throw py::value_error("scatter mapping exceeds destination data size");
+    }
+
+    {
+        py::gil_scoped_release release;
+        std::vector<Index> key(mapping_cache.leaf_rank(), 0);
+        for (Index i = 0; i < mapping_cache.logical_size(); ++i) {
+            const Index source_index = source.cache->index_expanded(
+                key.data(), key.size()
+            );
+            const Index destination_index =
+                destination_offset + mapping_offset +
+                mapping_cache.index_expanded(key.data(), key.size());
+            unchecked_element<float>(destination_index) =
+                source.data->unchecked_element<float>(source.offset + source_index);
+            mapping_cache.increment_key(key.data(), key.size());
+        }
+    }
 }
 
 void require_same_layout(py::handle lhs, py::handle rhs) {

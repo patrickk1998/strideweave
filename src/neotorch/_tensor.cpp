@@ -34,6 +34,21 @@ bool is_tensor_key(py::handle key) {
     return false;
 }
 
+bool contains_slice(py::handle key) {
+    if (PySlice_Check(key.ptr())) {
+        return true;
+    }
+    if (py::isinstance<py::tuple>(key) || py::isinstance<py::list>(key)) {
+        py::sequence sequence = py::reinterpret_borrow<py::sequence>(key);
+        for (py::handle value : sequence) {
+            if (contains_slice(value)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void validate_tensor_key(py::handle key) {
     if (!is_tensor_key(key)) {
         throw py::type_error(
@@ -247,7 +262,19 @@ PYBIND11_MODULE(_tensor, module) {
         .def_property("autograd_ctx", &Tensor::autograd_ctx, &Tensor::set_autograd_ctx)
         .def_property("grad", &Tensor::grad, &Tensor::set_grad)
         .def("retain_grad", &Tensor::retain_grad, py::arg("retain") = true)
-        .def("__getitem__", &Tensor::get_item, py::arg("key"))
+        .def(
+            "__getitem__",
+            [](py::object self, py::object key) {
+                if (contains_slice(key)) {
+                    return py::module_::import("neotorch.operation").attr("view")(
+                        self, key
+                    );
+                }
+                Tensor& tensor = py::cast<Tensor&>(self);
+                return tensor.get_item(key);
+            },
+            py::arg("key")
+        )
         .def("__setitem__", &Tensor::set_item, py::arg("key"), py::arg("value"))
         .def(
             "__add__",

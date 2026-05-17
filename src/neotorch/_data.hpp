@@ -19,6 +19,12 @@ public:
     virtual py::object type() const = 0;
     virtual py::object get_value(Index index) const = 0;
     virtual py::object new_like(py::iterable values, bool is_mutable) const = 0;
+    virtual void scatter(
+        py::object to_scatter,
+        py::object scatter_onto,
+        py::object mapping,
+        Index mapping_offset
+    ) = 0;
     virtual bool is_evictable() const { return false; }
     virtual bool is_mutable() const { return false; }
 

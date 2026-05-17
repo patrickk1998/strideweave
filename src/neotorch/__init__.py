@@ -5,6 +5,7 @@ from .operation import (
     GenericMatmulOperation,
     GenericReduceSumOperation,
     GenericScalarMulOperation,
+    GenericViewOperation,
     Operation,
     PermuteOperation,
     RearrangeOperation,
@@ -17,6 +18,7 @@ from .operation import (
     rearrange,
     reduce,
     set_grad_enabled,
+    view,
 )
 from .tensor import Tensor
 
@@ -30,6 +32,7 @@ __all__ = [
     "GenericMatmulOperation",
     "GenericReduceSumOperation",
     "GenericScalarMulOperation",
+    "GenericViewOperation",
     "Layout",
     "Node",
     "Operation",
@@ -48,4 +51,5 @@ __all__ = [
     "rearrange",
     "reduce",
     "set_grad_enabled",
+    "view",
 ]
