@@ -1,0 +1,3 @@
+from typing import Any
+
+def lex(command: str, token_type: type[Any]) -> list[Any]: ...
