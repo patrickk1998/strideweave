@@ -142,9 +142,17 @@ std::unordered_map<std::string, py::object>& rearrange_spec_cache() {
     return *cache;
 }
 
-py::object cached_rearrange_spec(py::str command, py::function compiler) {
+std::unordered_map<std::string, py::object>& reduce_spec_cache() {
+    static auto* cache = new std::unordered_map<std::string, py::object>();
+    return *cache;
+}
+
+py::object cached_spec(
+    py::str command,
+    py::function compiler,
+    std::unordered_map<std::string, py::object>& cache
+) {
     const std::string key = py::cast<std::string>(command);
-    auto& cache = rearrange_spec_cache();
     const auto found = cache.find(key);
     if (found != cache.end()) {
         return found->second;
@@ -155,6 +163,14 @@ py::object cached_rearrange_spec(py::str command, py::function compiler) {
     return spec;
 }
 
+py::object cached_rearrange_spec(py::str command, py::function compiler) {
+    return cached_spec(command, compiler, rearrange_spec_cache());
+}
+
+py::object cached_reduce_spec(py::str command, py::function compiler) {
+    return cached_spec(command, compiler, reduce_spec_cache());
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_einops, module) {
@@ -163,6 +179,12 @@ PYBIND11_MODULE(_einops, module) {
     module.def(
         "_cached_rearrange_spec",
         &cached_rearrange_spec,
+        py::arg("command"),
+        py::arg("compiler")
+    );
+    module.def(
+        "_cached_reduce_spec",
+        &cached_reduce_spec,
         py::arg("command"),
         py::arg("compiler")
     );

@@ -39,6 +39,15 @@ class RearrangeSpec:
     symbol_ids: tuple[tuple[str, int], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ReduceSpec:
+    selection: Tree
+    output: Tree
+    reduced: Tree
+    rearrange_output: Tree
+    symbol_ids: tuple[tuple[str, int], ...]
+
+
 _einops = import_module("neotorch._einops")
 
 
@@ -62,6 +71,15 @@ def parse_rearrange(command: str) -> RearrangeSpec:
     )
 
 
+def parse_reduce(command: str) -> ReduceSpec:
+    if not isinstance(command, str):
+        raise TypeError("command must be a str")
+    return cast(
+        ReduceSpec,
+        _einops._cached_reduce_spec(command, _parse_reduce_uncached),
+    )
+
+
 def rearrange(tensor: Any, description: str) -> Any:
     if not isinstance(description, str):
         raise TypeError("description must be a str")
@@ -72,22 +90,73 @@ def rearrange(tensor: Any, description: str) -> Any:
     return tree_rearrange(tensor, spec.output, spec.selection)
 
 
-def _parse_rearrange_uncached(command: str) -> RearrangeSpec:
-    tokens = lex(command)
-    arrow_positions = [
-        index for index, token in enumerate(tokens) if token.kind == "arrow"
-    ]
-    if len(arrow_positions) == 0:
-        raise ValueError("Rearrange command must contain one '->' arrow")
-    if len(arrow_positions) > 1:
-        raise ValueError("Rearrange command must contain only one '->' arrow")
+def reduce(tensor: Any, description: str) -> Any:
+    if not isinstance(description, str):
+        raise TypeError("description must be a str")
+    spec = parse_reduce(description)
 
-    arrow_position = arrow_positions[0]
+    from .operation import rearrange as tree_rearrange
+    from .operation import reduce as tensor_reduce
+
+    intermediate = tree_rearrange(tensor, spec.rearrange_output, spec.selection)
+    return tensor_reduce(intermediate)
+
+
+def _parse_rearrange_uncached(command: str) -> RearrangeSpec:
+    tokens, arrow_position = _split_command(command, "Rearrange")
     layout_ref = parse_layout_ref(tokens[:arrow_position])
     output = _OutputParser(
         tokens[arrow_position + 1 :], dict(layout_ref.symbol_ids)
     ).parse()
     return RearrangeSpec(layout_ref.tree, output, layout_ref.symbol_ids)
+
+
+def _parse_reduce_uncached(command: str) -> ReduceSpec:
+    tokens, arrow_position = _split_command(command, "Reduce")
+    layout_ref = parse_layout_ref(tokens[:arrow_position])
+    output = _OutputParser(
+        tokens[arrow_position + 1 :], dict(layout_ref.symbol_ids)
+    ).parse()
+    used_ids = _source_ids(output)
+    reduced_ids = [
+        source_id
+        for source_id in range(layout_ref.tree.size)
+        if source_id not in used_ids
+    ]
+    if len(reduced_ids) == 0:
+        raise ValueError("Reduce command must omit at least one dimension")
+
+    reduced = Tree(*(Node.id(source_id) for source_id in reduced_ids))
+    rearrange_output = Tree(output, reduced)
+    return ReduceSpec(
+        layout_ref.tree, output, reduced, rearrange_output, layout_ref.symbol_ids
+    )
+
+
+def _split_command(command: str, command_name: str) -> tuple[list[Token], int]:
+    tokens = lex(command)
+    arrow_positions = [
+        index for index, token in enumerate(tokens) if token.kind == "arrow"
+    ]
+    if len(arrow_positions) == 0:
+        raise ValueError(f"{command_name} command must contain one '->' arrow")
+    if len(arrow_positions) > 1:
+        raise ValueError(f"{command_name} command must contain only one '->' arrow")
+    return tokens, arrow_positions[0]
+
+
+def _source_ids(tree: Tree) -> set[int]:
+    source_ids: set[int] = set()
+    for marker in tree:
+        if isinstance(marker, Tree):
+            source_ids.update(_source_ids(marker))
+        elif marker == Node.Leaf:
+            continue
+        elif isinstance(getattr(marker, "id", None), int):
+            source_ids.add(marker.id)
+        else:
+            raise ValueError("output tree contains an invalid marker")
+    return source_ids
 
 
 def _token_error(token: Token, message: str) -> ValueError:
@@ -200,10 +269,13 @@ class _OutputParser(_BaseParser):
 __all__ = [
     "LayoutReference",
     "RearrangeSpec",
+    "ReduceSpec",
     "Token",
     "TokenKind",
     "lex",
     "parse_layout_ref",
     "parse_rearrange",
+    "parse_reduce",
     "rearrange",
+    "reduce",
 ]

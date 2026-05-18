@@ -6,7 +6,9 @@ from typing import Any, cast
 import neotorch
 import pytest
 from neotorch import (
+    CPU,
     Generic,
+    GenericReduceSumOperation,
     Layout,
     Node,
     RearrangeOperation,
@@ -21,7 +23,11 @@ from neotorch.einops import (
     lex,
     parse_layout_ref,
     parse_rearrange,
+    parse_reduce,
     rearrange,
+)
+from neotorch.einops import (
+    reduce as einops_reduce,
 )
 
 VALID_FUZZ_SEED = 1103515245
@@ -48,6 +54,13 @@ def tensor_values(tensor: Tensor) -> list[Any]:
 def require_grad(tensor: Tensor) -> Tensor:
     assert tensor.grad is not None
     return tensor.grad
+
+
+def make_cpu_tensor(values: list[float], layout: Layout) -> Tensor:
+    data = CPU(len(values))
+    for index, value in enumerate(values):
+        data[index] = value
+    return Tensor(data, 0, layout)
 
 
 def reference_lex(command: str) -> list[tuple[str, str, int, int]]:
@@ -277,6 +290,35 @@ def test_einops_parse_rearrange_left_singleton_compatibility_uses_layout_validat
         )
 
 
+def test_einops_parse_reduce_builds_two_mode_rearrange_spec():
+    spec = parse_reduce("a (c d) b -> a c")
+
+    assert spec.selection == Tree(Node.Leaf, Tree(Node.Leaf, Node.Leaf), Node.Leaf)
+    assert spec.output == Tree(Node.id(0), Node.id(1))
+    assert spec.reduced == Tree(Node.id(2), Node.id(3))
+    assert spec.rearrange_output == Tree(
+        Tree(Node.id(0), Node.id(1)), Tree(Node.id(2), Node.id(3))
+    )
+    assert spec.symbol_ids == (("a", 0), ("c", 1), ("d", 2), ("b", 3))
+
+
+def test_einops_parse_reduce_preserves_nested_output_structure():
+    spec = parse_reduce("a b c -> (a c)")
+
+    assert spec.selection == Tree(Node.Leaf, Node.Leaf, Node.Leaf)
+    assert spec.output == Tree(Tree(Node.id(0), Node.id(2)))
+    assert spec.reduced == Tree(Node.id(1))
+    assert spec.rearrange_output == Tree(spec.output, spec.reduced)
+
+
+def test_einops_parse_reduce_inserts_output_singletons():
+    spec = parse_reduce("a b -> a 1")
+
+    assert spec.output == Tree(Node.id(0), Node.Leaf)
+    assert spec.reduced == Tree(Node.id(1))
+    assert spec.rearrange_output == Tree(spec.output, spec.reduced)
+
+
 @pytest.mark.parametrize(
     "tokens",
     [
@@ -313,6 +355,29 @@ def test_einops_parse_layout_ref_rejects_invalid_syntax(tokens: list[Token]):
 def test_einops_parse_rearrange_rejects_invalid_syntax(command: str):
     with pytest.raises(ValueError):
         parse_rearrange(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "a a -> a",
+        "a b -> a a",
+        "a -> b",
+        "a ->",
+        "-> a",
+        "a b",
+        "a -> b -> c",
+        "a () -> a",
+        "a (b -> a",
+        "a b) -> a",
+        "a, b -> a",
+        "a -> a, b",
+        "a b -> a b",
+    ],
+)
+def test_einops_parse_reduce_rejects_invalid_syntax(command: str):
+    with pytest.raises(ValueError):
+        parse_reduce(command)
 
 
 def test_einops_rearrange_string_api_returns_rearranged_tensor_view():
@@ -369,11 +434,114 @@ def test_einops_rearrange_string_api_backpropagates_through_existing_operation()
     assert type(tensor_grad.data) is type(tensor.data)
 
 
+def test_einops_reduce_string_api_reduces_omitted_dimensions():
+    layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
+    tensor = Tensor(Generic(range(layout.shape.logical_size)), 0, layout)
+
+    result = einops_reduce(tensor, "a (c d) b -> a c")
+
+    assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
+    assert tensor_values(result) == [
+        sum(tensor[a, [c, d], b] for d in range(4) for b in range(5))
+        for c in range(3)
+        for a in range(2)
+    ]
+    assert isinstance(result.autograd_ctx, GenericReduceSumOperation)
+
+
+def test_top_level_reduce_accepts_einops_string_descriptions():
+    layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
+    tensor = Tensor(Generic(range(layout.shape.logical_size)), 0, layout)
+
+    result = neotorch.reduce(tensor, "a (c d) b -> a c")
+
+    assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
+    assert result[1, 2] == sum(tensor[1, [2, d], b] for d in range(4) for b in range(5))
+
+
+def test_top_level_reduce_rejects_non_string_description():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    description: Any = object()
+
+    with pytest.raises(TypeError):
+        neotorch.reduce(tensor, description)
+    with pytest.raises(TypeError):
+        einops_reduce(tensor, description)
+
+
+def test_einops_reduce_string_api_preserves_nested_output_structure():
+    tensor = Tensor(Generic(range(24)), 0, Layout(Shape([2, 3, 4]), Stride([1, 2, 6])))
+
+    result = einops_reduce(tensor, "a b c -> (a c)")
+
+    assert result.layout == Layout(Shape([[2, 4]]), Stride([[1, 2]]))
+    assert tensor_values(result) == [
+        sum(tensor[a, b, c] for b in range(3)) for c in range(4) for a in range(2)
+    ]
+
+
+def test_einops_reduce_string_api_backpropagates_through_existing_operations():
+    layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
+    tensor = Tensor(Generic(range(layout.shape.logical_size)), 0, layout)
+    result = einops_reduce(tensor, "a (c d) b -> a c")
+    gradient = Tensor(Generic([10, 20, 30, 40, 50, 60]), 0, result.layout)
+
+    result.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    assert result.grad is None
+    assert tensor_grad.layout == tensor.layout
+    assert type(tensor_grad.data) is type(tensor.data)
+    for a in range(2):
+        for c in range(3):
+            for d in range(4):
+                for b in range(5):
+                    assert tensor_grad[a, [c, d], b] == gradient[a, c]
+
+
+def test_einops_reduce_string_api_works_with_cpu_tensors():
+    layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
+    tensor = make_cpu_tensor(
+        [float(i) for i in range(layout.shape.logical_size)], layout
+    )
+
+    result = neotorch.reduce(tensor, "a (c d) b -> a c")
+
+    assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
+    assert tensor_values(result) == pytest.approx(
+        [
+            sum(tensor[a, [c, d], b] for d in range(4) for b in range(5))
+            for c in range(3)
+            for a in range(2)
+        ]
+    )
+    assert type(result.data) is CPU
+
+
 def test_einops_parse_rearrange_reuses_cached_spec_objects():
     first = parse_rearrange("cache_a cache_b -> cache_b cache_a")
     second = parse_rearrange("cache_a cache_b -> cache_b cache_a")
 
     assert first is second
+
+
+def test_einops_parse_reduce_reuses_cached_spec_objects():
+    first = parse_reduce("reduce_cache_a reduce_cache_b -> reduce_cache_b")
+    second = parse_reduce("reduce_cache_a reduce_cache_b -> reduce_cache_b")
+
+    assert first is second
+
+
+def test_einops_reduce_and_rearrange_spec_caches_do_not_collide():
+    command = "shared_cache_a shared_cache_b -> shared_cache_b"
+
+    rearrange_spec = parse_rearrange(command)
+    reduce_spec = parse_reduce(command)
+
+    assert parse_rearrange(command) is rearrange_spec
+    assert parse_reduce(command) is reduce_spec
+    assert not hasattr(rearrange_spec, "reduced")
+    assert reduce_spec.reduced == Tree(Node.id(0))
 
 
 def test_native_rearrange_spec_cache_does_not_cache_failed_compilations():
@@ -406,10 +574,48 @@ def test_native_rearrange_spec_cache_does_not_cache_failed_compilations():
     assert calls == 2
 
 
+def test_native_reduce_spec_cache_does_not_cache_failed_compilations():
+    calls = 0
+    cached_sentinel = object()
+    uncached_sentinel = object()
+
+    def compiler(_command: str) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("compile failed")
+        if calls == 2:
+            return cached_sentinel
+        return uncached_sentinel
+
+    with pytest.raises(ValueError):
+        native_einops._cached_reduce_spec("failing-reduce-cache-key", compiler)
+
+    # The cache is private native state, so call count is the observable proxy:
+    # failure must miss, the retry must compile, and the final call must hit.
+    assert (
+        native_einops._cached_reduce_spec("failing-reduce-cache-key", compiler)
+        is cached_sentinel
+    )
+    assert calls == 2
+    cached_result = native_einops._cached_reduce_spec(
+        "failing-reduce-cache-key", compiler
+    )
+    assert cached_result is cached_sentinel
+    assert cached_result is not uncached_sentinel
+    assert calls == 2
+
+
 def test_einops_parse_rearrange_invalid_descriptions_still_raise_after_retries():
     for _ in range(2):
         with pytest.raises(ValueError):
             parse_rearrange("invalid_a -> invalid_b")
+
+
+def test_einops_parse_reduce_invalid_descriptions_still_raise_after_retries():
+    for _ in range(2):
+        with pytest.raises(ValueError):
+            parse_reduce("invalid_a -> invalid_b")
 
 
 def test_einops_lex_matches_reference_for_deterministic_valid_fuzz_cases():

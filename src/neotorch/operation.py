@@ -16,6 +16,7 @@ _operation = import_module("neotorch._operation")
 Operation = cast(type[Any], _operation.Operation)
 is_grad_enabled = cast(Callable[[], bool], _operation.is_grad_enabled)
 set_grad_enabled = cast(Callable[[bool], None], _operation.set_grad_enabled)
+_REDUCE_DESCRIPTION_MISSING = object()
 
 
 @contextmanager
@@ -557,8 +558,23 @@ def pow(tensor: Any, exponent: Any) -> Any:
     return _dispatch_unary("pow", tensor).forward(tensor, exponent)
 
 
-def reduce(tensor: Any) -> Any:
-    return _dispatch_unary("reduce", tensor).forward(tensor)
+@overload
+def reduce(tensor: Any) -> Any: ...
+
+
+@overload
+def reduce(tensor: Any, description: str) -> Any: ...
+
+
+def reduce(tensor: Any, description: Any = _REDUCE_DESCRIPTION_MISSING) -> Any:
+    if description is _REDUCE_DESCRIPTION_MISSING:
+        return _dispatch_unary("reduce", tensor).forward(tensor)
+    if not isinstance(description, str):
+        raise TypeError("description must be a str")
+
+    from .einops import reduce as einops_reduce
+
+    return einops_reduce(tensor, description)
 
 
 def matmul(lhs: Any, rhs: Any) -> Any:
