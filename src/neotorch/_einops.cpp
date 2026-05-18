@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include <unordered_map>
 
 namespace py = pybind11;
 
@@ -136,9 +137,33 @@ py::list lex(py::str command, py::object token_type) {
     return tokens;
 }
 
+std::unordered_map<std::string, py::object>& rearrange_spec_cache() {
+    static auto* cache = new std::unordered_map<std::string, py::object>();
+    return *cache;
+}
+
+py::object cached_rearrange_spec(py::str command, py::function compiler) {
+    const std::string key = py::cast<std::string>(command);
+    auto& cache = rearrange_spec_cache();
+    const auto found = cache.find(key);
+    if (found != cache.end()) {
+        return found->second;
+    }
+
+    py::object spec = compiler(command);
+    cache.emplace(key, spec);
+    return spec;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_einops, module) {
     module.doc() = "Native lexer for neotorch einops commands";
     module.def("lex", &lex, py::arg("command"), py::arg("token_type"));
+    module.def(
+        "_cached_rearrange_spec",
+        &cached_rearrange_spec,
+        py::arg("command"),
+        py::arg("compiler")
+    );
 }

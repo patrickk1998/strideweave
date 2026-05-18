@@ -1,10 +1,28 @@
 import random
 import string
-from typing import Any
+from importlib import import_module
+from typing import Any, cast
 
+import neotorch
 import pytest
-from neotorch import Layout, Node, Shape, Stride, Tree
-from neotorch.einops import Token, TokenKind, lex, parse_layout_ref, parse_rearrange
+from neotorch import (
+    Generic,
+    Layout,
+    Node,
+    RearrangeOperation,
+    Shape,
+    Stride,
+    Tensor,
+    Tree,
+)
+from neotorch.einops import (
+    Token,
+    TokenKind,
+    lex,
+    parse_layout_ref,
+    parse_rearrange,
+    rearrange,
+)
 
 VALID_FUZZ_SEED = 1103515245
 INVALID_FUZZ_SEED = 8675309
@@ -16,10 +34,20 @@ PUNCTUATION_TOKENS: list[tuple[TokenKind, str]] = [
     ("comma", ","),
     ("one", "1"),
 ]
+native_einops = cast(Any, import_module("neotorch._einops"))
 
 
 def token_values(tokens: list[Token]) -> list[tuple[str, str, int, int]]:
     return [(token.kind, token.value, token.start, token.end) for token in tokens]
+
+
+def tensor_values(tensor: Tensor) -> list[Any]:
+    return [tensor[i] for i in range(tensor.size())]
+
+
+def require_grad(tensor: Tensor) -> Tensor:
+    assert tensor.grad is not None
+    return tensor.grad
 
 
 def reference_lex(command: str) -> list[tuple[str, str, int, int]]:
@@ -285,6 +313,103 @@ def test_einops_parse_layout_ref_rejects_invalid_syntax(tokens: list[Token]):
 def test_einops_parse_rearrange_rejects_invalid_syntax(command: str):
     with pytest.raises(ValueError):
         parse_rearrange(command)
+
+
+def test_einops_rearrange_string_api_returns_rearranged_tensor_view():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+
+    result = rearrange(tensor, "a b -> b a")
+
+    assert result.data is tensor.data
+    assert result.layout == Layout(Shape([3, 2]), Stride([2, 1]))
+    assert result[2, 1] == tensor[1, 2]
+    assert isinstance(result.autograd_ctx, RearrangeOperation)
+
+
+def test_top_level_rearrange_accepts_einops_string_descriptions():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+
+    result = neotorch.rearrange(tensor, "a b -> b a")
+
+    assert result.layout == Layout(Shape([3, 2]), Stride([2, 1]))
+    assert result[2, 1] == tensor[1, 2]
+
+
+def test_top_level_rearrange_preserves_existing_tree_api():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+
+    result = neotorch.rearrange(tensor, Tree(Node.id(1), Node.id(0)))
+
+    assert result.layout == Layout(Shape([3, 2]), Stride([2, 1]))
+    assert result[2, 1] == tensor[1, 2]
+
+
+def test_top_level_rearrange_rejects_string_description_with_explicit_selection():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+
+    with pytest.raises(TypeError):
+        neotorch.rearrange(
+            tensor,
+            cast(Any, "a b -> b a"),
+            Tree(Node.Leaf, Node.Leaf),
+        )
+
+
+def test_einops_rearrange_string_api_backpropagates_through_existing_operation():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    result = rearrange(tensor, "a b -> b a")
+    gradient = Tensor(Generic([10, 40, 20, 50, 30, 60]), 0, result.layout)
+
+    result.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    assert result.grad is None
+    assert tensor_grad.layout == tensor.layout
+    assert tensor_values(tensor_grad) == [10, 40, 20, 50, 30, 60]
+    assert type(tensor_grad.data) is type(tensor.data)
+
+
+def test_einops_parse_rearrange_reuses_cached_spec_objects():
+    first = parse_rearrange("cache_a cache_b -> cache_b cache_a")
+    second = parse_rearrange("cache_a cache_b -> cache_b cache_a")
+
+    assert first is second
+
+
+def test_native_rearrange_spec_cache_does_not_cache_failed_compilations():
+    calls = 0
+    cached_sentinel = object()
+    uncached_sentinel = object()
+
+    def compiler(_command: str) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("compile failed")
+        if calls == 2:
+            return cached_sentinel
+        return uncached_sentinel
+
+    with pytest.raises(ValueError):
+        native_einops._cached_rearrange_spec("failing-cache-key", compiler)
+
+    # The cache is private native state, so call count is the observable proxy:
+    # failure must miss, the retry must compile, and the final call must hit.
+    assert (
+        native_einops._cached_rearrange_spec("failing-cache-key", compiler)
+        is cached_sentinel
+    )
+    assert calls == 2
+    cached_result = native_einops._cached_rearrange_spec("failing-cache-key", compiler)
+    assert cached_result is cached_sentinel
+    assert cached_result is not uncached_sentinel
+    assert calls == 2
+
+
+def test_einops_parse_rearrange_invalid_descriptions_still_raise_after_retries():
+    for _ in range(2):
+        with pytest.raises(ValueError):
+            parse_rearrange("invalid_a -> invalid_b")
 
 
 def test_einops_lex_matches_reference_for_deterministic_valid_fuzz_cases():

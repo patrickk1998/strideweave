@@ -54,6 +54,25 @@ def parse_layout_ref(tokens: Sequence[Token]) -> LayoutReference:
 
 
 def parse_rearrange(command: str) -> RearrangeSpec:
+    if not isinstance(command, str):
+        raise TypeError("command must be a str")
+    return cast(
+        RearrangeSpec,
+        _einops._cached_rearrange_spec(command, _parse_rearrange_uncached),
+    )
+
+
+def rearrange(tensor: Any, description: str) -> Any:
+    if not isinstance(description, str):
+        raise TypeError("description must be a str")
+    spec = parse_rearrange(description)
+
+    from .operation import rearrange as tree_rearrange
+
+    return tree_rearrange(tensor, spec.output, spec.selection)
+
+
+def _parse_rearrange_uncached(command: str) -> RearrangeSpec:
     tokens = lex(command)
     arrow_positions = [
         index for index, token in enumerate(tokens) if token.kind == "arrow"
@@ -186,4 +205,5 @@ __all__ = [
     "lex",
     "parse_layout_ref",
     "parse_rearrange",
+    "rearrange",
 ]

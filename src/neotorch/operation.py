@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from importlib import import_module
 from numbers import Number
 from operator import index as operator_index
-from typing import Any, cast
+from typing import Any, cast, overload
 
 from .layout import Layout, Shape, Stride, Tree
 
@@ -565,7 +565,23 @@ def matmul(lhs: Any, rhs: Any) -> Any:
     return _dispatch_binary("matmul", lhs, rhs).forward(lhs, rhs)
 
 
-def rearrange(tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
+@overload
+def rearrange(tensor: Any, output: str) -> Any: ...
+
+
+@overload
+def rearrange(tensor: Any, output: Tree, selection: Tree | None = None) -> Any: ...
+
+
+def rearrange(tensor: Any, output: Tree | str, selection: Tree | None = None) -> Any:
+    if isinstance(output, str):
+        if selection is not None:
+            raise TypeError(
+                "String rearrange descriptions do not accept an explicit selection"
+            )
+        from .einops import rearrange as einops_rearrange
+
+        return einops_rearrange(tensor, output)
     return _dispatch_unary("rearrange", tensor).forward(tensor, output, selection)
 
 

@@ -861,11 +861,13 @@ def test_tensor_rearrange_backward_preserves_original_singleton_strides():
 
 def test_tensor_rearrange_rejects_invalid_inputs():
     tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
-    invalid_output: Any = "output"
+    invalid_output: Any = object()
     invalid_selection: Any = "selection"
 
     with pytest.raises(TypeError):
         neotorch.rearrange(tensor, invalid_output)
+    with pytest.raises(ValueError):
+        neotorch.rearrange(tensor, "output")
     with pytest.raises(TypeError):
         neotorch.rearrange(tensor, Tree(Node.id(0), Node.id(1)), invalid_selection)
     with pytest.raises(ValueError):
