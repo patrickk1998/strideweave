@@ -3,7 +3,8 @@ import string
 from typing import Any
 
 import pytest
-from neotorch.einops import Token, TokenKind, lex
+from neotorch import Layout, Node, Shape, Stride, Tree
+from neotorch.einops import Token, TokenKind, lex, parse_layout_ref, parse_rearrange
 
 VALID_FUZZ_SEED = 1103515245
 INVALID_FUZZ_SEED = 8675309
@@ -184,6 +185,106 @@ def test_einops_token_is_frozen_and_slotted():
     assert not hasattr(token, "__dict__")
     with pytest.raises(AttributeError):
         token.kind = "symbol"  # type: ignore[misc]
+
+
+def test_einops_parse_layout_ref_builds_tree_and_infix_symbol_ids():
+    reference = parse_layout_ref(lex("a (b c)"))
+
+    assert reference.tree == Tree(Node.Leaf, Tree(Node.Leaf, Node.Leaf))
+    assert reference.symbol_ids == (("a", 0), ("b", 1), ("c", 2))
+
+
+def test_einops_parse_rearrange_builds_selection_and_output_trees():
+    spec = parse_rearrange("a (b c) -> a c")
+
+    assert spec.selection == Tree(Node.Leaf, Tree(Node.Leaf, Node.Leaf))
+    assert spec.output == Tree(Node.id(0), Node.id(2))
+    assert spec.symbol_ids == (("a", 0), ("b", 1), ("c", 2))
+
+
+def test_einops_parse_rearrange_preserves_nested_output_structure():
+    spec = parse_rearrange("a b c -> a (b c)")
+
+    assert spec.selection == Tree(Node.Leaf, Node.Leaf, Node.Leaf)
+    assert spec.output == Tree(Node.id(0), Tree(Node.id(1), Node.id(2)))
+
+
+def test_einops_parse_rearrange_tracks_anonymous_left_singletons():
+    spec = parse_rearrange("1 a -> a")
+
+    assert spec.selection == Tree(Node.Leaf, Node.Leaf)
+    assert spec.output == Tree(Node.id(1))
+    assert spec.symbol_ids == (("a", 1),)
+
+
+def test_einops_parse_rearrange_inserts_output_singletons():
+    spec = parse_rearrange("a -> a 1")
+
+    assert spec.selection == Tree(Node.Leaf)
+    assert spec.output == Tree(Node.id(0), Node.Leaf)
+
+
+def test_einops_parse_rearrange_output_works_with_layout_rearrange():
+    spec = parse_rearrange("a (b c) -> (b c) a")
+    layout = Layout(Shape([2, [3, 4]]), Stride([1, [2, 6]]))
+
+    result = Layout.rearrange(layout, spec.output, spec.selection)
+
+    assert result == Layout(Shape([[3, 4], 2]), Stride([[2, 6], 1]))
+
+
+def test_einops_parse_rearrange_left_singleton_compatibility_uses_layout_validation():
+    spec = parse_rearrange("1 a -> a")
+
+    assert Layout.rearrange(
+        Layout(Shape([1, 3]), Stride([5, 1])),
+        spec.output,
+        spec.selection,
+    ) == Layout(Shape(3), Stride(1))
+    with pytest.raises(ValueError):
+        Layout.rearrange(
+            Layout(Shape([2, 3]), Stride([1, 2])),
+            spec.output,
+            spec.selection,
+        )
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        [],
+        lex("a ()"),
+        lex("a )"),
+        lex("a (b"),
+        lex("a, b"),
+        lex("a -> b"),
+    ],
+)
+def test_einops_parse_layout_ref_rejects_invalid_syntax(tokens: list[Token]):
+    with pytest.raises(ValueError):
+        parse_layout_ref(tokens)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "a a -> a",
+        "a b -> a a",
+        "a -> b",
+        "a ->",
+        "-> a",
+        "a b",
+        "a -> b -> c",
+        "a () -> a",
+        "a (b -> a",
+        "a b) -> a",
+        "a, b -> a",
+        "a -> a, b",
+    ],
+)
+def test_einops_parse_rearrange_rejects_invalid_syntax(command: str):
+    with pytest.raises(ValueError):
+        parse_rearrange(command)
 
 
 def test_einops_lex_matches_reference_for_deterministic_valid_fuzz_cases():
