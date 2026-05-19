@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Literal, cast
 
-from .layout import Node, Tree
+from .layout import Layout, Node, Tree
 
 TokenKind = Literal[
     "left_paren",
@@ -48,6 +48,19 @@ class ReduceSpec:
     symbol_ids: tuple[tuple[str, int], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class EinsumSpec:
+    lhs_selection: Tree
+    rhs_selection: Tree
+    lhs_rearrange_output: Tree
+    rhs_rearrange_output: Tree
+    matmul_output_selection: Tree
+    output: Tree
+    lhs_symbol_ids: tuple[tuple[str, int], ...]
+    rhs_symbol_ids: tuple[tuple[str, int], ...]
+    common_symbols: tuple[str, ...]
+
+
 _einops = import_module("neotorch._einops")
 
 
@@ -80,6 +93,15 @@ def parse_reduce(command: str) -> ReduceSpec:
     )
 
 
+def parse_einsum(command: str) -> EinsumSpec:
+    if not isinstance(command, str):
+        raise TypeError("command must be a str")
+    return cast(
+        EinsumSpec,
+        _einops._cached_einsum_spec(command, _parse_einsum_uncached),
+    )
+
+
 def rearrange(tensor: Any, description: str) -> Any:
     if not isinstance(description, str):
         raise TypeError("description must be a str")
@@ -100,6 +122,25 @@ def reduce(tensor: Any, description: str) -> Any:
 
     intermediate = tree_rearrange(tensor, spec.rearrange_output, spec.selection)
     return tensor_reduce(intermediate)
+
+
+def einsum(lhs: Any, rhs: Any, description: str) -> Any:
+    if not isinstance(description, str):
+        raise TypeError("description must be a str")
+    spec = parse_einsum(description)
+    _validate_einsum_shared_symbol_sizes(lhs, rhs, spec)
+
+    from .operation import matmul
+    from .operation import rearrange as tree_rearrange
+
+    lhs_intermediate = tree_rearrange(
+        lhs, spec.lhs_rearrange_output, spec.lhs_selection
+    )
+    rhs_intermediate = tree_rearrange(
+        rhs, spec.rhs_rearrange_output, spec.rhs_selection
+    )
+    result = matmul(lhs_intermediate, rhs_intermediate)
+    return tree_rearrange(result, spec.output, spec.matmul_output_selection)
 
 
 def _parse_rearrange_uncached(command: str) -> RearrangeSpec:
@@ -133,6 +174,45 @@ def _parse_reduce_uncached(command: str) -> ReduceSpec:
     )
 
 
+def _parse_einsum_uncached(command: str) -> EinsumSpec:
+    tokens, comma_position, arrow_position = _split_einsum_command(command)
+    lhs_ref = parse_layout_ref(tokens[:comma_position])
+    rhs_ref = parse_layout_ref(tokens[comma_position + 1 : arrow_position])
+
+    rhs_symbol_ids = dict(rhs_ref.symbol_ids)
+    common_symbols = tuple(
+        symbol for symbol, _source_id in lhs_ref.symbol_ids if symbol in rhs_symbol_ids
+    )
+    if len(common_symbols) == 0:
+        raise ValueError("Einsum command must include at least one shared dimension")
+
+    common_set = set(common_symbols)
+    output_symbol_ids, matmul_output_selection = _einsum_output_symbol_ids(
+        lhs_ref.symbol_ids, rhs_ref.symbol_ids, common_set
+    )
+    output_parser = _OutputParser(tokens[arrow_position + 1 :], output_symbol_ids)
+    output = output_parser.parse()
+    required_output_symbols = set(output_symbol_ids)
+    if output_parser.used_symbols != required_output_symbols:
+        missing = sorted(required_output_symbols - output_parser.used_symbols)
+        raise ValueError(
+            "Einsum output must include every non-shared input symbol: "
+            + ", ".join(missing)
+        )
+
+    return EinsumSpec(
+        lhs_ref.tree,
+        rhs_ref.tree,
+        _einsum_input_rearrange_output(lhs_ref.symbol_ids, common_symbols),
+        _einsum_input_rearrange_output(rhs_ref.symbol_ids, common_symbols),
+        matmul_output_selection,
+        output,
+        lhs_ref.symbol_ids,
+        rhs_ref.symbol_ids,
+        common_symbols,
+    )
+
+
 def _split_command(command: str, command_name: str) -> tuple[list[Token], int]:
     tokens = lex(command)
     arrow_positions = [
@@ -143,6 +223,95 @@ def _split_command(command: str, command_name: str) -> tuple[list[Token], int]:
     if len(arrow_positions) > 1:
         raise ValueError(f"{command_name} command must contain only one '->' arrow")
     return tokens, arrow_positions[0]
+
+
+def _split_einsum_command(command: str) -> tuple[list[Token], int, int]:
+    tokens, arrow_position = _split_command(command, "Einsum")
+    comma_positions = [
+        index
+        for index, token in enumerate(tokens[:arrow_position])
+        if token.kind == "comma"
+    ]
+    if len(comma_positions) == 0:
+        raise ValueError("Einsum command must contain one comma before '->'")
+    if len(comma_positions) > 1:
+        raise ValueError("Einsum command must contain only one comma before '->'")
+    return tokens, comma_positions[0], arrow_position
+
+
+def _einsum_input_rearrange_output(
+    symbol_ids: tuple[tuple[str, int], ...], common_symbols: tuple[str, ...]
+) -> Tree:
+    common_set = set(common_symbols)
+    outer_ids = [
+        source_id for symbol, source_id in symbol_ids if symbol not in common_set
+    ]
+    inner_ids = [dict(symbol_ids)[symbol] for symbol in common_symbols]
+    outer = _tree_from_source_ids(outer_ids, singleton_if_empty=True)
+    inner = _tree_from_source_ids(inner_ids, singleton_if_empty=False)
+    return Tree(outer, inner)
+
+
+def _einsum_output_symbol_ids(
+    lhs_symbol_ids: tuple[tuple[str, int], ...],
+    rhs_symbol_ids: tuple[tuple[str, int], ...],
+    common_set: set[str],
+) -> tuple[dict[str, int], Tree]:
+    output_symbol_ids: dict[str, int] = {}
+    next_id = 0
+
+    lhs_outer_symbols = [
+        symbol for symbol, _id in lhs_symbol_ids if symbol not in common_set
+    ]
+    lhs_selection = _selection_tree(len(lhs_outer_symbols), singleton_if_empty=True)
+    for symbol in lhs_outer_symbols:
+        output_symbol_ids[symbol] = next_id
+        next_id += 1
+    if len(lhs_outer_symbols) == 0:
+        next_id += 1
+
+    rhs_outer_symbols = [
+        symbol for symbol, _id in rhs_symbol_ids if symbol not in common_set
+    ]
+    rhs_selection = _selection_tree(len(rhs_outer_symbols), singleton_if_empty=True)
+    for symbol in rhs_outer_symbols:
+        output_symbol_ids[symbol] = next_id
+        next_id += 1
+    if len(rhs_outer_symbols) == 0:
+        next_id += 1
+
+    return output_symbol_ids, Tree(lhs_selection, rhs_selection)
+
+
+def _tree_from_source_ids(source_ids: list[int], *, singleton_if_empty: bool) -> Tree:
+    if len(source_ids) == 0:
+        if not singleton_if_empty:
+            raise ValueError("Einsum inner dimension must not be empty")
+        return Tree(Node.Leaf)
+    return Tree(*(Node.id(source_id) for source_id in source_ids))
+
+
+def _selection_tree(size: int, *, singleton_if_empty: bool) -> Tree:
+    if size == 0:
+        if not singleton_if_empty:
+            raise ValueError("Einsum selection must not be empty")
+        return Tree(Node.Leaf)
+    return Tree(*(Node.Leaf for _ in range(size)))
+
+
+def _validate_einsum_shared_symbol_sizes(lhs: Any, rhs: Any, spec: EinsumSpec) -> None:
+    lhs_layouts = Layout.extract_profile(lhs.layout, spec.lhs_selection)
+    rhs_layouts = Layout.extract_profile(rhs.layout, spec.rhs_selection)
+    lhs_symbol_ids = dict(spec.lhs_symbol_ids)
+    rhs_symbol_ids = dict(spec.rhs_symbol_ids)
+
+    for symbol in spec.common_symbols:
+        lhs_size = lhs_layouts[lhs_symbol_ids[symbol]].shape.logical_size
+        rhs_size = rhs_layouts[rhs_symbol_ids[symbol]].shape.logical_size
+        if lhs_size != rhs_size:
+            raise ValueError(
+                f"Einsum shared dimension '{symbol}' has mismatched logical size"
+            )
 
 
 def _source_ids(tree: Tree) -> set[int]:
@@ -267,13 +436,16 @@ class _OutputParser(_BaseParser):
 
 
 __all__ = [
+    "EinsumSpec",
     "LayoutReference",
     "RearrangeSpec",
     "ReduceSpec",
     "Token",
     "TokenKind",
     "lex",
+    "einsum",
     "parse_layout_ref",
+    "parse_einsum",
     "parse_rearrange",
     "parse_reduce",
     "rearrange",

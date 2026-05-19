@@ -581,6 +581,15 @@ def matmul(lhs: Any, rhs: Any) -> Any:
     return _dispatch_binary("matmul", lhs, rhs).forward(lhs, rhs)
 
 
+def einsum(lhs: Any, rhs: Any, description: str) -> Any:
+    if not isinstance(description, str):
+        raise TypeError("description must be a str")
+
+    from .einops import einsum as einops_einsum
+
+    return einops_einsum(lhs, rhs, description)
+
+
 @overload
 def rearrange(tensor: Any, output: str) -> Any: ...
 
@@ -625,6 +634,7 @@ __all__ = [
     "add",
     "div",
     "elementwise_mul",
+    "einsum",
     "exp",
     "is_grad_enabled",
     "matmul",

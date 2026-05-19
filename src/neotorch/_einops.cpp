@@ -147,6 +147,11 @@ std::unordered_map<std::string, py::object>& reduce_spec_cache() {
     return *cache;
 }
 
+std::unordered_map<std::string, py::object>& einsum_spec_cache() {
+    static auto* cache = new std::unordered_map<std::string, py::object>();
+    return *cache;
+}
+
 py::object cached_spec(
     py::str command,
     py::function compiler,
@@ -171,6 +176,10 @@ py::object cached_reduce_spec(py::str command, py::function compiler) {
     return cached_spec(command, compiler, reduce_spec_cache());
 }
 
+py::object cached_einsum_spec(py::str command, py::function compiler) {
+    return cached_spec(command, compiler, einsum_spec_cache());
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_einops, module) {
@@ -185,6 +194,12 @@ PYBIND11_MODULE(_einops, module) {
     module.def(
         "_cached_reduce_spec",
         &cached_reduce_spec,
+        py::arg("command"),
+        py::arg("compiler")
+    );
+    module.def(
+        "_cached_einsum_spec",
+        &cached_einsum_spec,
         py::arg("command"),
         py::arg("compiler")
     );
