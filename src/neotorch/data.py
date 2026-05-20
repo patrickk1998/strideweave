@@ -27,6 +27,8 @@ class _MutableSizedIndexable(_SizedIndexable, Protocol):
 
 
 class DataType(Enum):
+    """Logical data type tags used by Neotorch data backends."""
+
     Any = "Any"
     Float32 = "Float32"
 
@@ -50,6 +52,8 @@ def _as_sized_indexable(
 
 
 class Generic(Data):
+    """Python-backed data storage for generic Neotorch tensors."""
+
     def __init__(self, values: Iterable[Any], *, mutable: bool = True):
         super().__init__()
         self._mutable = bool(mutable)
@@ -162,6 +166,8 @@ class Generic(Data):
 
 
 class GenericEvictable(Generic):
+    """Generic data storage that can pickle values to disk while evicted."""
+
     def __init__(
         self, values: Iterable[Any], path: str | PathLike[str], *, mutable: bool = True
     ):

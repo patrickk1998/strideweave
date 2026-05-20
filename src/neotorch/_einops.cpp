@@ -26,7 +26,7 @@ bool is_ascii_whitespace(char value) {
 void ensure_ascii(char value, std::size_t position) {
     if (static_cast<unsigned char>(value) >= 128) {
         throw py::value_error(
-            "Einops command must contain only ASCII characters at offset " +
+            "Layout command must contain only ASCII characters at offset " +
             std::to_string(position)
         );
     }
@@ -183,7 +183,7 @@ py::object cached_einsum_spec(py::str command, py::function compiler) {
 }  // namespace
 
 PYBIND11_MODULE(_einops, module) {
-    module.doc() = "Native lexer for neotorch einops commands";
+    module.doc() = "Native lexer for Neotorch hierarchical layout commands";
     module.def("lex", &lex, py::arg("command"), py::arg("token_type"));
     module.def(
         "_cached_rearrange_spec",

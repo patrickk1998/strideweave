@@ -23,6 +23,8 @@ class _NodeLeaf:
 
 
 class Node(Enum):
+    """Tree markers used to describe layout leaves, nesting, and source ids."""
+
     Leaf = 1
     Push = 2
     Pop = 3
@@ -37,6 +39,8 @@ def _is_leaf_marker(value: object) -> bool:
 
 
 class Tree(tuple):
+    """Immutable hierarchical tree used to describe layout structure."""
+
     size: int
     depth: int
 
@@ -148,6 +152,8 @@ class _ShapeLevel(tuple):
 
 
 class Shape:
+    """Hierarchical positive-integer tensor shape."""
+
     top_level: _ShapeLevel
     depth: int
     logical_size: int
@@ -278,6 +284,8 @@ class _StrideLevel(tuple):
 
 
 class Stride:
+    """Hierarchical non-negative tensor stride profile."""
+
     top_level: _StrideLevel
     depth: int
 
@@ -404,6 +412,8 @@ class LayoutIterable:
 
 
 class Layout:
+    """Hierarchical shape and stride pair for logical-to-physical indexing."""
+
     _cache: Any
 
     def __init__(self, shape: Shape, stride: Stride):

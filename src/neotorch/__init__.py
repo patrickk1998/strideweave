@@ -1,3 +1,5 @@
+"""Public Neotorch API for tensor data, layouts, operations, and autograd helpers."""
+
 from .data import CPU, Data, DataType, Generic, GenericEvictable
 from .layout import Layout, Node, Shape, Stride, Tree
 from .operation import (

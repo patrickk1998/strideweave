@@ -1,3 +1,25 @@
+"""Neotorch hierarchical layout command parsing and tensor operation helpers.
+
+This module exposes a native lexer, Python parsers for layout references, and
+string-based rearrange, reduce, and einsum wrappers built on Neotorch layouts.
+
+Description strings are built from layout references. A layout reference is a
+whitespace-separated sequence of dimension symbols, literal ``1`` singleton
+dimensions, and parenthesized groups such as ``"a (b c)"``. Dimension symbols
+name extracted layout leaves in infix order. Parenthesized groups preserve or
+create hierarchical layout modes. ``->`` separates input references from output
+references, and the two-input contraction form uses a comma before the arrow:
+``"lhs, rhs -> output"``.
+
+The tensor operations lower string descriptions into existing layout operations.
+Rearrange reorders, groups, drops singleton dimensions, or inserts literal
+``1`` dimensions without copying data. Reduce rearranges the tensor into a
+two-mode intermediate ``(kept, reduced)`` layout and sums the second mode.
+The contraction helper rearranges each input into ``(outer, shared_inner)``
+two-mode layouts, uses matmul to contract the shared second mode, and
+rearranges the matmul result to the requested output.
+"""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -16,10 +38,16 @@ TokenKind = Literal[
     "one",
     "symbol",
 ]
+# Typing aliases do not support statement docstrings.
+cast(
+    Any, TokenKind
+).__doc__ = "String literal token kinds emitted by the Neotorch layout lexer."
 
 
 @dataclass(frozen=True, slots=True)
 class Token:
+    """Lexed token from a Neotorch layout command string."""
+
     kind: TokenKind
     value: str
     start: int
@@ -28,12 +56,16 @@ class Token:
 
 @dataclass(frozen=True, slots=True)
 class LayoutReference:
+    """Parsed layout-reference tree plus symbol-to-source-id bindings."""
+
     tree: Tree
     symbol_ids: tuple[tuple[str, int], ...]
 
 
 @dataclass(frozen=True, slots=True)
 class RearrangeSpec:
+    """Compiled rearrange command expressed as selection and output trees."""
+
     selection: Tree
     output: Tree
     symbol_ids: tuple[tuple[str, int], ...]
@@ -41,6 +73,8 @@ class RearrangeSpec:
 
 @dataclass(frozen=True, slots=True)
 class ReduceSpec:
+    """Compiled reduce command lowered through rearrange then sum-reduce."""
+
     selection: Tree
     output: Tree
     reduced: Tree
@@ -50,6 +84,8 @@ class ReduceSpec:
 
 @dataclass(frozen=True, slots=True)
 class EinsumSpec:
+    """Compiled two-input contraction command lowered through rearrange and matmul."""
+
     lhs_selection: Tree
     rhs_selection: Tree
     lhs_rearrange_output: Tree
@@ -65,17 +101,98 @@ _einops = import_module("neotorch._einops")
 
 
 def lex(command: str) -> list[Token]:
+    """Tokenize a Neotorch layout command string.
+
+    The lexer scans ASCII command text, skips whitespace, and emits tokens with
+    zero-based source offsets for parser construction.
+
+    Syntax:
+        Recognized tokens are ``(``, ``)``, ``->``, ``,``; the singleton
+        literal ``1``; and dimension symbols matching ``[A-Za-z][A-Za-z0-9_]*``.
+        Non-ASCII characters, malformed arrows, and numbers other than the
+        singleton ``1`` are invalid.
+
+    Args:
+        command: Neotorch layout command string to tokenize.
+
+    Returns:
+        A list of tokens in source order.
+
+    Examples:
+        >>> from neotorch.einops import lex
+        >>> [token.kind for token in lex("a (b c) -> c a")]
+        ['symbol', 'left_paren', 'symbol', 'symbol', 'right_paren', 'arrow', 'symbol', 'symbol']
+    """
+
     if not isinstance(command, str):
         raise TypeError("command must be a str")
     return cast(list[Token], _einops.lex(command, Token))
 
 
 def parse_layout_ref(tokens: Sequence[Token]) -> LayoutReference:
+    """Parse a layout-reference token sequence.
+
+    Symbols and singleton markers are converted into a selection tree whose
+    leaves correspond to extracted source-layout positions.
+
+    Syntax:
+        A layout reference is a non-empty sequence of symbols, singleton ``1``
+        markers, and non-empty parenthesized layout references. Commas and
+        arrows are not valid inside an individual layout reference.
+
+    Semantics:
+        Leaves are assigned source ids in infix parse order. Named symbols are
+        recorded in ``symbol_ids``; literal ``1`` leaves consume ids but remain
+        anonymous.
+
+    Args:
+        tokens: Tokens making up one layout reference, without commas or arrows.
+
+    Returns:
+        Parsed layout reference containing the tree and named symbol ids.
+
+    Examples:
+        >>> from neotorch.einops import lex, parse_layout_ref
+        >>> ref = parse_layout_ref(lex("a (b c)"))
+        >>> ref.symbol_ids
+        (('a', 0), ('b', 1), ('c', 2))
+    """
+
     parser = _SelectionParser(tokens)
     return parser.parse()
 
 
 def parse_rearrange(command: str) -> RearrangeSpec:
+    """Compile a rearrange command.
+
+    The compiled spec maps the input layout reference to an output tree suitable
+    for the lower-level Tree-based rearrange operation.
+
+    Syntax:
+        Rearrange descriptions have the form ``"input -> output"``. The left
+        side names each selected source layout leaf once. The right side may
+        reorder those names, group them with parentheses, omit dimensions whose
+        logical size is ``1``, or insert singleton dimensions with literal ``1``.
+
+    Semantics:
+        The left side becomes the selection tree passed to ``Layout.rearrange``.
+        The right side becomes the output tree. The operation changes only the
+        tensor layout and offset relationship; it does not copy tensor data.
+
+    Args:
+        command: Rearrange command containing exactly one ``->`` separator.
+
+    Returns:
+        Cached rearrange spec for the command string.
+
+    Examples:
+        >>> from neotorch import Node, Tree
+        >>> from neotorch.einops import parse_rearrange
+        >>> spec = parse_rearrange("a b -> b a")
+        >>> spec.output == Tree(Node.id(1), Node.id(0))
+        True
+    """
+
     if not isinstance(command, str):
         raise TypeError("command must be a str")
     return cast(
@@ -85,6 +202,37 @@ def parse_rearrange(command: str) -> RearrangeSpec:
 
 
 def parse_reduce(command: str) -> ReduceSpec:
+    """Compile a sum-reduce command.
+
+    Omitted left-hand-side dimensions are treated as reduced dimensions and are
+    lowered into the second mode consumed by the tensor reduce operation.
+
+    Syntax:
+        Reduce descriptions have the form ``"input -> kept"``. The left side
+        names source layout leaves. The right side names the dimensions to keep,
+        may group kept dimensions with parentheses, and may include literal
+        ``1`` singleton dimensions. At least one left-side dimension must be
+        omitted.
+
+    Semantics:
+        The omitted dimensions are reduced by summation. The command is lowered
+        by rearranging the input into a two-mode layout ``(kept, omitted)`` and
+        then applying the tensor reduce primitive, which assumes a two-mode
+        tensor and reduces its second top-level mode.
+
+    Args:
+        command: Reduce command containing exactly one ``->`` separator.
+
+    Returns:
+        Cached reduce spec with selection, output, and intermediate layout trees.
+
+    Examples:
+        >>> from neotorch.einops import parse_reduce
+        >>> spec = parse_reduce("a b -> a")
+        >>> spec.symbol_ids
+        (('a', 0), ('b', 1))
+    """
+
     if not isinstance(command, str):
         raise TypeError("command must be a str")
     return cast(
@@ -94,6 +242,38 @@ def parse_reduce(command: str) -> ReduceSpec:
 
 
 def parse_einsum(command: str) -> EinsumSpec:
+    """Compile a two-input contraction command.
+
+    Shared symbols between the two inputs become the contracted inner dimension,
+    and non-shared symbols are required in the output.
+
+    Syntax:
+        Contraction descriptions have the form ``"lhs, rhs -> output"``.
+        Symbols that appear on both inputs are shared contraction dimensions and
+        must not appear in the output. Non-shared input symbols must appear
+        exactly once in the output. The output may group dimensions with
+        parentheses and may insert literal ``1`` singleton dimensions.
+
+    Semantics:
+        Each input is rearranged into a two-mode layout ``(outer, shared_inner)``.
+        Shared dimensions are ordered by the left input and must have matching
+        logical sizes on both tensors. The operation then calls matmul, which
+        assumes two-mode tensors and contracts the second top-level mode, before
+        rearranging the result into the requested output layout.
+
+    Args:
+        command: Contraction command in ``lhs, rhs -> output`` form.
+
+    Returns:
+        Cached contraction spec describing the rearrange and matmul lowering.
+
+    Examples:
+        >>> from neotorch.einops import parse_einsum
+        >>> spec = parse_einsum("a b, c b -> a c")
+        >>> spec.common_symbols
+        ('b',)
+    """
+
     if not isinstance(command, str):
         raise TypeError("command must be a str")
     return cast(
@@ -103,6 +283,42 @@ def parse_einsum(command: str) -> EinsumSpec:
 
 
 def rearrange(tensor: Any, description: str) -> Any:
+    """Rearrange a tensor using a Neotorch layout description.
+
+    The description is parsed, cached, and executed through the existing
+    autograd-aware Tree rearrange operation.
+
+    Syntax:
+        ``description`` must be ``"input -> output"``. Input symbols name the
+        tensor layout leaves in infix order. Output symbols select those leaves,
+        parentheses create hierarchical output modes, and literal ``1`` inserts
+        singleton dimensions.
+
+    Semantics:
+        The operation returns a view over the same backing data with the layout
+        transformed according to the parsed output tree.
+
+    Mode assumptions:
+        The input reference must describe the tensor's layout structure. Modes
+        may be hierarchical; each named leaf corresponds to one extracted
+        subtree selected by the left-hand reference. Omitted source dimensions
+        are valid only when their logical size is ``1``.
+
+    Args:
+        tensor: Tensor whose layout should be rearranged.
+        description: Rearrange command such as ``"a b -> b a"``.
+
+    Returns:
+        Tensor view with the rearranged layout.
+
+    Examples:
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> from neotorch.einops import rearrange
+        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> rearrange(x, "a b -> b a")[2, 1]
+        6
+    """
+
     if not isinstance(description, str):
         raise TypeError("description must be a str")
     spec = parse_rearrange(description)
@@ -113,6 +329,42 @@ def rearrange(tensor: Any, description: str) -> Any:
 
 
 def reduce(tensor: Any, description: str) -> Any:
+    """Sum-reduce a tensor using a Neotorch layout description.
+
+    Dimensions omitted from the output reference are grouped into the reduction
+    mode and summed by the tensor reduce operation.
+
+    Syntax:
+        ``description`` must be ``"input -> kept"``. Symbols omitted from
+        ``kept`` are summed away. Parentheses preserve hierarchical kept modes,
+        and literal ``1`` inserts singleton output dimensions.
+
+    Semantics:
+        The operation sums every logical element in each omitted-dimension
+        fiber and returns a tensor whose layout matches the kept reference.
+
+    Mode assumptions:
+        The described tensor may have any compatible hierarchical input layout,
+        but the command is lowered into a two-mode intermediate. The first mode
+        contains kept dimensions, and the second mode contains omitted
+        dimensions. The underlying tensor reduce primitive assumes that
+        two-mode intermediate and reduces the second top-level mode.
+
+    Args:
+        tensor: Tensor to reduce.
+        description: Reduce command such as ``"a b -> a"``.
+
+    Returns:
+        Tensor containing the kept dimensions after summing omitted dimensions.
+
+    Examples:
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> from neotorch.einops import reduce
+        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> reduce(x, "a b -> a")[1]
+        12
+    """
+
     if not isinstance(description, str):
         raise TypeError("description must be a str")
     spec = parse_reduce(description)
@@ -125,6 +377,46 @@ def reduce(tensor: Any, description: str) -> Any:
 
 
 def einsum(lhs: Any, rhs: Any, description: str) -> Any:
+    """Contract two tensors using a Neotorch contraction description.
+
+    Shared input symbols are reduced via matmul after each input is rearranged
+    into outer and shared-inner modes.
+
+    Syntax:
+        ``description`` must be ``"lhs, rhs -> output"``. Symbols present on
+        both inputs are contracted and must be absent from ``output``. Every
+        non-shared input symbol must appear exactly once in ``output``.
+        Parentheses preserve output grouping, and literal ``1`` inserts
+        singleton output dimensions.
+
+    Semantics:
+        The operation computes dot products over all shared dimensions and
+        returns the non-shared dimensions arranged as requested by ``output``.
+
+    Mode assumptions:
+        Each input reference must describe the corresponding tensor layout.
+        Before matmul, each tensor is rearranged into a two-mode layout
+        ``(outer, shared_inner)``. The shared-inner modes are ordered by the left
+        input and must have equal logical sizes. Matmul then contracts the
+        second top-level mode of both intermediates.
+
+    Args:
+        lhs: Left input tensor.
+        rhs: Right input tensor.
+        description: Contraction command in ``lhs, rhs -> output`` form.
+
+    Returns:
+        Tensor with the requested output layout and contracted values.
+
+    Examples:
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> from neotorch.einops import einsum
+        >>> lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> rhs = Tensor(Generic([1, 1, 1, 2, 2, 2]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> einsum(lhs, rhs, "a b, c b -> a c")[1, 1]
+        22
+    """
+
     if not isinstance(description, str):
         raise TypeError("description must be a str")
     spec = parse_einsum(description)
@@ -184,7 +476,9 @@ def _parse_einsum_uncached(command: str) -> EinsumSpec:
         symbol for symbol, _source_id in lhs_ref.symbol_ids if symbol in rhs_symbol_ids
     )
     if len(common_symbols) == 0:
-        raise ValueError("Einsum command must include at least one shared dimension")
+        raise ValueError(
+            "Contraction command must include at least one shared dimension"
+        )
 
     common_set = set(common_symbols)
     output_symbol_ids, matmul_output_selection = _einsum_output_symbol_ids(
@@ -233,9 +527,9 @@ def _split_einsum_command(command: str) -> tuple[list[Token], int, int]:
         if token.kind == "comma"
     ]
     if len(comma_positions) == 0:
-        raise ValueError("Einsum command must contain one comma before '->'")
+        raise ValueError("Contraction command must contain one comma before '->'")
     if len(comma_positions) > 1:
-        raise ValueError("Einsum command must contain only one comma before '->'")
+        raise ValueError("Contraction command must contain only one comma before '->'")
     return tokens, comma_positions[0], arrow_position
 
 
