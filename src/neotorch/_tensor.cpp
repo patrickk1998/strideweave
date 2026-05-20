@@ -152,11 +152,11 @@ public:
     }
 
     void backward(py::object gradient) {
-        validate_gradient(gradient);
+        py::object effective_gradient = normalize_backward_gradient(std::move(gradient));
         if (should_accumulate_grad()) {
-            accumulate_grad(gradient);
+            accumulate_grad(effective_gradient);
         }
-        backwards_traversal(std::move(gradient), autograd_ctx_);
+        backwards_traversal(std::move(effective_gradient), autograd_ctx_);
     }
 
     static void backwards_traversal(py::object gradient, py::object operation) {
@@ -186,6 +186,32 @@ private:
     Index data_index(py::object key) const {
         const Index layout_index = neotorch::layout_index::get_index(layout_, key);
         return offset_ + layout_index;
+    }
+
+    py::object normalize_backward_gradient(py::object gradient) const {
+        if (gradient.is_none()) {
+            return implicit_scalar_gradient();
+        }
+        validate_gradient(gradient);
+        return gradient;
+    }
+
+    py::object implicit_scalar_gradient() const {
+        if (!is_scalar()) {
+            throw py::value_error(
+                "Tensor.backward requires a gradient for non-scalar tensors"
+            );
+        }
+
+        py::list values;
+        values.append(py::int_(1));
+        py::object grad_data = data_.attr("new_like")(values);
+        return tensor_type()(grad_data, py::int_(0), layout_);
+    }
+
+    bool is_scalar() const {
+        return py::len(layout_) == 1 &&
+               py::cast<bool>(layout_.attr("is_leaf")) && size() == 1;
     }
 
     void validate_gradient(py::handle gradient) const {
@@ -330,7 +356,7 @@ PYBIND11_MODULE(_tensor, module) {
         .def("promote", &Tensor::promote)
         .def("dtype", &Tensor::dtype)
         .def("device", &Tensor::device)
-        .def("backward", &Tensor::backward, py::arg("gradient"))
+        .def("backward", &Tensor::backward, py::arg("gradient") = py::none())
         .def_static(
             "backwards_traversal",
             &Tensor::backwards_traversal,

@@ -5,6 +5,7 @@ from typing import Any
 import neotorch
 import pytest
 from neotorch import (
+    CPU,
     Data,
     DataType,
     Generic,
@@ -965,6 +966,97 @@ def test_tensor_backward_on_leaf_creates_detached_generic_grad():
     assert tensor.grad is not gradient
     assert type(tensor_grad.data) is type(tensor.data)
     assert tensor_values(tensor_grad) == [10, 20, 30, 40]
+
+
+def test_tensor_backward_without_gradient_on_scalar_leaf_creates_unit_grad():
+    layout = Layout(Shape(1), Stride(1))
+    tensor = Tensor(Generic([7]), 0, layout)
+
+    tensor.backward()
+    tensor_grad = require_grad(tensor)
+
+    assert tensor_grad.layout == layout
+    assert tensor_values(tensor_grad) == [1]
+    assert type(tensor_grad.data) is Generic
+
+
+def test_tensor_backward_without_gradient_through_scalar_operation_sets_input_grad():
+    layout = Layout(Shape(1), Stride(1))
+    tensor = Tensor(Generic([3]), 0, layout)
+    result = tensor * 2
+
+    result.backward()
+    tensor_grad = require_grad(tensor)
+
+    assert result.grad is None
+    assert tensor_values(tensor_grad) == [2]
+    assert type(tensor_grad.data) is type(tensor.data)
+
+
+def test_tensor_backward_without_gradient_on_scalar_accumulates_repeated_calls():
+    layout = Layout(Shape(1), Stride(1))
+    tensor = Tensor(Generic([3]), 0, layout)
+    result = tensor * 2
+
+    result.backward()
+    result.backward()
+    tensor_grad = require_grad(tensor)
+
+    assert tensor_values(tensor_grad) == [4]
+
+
+def test_tensor_backward_without_gradient_retains_non_leaf_scalar_grad():
+    layout = Layout(Shape(1), Stride(1))
+    tensor = Tensor(Generic([3]), 0, layout)
+    result = tensor * 2
+
+    result.retain_grad()
+    result.backward()
+
+    assert tensor_values(require_grad(result)) == [1]
+    assert tensor_values(require_grad(tensor)) == [2]
+
+
+def test_tensor_backward_explicit_scalar_gradient_overrides_implicit_gradient():
+    layout = Layout(Shape(1), Stride(1))
+    tensor = Tensor(Generic([3]), 0, layout)
+    result = tensor * 2
+    gradient = Tensor(Generic([5]), 0, layout)
+
+    result.retain_grad()
+    result.backward(gradient)
+
+    assert tensor_values(require_grad(result)) == [5]
+    assert tensor_values(require_grad(tensor)) == [10]
+
+
+def test_tensor_backward_without_gradient_rejects_non_scalar_tensor():
+    logical_size_one_layout = Layout(Shape([1, 1]), Stride([1, 1]))
+    logical_size_two_layout = Layout(Shape(2), Stride(1))
+    logical_size_one_tensor = Tensor(Generic([1]), 0, logical_size_one_layout)
+    logical_size_two_tensor = Tensor(Generic([1, 2]), 0, logical_size_two_layout)
+
+    with pytest.raises(
+        ValueError, match="Tensor.backward requires a gradient for non-scalar tensors"
+    ):
+        logical_size_one_tensor.backward()
+    with pytest.raises(
+        ValueError, match="Tensor.backward requires a gradient for non-scalar tensors"
+    ):
+        logical_size_two_tensor.backward()
+
+
+def test_tensor_backward_without_gradient_on_cpu_scalar_uses_cpu_grad():
+    layout = Layout(Shape(1), Stride(1))
+    data = CPU(1)
+    data[0] = 7.0
+    tensor = Tensor(data, 0, layout)
+
+    tensor.backward()
+    tensor_grad = require_grad(tensor)
+
+    assert tensor_values(tensor_grad) == pytest.approx([1.0])
+    assert type(tensor_grad.data) is CPU
 
 
 def test_tensor_backward_through_add_sets_input_grads():
