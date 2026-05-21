@@ -137,7 +137,9 @@ class Generic(Data):
             GenericMatmulOperation,
             GenericPowOperation,
             GenericReduceSumOperation,
+            GenericReLUOperation,
             GenericScalarMulOperation,
+            GenericSigmoidOperation,
             GenericViewOperation,
             PermuteOperation,
             RearrangeOperation,
@@ -154,6 +156,8 @@ class Generic(Data):
             "pow": GenericPowOperation,
             "rearrange": RearrangeOperation,
             "reduce": GenericReduceSumOperation,
+            "relu": GenericReLUOperation,
+            "sigmoid": GenericSigmoidOperation,
             "view": GenericViewOperation,
         }
         try:

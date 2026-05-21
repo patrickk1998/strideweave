@@ -414,6 +414,47 @@ class GenericExpOperation(Operation):
         return (_detached_tensor_like(tensor, values),)
 
 
+class GenericReLUOperation(Operation):
+    """Generic elementwise rectified linear unit operation."""
+
+    def _forward(self, tensor: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+
+        values = [max(0, tensor[i]) for i in range(tensor.size())]
+        return _detached_tensor_like(tensor, values)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        values = [gradient[i] if tensor[i] > 0 else 0 for i in range(gradient.size())]
+        return (_detached_tensor_like(tensor, values),)
+
+
+class GenericSigmoidOperation(Operation):
+    """Generic elementwise logistic sigmoid operation."""
+
+    def _forward(self, tensor: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+
+        values = [1.0 / (1.0 + math.exp(-tensor[i])) for i in range(tensor.size())]
+        self.ctx["output_values"] = values
+        return _detached_tensor_like(tensor, values)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        output_values = self.ctx["output_values"]
+        values = [
+            gradient[i] * output_values[i] * (1.0 - output_values[i])
+            for i in range(gradient.size())
+        ]
+        return (_detached_tensor_like(tensor, values),)
+
+
 class GenericPowOperation(Operation):
     """Generic elementwise power-to-scalar operation."""
 
@@ -731,6 +772,54 @@ def exp(tensor: Any) -> Any:
     return _dispatch_unary("exp", tensor).forward(tensor)
 
 
+def relu(tensor: Any) -> Any:
+    """Apply the rectified linear unit function elementwise.
+
+    ReLU maps negative values to ``0`` and keeps positive values unchanged. Its
+    autograd derivative is ``0`` for values less than or equal to ``0`` and
+    ``1`` for values greater than ``0``.
+
+    Args:
+        tensor: Tensor whose logical values should be transformed.
+
+    Returns:
+        Tensor containing ``max(0, value)`` for each input element.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([-1, 2]), 0, Layout(Shape(2), Stride(1)))
+        >>> neotorch.relu(x)[1]
+        2
+    """
+
+    return _dispatch_unary("relu", tensor).forward(tensor)
+
+
+def sigmoid(tensor: Any) -> Any:
+    """Apply the logistic sigmoid function elementwise.
+
+    Sigmoid maps each value ``x`` to ``1 / (1 + math.exp(-x))``. Its autograd
+    derivative multiplies the incoming gradient by ``sigmoid(x) * (1 -
+    sigmoid(x))``.
+
+    Args:
+        tensor: Tensor whose logical values should be transformed.
+
+    Returns:
+        Tensor containing the logistic sigmoid of each input element.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> neotorch.sigmoid(x)[0]
+        0.5
+    """
+
+    return _dispatch_unary("sigmoid", tensor).forward(tensor)
+
+
 def pow(tensor: Any, exponent: Any) -> Any:
     """Raise each tensor element to a scalar exponent.
 
@@ -949,8 +1038,10 @@ __all__ = [
     "GenericExpOperation",
     "GenericMatmulOperation",
     "GenericPowOperation",
+    "GenericReLUOperation",
     "GenericReduceSumOperation",
     "GenericScalarMulOperation",
+    "GenericSigmoidOperation",
     "GenericViewOperation",
     "Operation",
     "PermuteOperation",
@@ -968,6 +1059,8 @@ __all__ = [
     "pow",
     "rearrange",
     "reduce",
+    "relu",
     "set_grad_enabled",
+    "sigmoid",
     "view",
 ]
