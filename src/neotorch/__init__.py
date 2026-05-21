@@ -2,6 +2,7 @@
 
 from .data import CPU, Data, DataType, Generic, GenericEvictable
 from .layout import Layout, Node, Shape, Stride, Tree
+from .module import Module, Parameter
 from .operation import (
     GenericAddOperation,
     GenericDivOperation,
@@ -49,8 +50,10 @@ __all__ = [
     "GenericScalarMulOperation",
     "GenericViewOperation",
     "Layout",
+    "Module",
     "Node",
     "Operation",
+    "Parameter",
     "PermuteOperation",
     "RearrangeOperation",
     "Shape",
