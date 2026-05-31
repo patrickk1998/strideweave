@@ -28,10 +28,22 @@ class _VectorDataForTest(Data):
 
 class CPU(Data):
     def __init__(
-        self, size: int, pointer: int | None = None, *, mutable: bool = True
+        self,
+        size: int,
+        pointer: int | None = None,
+        *,
+        mutable: bool = True,
+        dtype: Any = None,
     ) -> None: ...
     def pointer(self) -> int: ...
     def set_value(self, index: int, value: Any) -> None: ...
+    def new_like(
+        self,
+        values: Iterable[Any],
+        *,
+        mutable: bool = True,
+        dtype: Any = None,
+    ) -> CPU: ...
     def scatter(
         self,
         to_scatter: Any,

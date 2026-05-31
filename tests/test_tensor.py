@@ -82,7 +82,7 @@ def test_tensor_public_api_imports():
 
 
 def test_tensor_constructor_exposes_read_only_api():
-    data = Generic(["alpha", "beta", "gamma", "delta"])
+    data = Generic(["alpha", "beta", "gamma", "delta"], dtype=DataType.Any)
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(data, 0, layout)
 
@@ -93,7 +93,8 @@ def test_tensor_constructor_exposes_read_only_api():
     assert tensor.dtype() is DataType.Any
     assert tensor.device() is type(data)
     assert tensor.autograd_ctx is None
-    assert tensor.grad is None
+    with pytest.raises(RuntimeError, match="grad is not available"):
+        tensor.grad
 
     with pytest.raises(AttributeError):
         setattr(tensor, "data", data)
@@ -442,7 +443,7 @@ def test_tensor_add_with_generic_data_returns_autograd_tensor():
 
     assert tensor_values(result) == [11, 22, 33, 44]
     assert result.layout == layout
-    assert result.dtype() is DataType.Any
+    assert result.dtype() is DataType.Floating
     assert result.device() is Generic
     assert isinstance(result.autograd_ctx, GenericAddOperation)
     assert result.autograd_ctx.inputs() == (lhs, rhs)
@@ -457,6 +458,71 @@ def test_tensor_add_function_matches_operator():
 
     assert tensor_values(result) == [11, 22, 33, 44]
     assert isinstance(result.autograd_ctx, GenericAddOperation)
+
+
+def test_tensor_any_dtype_disables_autograd_interfaces():
+    layout = Layout(Shape(2), Stride(1))
+    tensor = Tensor(Generic([1, 2], dtype=DataType.Any), 0, layout)
+    gradient = Tensor(Generic([1, 1]), 0, layout)
+
+    assert tensor.dtype() is DataType.Any
+    assert not tensor.is_differentiable()
+    with pytest.raises(RuntimeError, match="grad is not available"):
+        tensor.grad
+    with pytest.raises(RuntimeError, match="backward is not available"):
+        tensor.backward(gradient)
+    with pytest.raises(RuntimeError, match="retain_grad is not available"):
+        tensor.retain_grad()
+    with pytest.raises(RuntimeError, match="autograd_ctx is not available"):
+        tensor.autograd_ctx = object()
+
+
+def test_tensor_generic_any_operations_do_not_build_autograd_graphs():
+    layout = Layout(Shape(2), Stride(1))
+    lhs = Tensor(Generic([1, 2], dtype=DataType.Any), 0, layout)
+    rhs = Tensor(Generic([10, 20], dtype=DataType.Any), 0, layout)
+
+    result = lhs + rhs
+
+    assert result.dtype() is DataType.Any
+    assert tensor_values(result) == [11, 22]
+    assert result.autograd_ctx is None
+
+
+def test_tensor_generic_mixed_any_floating_only_accumulates_floating_grad():
+    layout = Layout(Shape(2), Stride(1))
+    any_tensor = Tensor(Generic([1, 2], dtype=DataType.Any), 0, layout)
+    floating_tensor = Tensor(Generic([10, 20]), 0, layout)
+
+    result = any_tensor + floating_tensor
+    result.backward(Tensor(Generic([3, 4]), 0, layout))
+    floating_grad = require_grad(floating_tensor)
+
+    assert result.dtype() is DataType.Floating
+    assert isinstance(result.autograd_ctx, GenericAddOperation)
+    assert tensor_values(floating_grad) == [3, 4]
+    with pytest.raises(RuntimeError, match="grad is not available"):
+        any_tensor.grad
+
+
+def test_tensor_generic_any_non_integer_result_ops_promote_to_floating():
+    layout = Layout(Shape(2), Stride(1))
+    tensor = Tensor(Generic([2, 4], dtype=DataType.Any), 0, layout)
+    rhs = Tensor(Generic([4, 2], dtype=DataType.Any), 0, layout)
+
+    div_result = tensor / rhs
+    exp_result = neotorch.exp(tensor)
+    sigmoid_result = neotorch.sigmoid(tensor)
+    pow_result = tensor**-1
+
+    assert div_result.dtype() is DataType.Floating
+    assert exp_result.dtype() is DataType.Floating
+    assert sigmoid_result.dtype() is DataType.Floating
+    assert pow_result.dtype() is DataType.Floating
+    assert div_result.autograd_ctx is None
+    assert exp_result.autograd_ctx is None
+    assert sigmoid_result.autograd_ctx is None
+    assert pow_result.autograd_ctx is None
 
 
 def test_tensor_add_accepts_unevicted_generic_evictable_data(tmp_path):

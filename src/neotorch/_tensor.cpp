@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 
+#include <stdexcept>
 #include <utility>
 
 #include "_layout_index.hpp"
@@ -65,8 +66,25 @@ bool layouts_equal(py::handle left, py::handle right) {
     return result == 1;
 }
 
+bool objects_equal(py::handle left, py::handle right) {
+    const int result = PyObject_RichCompareBool(left.ptr(), right.ptr(), Py_EQ);
+    if (result < 0) {
+        throw py::error_already_set();
+    }
+    return result == 1;
+}
+
 py::object tensor_type() {
     return py::module_::import("neotorch.tensor").attr("Tensor");
+}
+
+py::object data_type(const char* name) {
+    return py::module_::import("neotorch.data").attr("DataType").attr(name);
+}
+
+bool is_differentiable_dtype(py::handle dtype) {
+    return objects_equal(dtype, data_type("Float32")) ||
+           objects_equal(dtype, data_type("Floating"));
 }
 
 class Tensor {
@@ -100,16 +118,26 @@ public:
     py::object autograd_ctx() const { return autograd_ctx_; }
 
     void set_autograd_ctx(py::object autograd_ctx) {
+        if (!autograd_ctx.is_none()) {
+            require_differentiable("autograd_ctx is not available for non-differentiable tensors");
+        }
         autograd_ctx_ = std::move(autograd_ctx);
     }
 
-    py::object grad() const { return grad_; }
+    py::object grad() const {
+        require_differentiable("grad is not available for non-differentiable tensors");
+        return grad_;
+    }
 
     void set_grad(py::object grad) {
+        if (!grad.is_none()) {
+            require_differentiable("grad is not available for non-differentiable tensors");
+        }
         grad_ = std::move(grad);
     }
 
     void retain_grad(bool retain) {
+        require_differentiable("retain_grad is not available for non-differentiable tensors");
         retain_grad_ = retain;
     }
 
@@ -147,11 +175,14 @@ public:
 
     py::object dtype() const { return data_.attr("type")(); }
 
+    bool is_differentiable() const { return is_differentiable_dtype(dtype()); }
+
     py::object device() const {
         return py::module_::import("builtins").attr("type")(data_);
     }
 
     void backward(py::object gradient) {
+        require_differentiable("backward is not available for non-differentiable tensors");
         py::object effective_gradient = normalize_backward_gradient(std::move(gradient));
         if (should_accumulate_grad()) {
             accumulate_grad(effective_gradient);
@@ -178,11 +209,23 @@ public:
             py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
             py::object input_gradient =
                 py::reinterpret_borrow<py::object>(input_gradients[i]);
+            if (input_gradient.is_none()) {
+                continue;
+            }
+            if (!py::cast<bool>(input.attr("is_differentiable")())) {
+                continue;
+            }
             input.attr("backward")(input_gradient);
         }
     }
 
 private:
+    void require_differentiable(const char* message) const {
+        if (!is_differentiable()) {
+            throw std::runtime_error(message);
+        }
+    }
+
     Index data_index(py::object key) const {
         const Index layout_index = neotorch::layout_index::get_index(layout_, key);
         return offset_ + layout_index;
@@ -355,6 +398,7 @@ PYBIND11_MODULE(_tensor, module) {
         .def("evict", &Tensor::evict)
         .def("promote", &Tensor::promote)
         .def("dtype", &Tensor::dtype)
+        .def("is_differentiable", &Tensor::is_differentiable)
         .def("device", &Tensor::device)
         .def("backward", &Tensor::backward, py::arg("gradient") = py::none())
         .def_static(

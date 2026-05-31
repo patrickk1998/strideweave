@@ -18,22 +18,30 @@ from neotorch import (
 from neotorch.tensor import Tensor
 
 
-def make_cpu_data(values: Iterable[float]) -> CPU:
+def make_cpu_data(
+    values: Iterable[float | int], dtype: DataType = DataType.Float32
+) -> CPU:
     materialized = list(values)
-    data = CPU(len(materialized))
+    data = CPU(len(materialized), dtype=dtype)
     for index, value in enumerate(materialized):
         data[index] = value
     return data
 
 
-def make_cpu_tensor(values: Iterable[float], layout: Layout) -> Tensor:
-    return Tensor(make_cpu_data(values), 0, layout)
+def make_cpu_tensor(
+    values: Iterable[float | int],
+    layout: Layout,
+    dtype: DataType = DataType.Float32,
+) -> Tensor:
+    return Tensor(make_cpu_data(values, dtype), 0, layout)
 
 
 def make_cpu_tensor_with_logical_values(
-    values: Iterable[float], layout: Layout
+    values: Iterable[float | int],
+    layout: Layout,
+    dtype: DataType = DataType.Float32,
 ) -> Tensor:
-    data = CPU(layout._cache.cosize)
+    data = CPU(layout._cache.cosize, dtype=dtype)
     for logical_index, value in enumerate(values):
         data[layout.index(logical_index)] = value
     return Tensor(data, 0, layout)
@@ -102,6 +110,35 @@ def test_cpu_data_can_wrap_external_float32_pointer():
     assert values[1] == pytest.approx(9.5)
 
 
+def test_cpu_int32_data_contract_and_pointer_storage():
+    values = array("i", [1, -2, 3])
+    data = CPU(len(values), values.buffer_info()[0], dtype=DataType.Int32)
+
+    assert data.type() is DataType.Int32
+    assert [data[i] for i in range(data.size())] == [1, -2, 3]
+
+    data[1] = 9
+
+    assert data[1] == 9
+    assert values[1] == 9
+
+
+def test_cpu_int32_data_validates_writes_and_dtype():
+    data = CPU(1, dtype=DataType.Int32)
+
+    data[0] = 7
+    assert data[0] == 7
+
+    with pytest.raises(TypeError):
+        data[0] = 1.5
+
+    with pytest.raises(OverflowError):
+        data[0] = 2**31
+
+    with pytest.raises(ValueError):
+        CPU(1, dtype=DataType.Floating)
+
+
 def test_cpu_new_like_allocates_cpu_and_zero_fills_gap_placeholders():
     data = CPU(1)
 
@@ -110,6 +147,33 @@ def test_cpu_new_like_allocates_cpu_and_zero_fills_gap_placeholders():
     assert type(new_data) is CPU
     assert new_data.size() == 3
     assert [new_data[i] for i in range(new_data.size())] == [1.0, 0.0, 3.0]
+
+
+def test_cpu_new_like_preserves_or_overrides_dtype():
+    data = CPU(1, dtype=DataType.Int32)
+
+    preserved = data.new_like([1, None, 3])
+    overridden = data.new_like([1.5, None, 3.5], dtype=DataType.Float32)
+
+    assert preserved.type() is DataType.Int32
+    assert [preserved[i] for i in range(preserved.size())] == [1, 0, 3]
+    assert overridden.type() is DataType.Float32
+    assert [overridden[i] for i in range(overridden.size())] == [1.5, 0.0, 3.5]
+
+
+def test_cpu_int32_tensor_disables_autograd_interfaces():
+    tensor = make_cpu_tensor([1, 2], Layout(Shape(2), Stride(1)), DataType.Int32)
+    gradient = make_cpu_tensor([1.0, 1.0], tensor.layout)
+
+    assert not tensor.is_differentiable()
+    with pytest.raises(RuntimeError, match="grad is not available"):
+        tensor.grad
+    with pytest.raises(RuntimeError, match="backward is not available"):
+        tensor.backward(gradient)
+    with pytest.raises(RuntimeError, match="retain_grad is not available"):
+        tensor.retain_grad()
+    with pytest.raises(RuntimeError, match="autograd_ctx is not available"):
+        tensor.autograd_ctx = object()
 
 
 def test_cpu_dispatch_op_returns_supported_operations():
@@ -166,6 +230,39 @@ def test_cpu_add_uses_native_operation_and_no_grad_state():
         disabled_result = lhs + rhs
 
     assert disabled_result.autograd_ctx is None
+
+
+def test_cpu_int32_add_and_elementwise_mul_keep_int32_without_autograd():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = make_cpu_tensor([1, 2, 3, 4], layout, DataType.Int32)
+    rhs = make_cpu_tensor([10, 20, 30, 40], layout, DataType.Int32)
+
+    add_result = lhs + rhs
+    mul_result = lhs * rhs
+
+    assert add_result.dtype() is DataType.Int32
+    assert tensor_values(add_result) == [11, 22, 33, 44]
+    assert add_result.autograd_ctx is None
+    assert mul_result.dtype() is DataType.Int32
+    assert tensor_values(mul_result) == [10, 40, 90, 160]
+    assert mul_result.autograd_ctx is None
+
+
+def test_cpu_mixed_int32_float32_promotes_and_only_float_accumulates_grad():
+    layout = Layout(Shape(2), Stride(1))
+    int_tensor = make_cpu_tensor([1, 2], layout, DataType.Int32)
+    float_tensor = make_cpu_tensor([10.0, 20.0], layout)
+
+    result = int_tensor + float_tensor
+    result.backward(make_cpu_tensor([3.0, 4.0], layout))
+    float_grad = require_grad(float_tensor)
+
+    assert result.dtype() is DataType.Float32
+    assert tensor_values(result) == pytest.approx([11.0, 22.0])
+    assert type(result.autograd_ctx).__name__ == "_CPUAddOperation"
+    assert tensor_values(float_grad) == pytest.approx([3.0, 4.0])
+    with pytest.raises(RuntimeError, match="grad is not available"):
+        int_tensor.grad
 
 
 def test_cpu_operation_output_has_independent_storage():
@@ -234,6 +331,21 @@ def test_cpu_scalar_mul_uses_expanded_keys_for_hierarchical_strides():
     )
 
 
+def test_cpu_int32_scalar_mul_promotes_for_non_integral_scalar():
+    layout = Layout(Shape(3), Stride(1))
+    tensor = make_cpu_tensor([2, 3, 4], layout, DataType.Int32)
+
+    int_result = tensor * 3
+    float_result = tensor * 2.5
+
+    assert int_result.dtype() is DataType.Int32
+    assert tensor_values(int_result) == [6, 9, 12]
+    assert int_result.autograd_ctx is None
+    assert float_result.dtype() is DataType.Float32
+    assert tensor_values(float_result) == pytest.approx([5.0, 7.5, 10.0])
+    assert float_result.autograd_ctx is None
+
+
 def test_cpu_elementwise_mul_uses_native_operation_and_backpropagates():
     layout = Layout(Shape([2, 3]), Stride([1, 4]))
     lhs = make_cpu_tensor(range(layout._cache.cosize), layout)
@@ -253,6 +365,113 @@ def test_cpu_elementwise_mul_uses_native_operation_and_backpropagates():
     assert tensor_values(rhs_grad) == pytest.approx([lhs[i] for i in range(lhs.size())])
     assert type(lhs_grad.data) is CPU
     assert type(rhs_grad.data) is CPU
+
+
+def test_cpu_int32_non_integer_result_operations_promote_to_float32():
+    layout = Layout(Shape(2), Stride(1))
+    lhs = make_cpu_tensor([2, 3], layout, DataType.Int32)
+    rhs = make_cpu_tensor([4, 2], layout, DataType.Int32)
+
+    div_result = lhs / rhs
+    exp_result = neotorch.exp(lhs)
+    sigmoid_result = neotorch.sigmoid(lhs)
+    pow_result = lhs**-1
+
+    assert div_result.dtype() is DataType.Float32
+    assert tensor_values(div_result) == pytest.approx([0.5, 1.5])
+    assert exp_result.dtype() is DataType.Float32
+    assert tensor_values(exp_result) == pytest.approx([math.exp(2), math.exp(3)])
+    assert sigmoid_result.dtype() is DataType.Float32
+    assert tensor_values(sigmoid_result) == pytest.approx(
+        [1.0 / (1.0 + math.exp(-2)), 1.0 / (1.0 + math.exp(-3))]
+    )
+    assert pow_result.dtype() is DataType.Float32
+    assert tensor_values(pow_result) == pytest.approx([0.5, 1 / 3])
+    assert div_result.autograd_ctx is None
+    assert exp_result.autograd_ctx is None
+    assert sigmoid_result.autograd_ctx is None
+    assert pow_result.autograd_ctx is None
+
+
+def test_cpu_int32_pow_relu_reduce_and_matmul_preserve_int32():
+    layout = Layout(Shape(3), Stride(1))
+    tensor = make_cpu_tensor([-2, 3, 4], layout, DataType.Int32)
+    reduce_tensor = make_cpu_tensor(
+        [1, 2, 3, 4, 5, 6], Layout(Shape([2, 3]), Stride([1, 2])), DataType.Int32
+    )
+    lhs = make_cpu_tensor(
+        [1, 2, 3, 4, 5, 6], Layout(Shape([2, 3]), Stride([1, 2])), DataType.Int32
+    )
+    rhs = make_cpu_tensor(
+        [1, 0, 0, 1, 0, 1], Layout(Shape([2, 3]), Stride([1, 2])), DataType.Int32
+    )
+
+    pow_result = tensor**2
+    relu_result = neotorch.relu(tensor)
+    reduce_result = neotorch.reduce(reduce_tensor)
+    matmul_result = lhs @ rhs
+
+    assert pow_result.dtype() is DataType.Int32
+    assert tensor_values(pow_result) == [4, 9, 16]
+    assert relu_result.dtype() is DataType.Int32
+    assert tensor_values(relu_result) == [0, 3, 4]
+    assert reduce_result.dtype() is DataType.Int32
+    assert tensor_values(reduce_result) == [9, 12]
+    assert matmul_result.dtype() is DataType.Int32
+    assert tensor_values(matmul_result) == [1, 2, 8, 10]
+    assert pow_result.autograd_ctx is None
+    assert relu_result.autograd_ctx is None
+    assert reduce_result.autograd_ctx is None
+    assert matmul_result.autograd_ctx is None
+
+
+def test_cpu_int32_relu_preserves_large_values_without_float_rounding():
+    layout = Layout(Shape(3), Stride(1))
+    max_int32 = 2**31 - 1
+    tensor = make_cpu_tensor(
+        [max_int32, max_int32 - 1, -max_int32], layout, DataType.Int32
+    )
+
+    result = neotorch.relu(tensor)
+
+    assert result.dtype() is DataType.Int32
+    assert tensor_values(result) == [max_int32, max_int32 - 1, 0]
+
+
+def test_cpu_int32_operations_raise_on_overflow():
+    one_mode = Layout(Shape(1), Stride(1))
+    matmul_layout = Layout(Shape([1, 1]), Stride([1, 1]))
+    two_mode = Layout(Shape([1, 2]), Stride([1, 1]))
+    max_int32 = 2**31 - 1
+
+    with pytest.raises(OverflowError):
+        _ = make_cpu_tensor([max_int32], one_mode, DataType.Int32) + make_cpu_tensor(
+            [1], one_mode, DataType.Int32
+        )
+    with pytest.raises(OverflowError):
+        _ = make_cpu_tensor([max_int32], one_mode, DataType.Int32) * 2
+    with pytest.raises(OverflowError):
+        _ = make_cpu_tensor([50_000], one_mode, DataType.Int32) * make_cpu_tensor(
+            [50_000], one_mode, DataType.Int32
+        )
+    with pytest.raises(OverflowError):
+        neotorch.reduce(make_cpu_tensor([max_int32, 1], two_mode, DataType.Int32))
+    with pytest.raises(OverflowError):
+        _ = make_cpu_tensor(
+            [max_int32], matmul_layout, DataType.Int32
+        ) @ make_cpu_tensor([2], matmul_layout, DataType.Int32)
+
+
+def test_cpu_int32_hierarchical_layout_uses_expanded_keys():
+    # This layout has a storage gap, so the kernel must iterate logical expanded
+    # keys instead of assuming raw contiguous storage order.
+    layout = Layout(Shape([[2, 2]]), Stride([[1, 3]]))
+    tensor = make_cpu_tensor_with_logical_values([1, 2, 3, 4], layout, DataType.Int32)
+
+    result = tensor * 2
+
+    assert result.dtype() is DataType.Int32
+    assert tensor_values(result) == [2, 4, 6, 8]
 
 
 def test_cpu_div_uses_native_operation_and_backpropagates():

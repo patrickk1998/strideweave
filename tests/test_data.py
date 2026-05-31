@@ -66,7 +66,9 @@ def test_data_public_api_imports():
     assert neotorch.Generic is Generic
     assert neotorch.GenericEvictable is GenericEvictable
     assert DataType.Any.value == "Any"
+    assert DataType.Floating.value == "Floating"
     assert DataType.Float32.value == "Float32"
+    assert DataType.Int32.value == "Int32"
 
 
 def test_data_default_dispatch_op_raises_not_implemented():
@@ -211,7 +213,7 @@ def test_native_data_subclass_rejects_setitem_by_default():
 
 def test_generic_data_wraps_indexable_iterable():
     values = ["alpha", 2, None]
-    data = Generic(values)
+    data = Generic(values, dtype=DataType.Any)
 
     assert isinstance(data, Data)
     assert data.is_mutable()
@@ -223,6 +225,30 @@ def test_generic_data_wraps_indexable_iterable():
 
     values[1] = "updated"
     assert data[1] == "updated"
+
+
+def test_generic_data_defaults_to_floating_dtype():
+    data = Generic([1, 2, 3])
+
+    assert data.type() is DataType.Floating
+
+
+def test_generic_data_new_like_preserves_or_overrides_dtype():
+    data = Generic([1, 2, 3])
+
+    preserved = data.new_like([4, 5])
+    overridden = data.new_like(["alpha"], dtype=DataType.Any)
+
+    assert preserved.type() is DataType.Floating
+    assert overridden.type() is DataType.Any
+
+
+def test_generic_data_rejects_invalid_dtype():
+    with pytest.raises(ValueError):
+        Generic([1], dtype=DataType.Int32)
+
+    with pytest.raises(TypeError):
+        Generic([1], dtype="Floating")  # type: ignore[arg-type]
 
 
 def test_generic_data_mutates_backing_list_by_default():
@@ -386,7 +412,7 @@ def test_non_evictable_data_rejects_lifecycle_methods():
     cases = [
         PythonData(["alpha"]),
         native_data._VectorDataForTest(["alpha"]),
-        Generic(["alpha"]),
+        Generic(["alpha"], dtype=DataType.Any),
     ]
 
     for data in cases:
@@ -404,7 +430,7 @@ def test_non_evictable_data_rejects_lifecycle_methods():
 
 def test_generic_evictable_data_lifecycle(tmp_path):
     path = tmp_path / "data.pkl"
-    data = GenericEvictable(["alpha", 2, None], path)
+    data = GenericEvictable(["alpha", 2, None], path, dtype=DataType.Any)
 
     assert isinstance(data, Data)
     assert data.is_evictable()
@@ -441,15 +467,20 @@ def test_generic_evictable_data_lifecycle(tmp_path):
 
 
 def test_generic_evictable_new_like_preserves_data_class(tmp_path):
-    data = GenericEvictable(["alpha", "beta"], tmp_path / "data.pkl")
+    data = GenericEvictable(
+        ["alpha", "beta"], tmp_path / "data.pkl", dtype=DataType.Any
+    )
 
     new_data = data.new_like(["gamma", "delta"])
+    floating_data = data.new_like([1, 2], dtype=DataType.Floating)
 
     assert type(new_data) is GenericEvictable
     assert new_data.path != data.path
     assert new_data.size() == 2
     assert new_data[0] == "gamma"
     assert new_data.is_mutable()
+    assert new_data.type() is DataType.Any
+    assert floating_data.type() is DataType.Floating
 
 
 def test_generic_evictable_mutation_lifecycle(tmp_path):

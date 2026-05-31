@@ -30,7 +30,9 @@ class DataType(Enum):
     """Logical data type tags used by Neotorch data backends."""
 
     Any = "Any"
+    Floating = "Floating"
     Float32 = "Float32"
+    Int32 = "Int32"
 
 
 def _as_sized_indexable(
@@ -51,12 +53,27 @@ def _as_sized_indexable(
     return list(values)
 
 
+def _validate_generic_dtype(dtype: DataType) -> DataType:
+    if not isinstance(dtype, DataType):
+        raise TypeError("Generic dtype must be a DataType")
+    if dtype not in (DataType.Any, DataType.Floating):
+        raise ValueError("Generic dtype must be DataType.Any or DataType.Floating")
+    return dtype
+
+
 class Generic(Data):
     """Python-backed data storage for generic Neotorch tensors."""
 
-    def __init__(self, values: Iterable[Any], *, mutable: bool = True):
+    def __init__(
+        self,
+        values: Iterable[Any],
+        *,
+        mutable: bool = True,
+        dtype: DataType = DataType.Floating,
+    ):
         super().__init__()
         self._mutable = bool(mutable)
+        self._dtype = _validate_generic_dtype(dtype)
         self._values: _SizedIndexable | None = _as_sized_indexable(
             values, "Generic", mutable=self._mutable
         )
@@ -78,7 +95,7 @@ class Generic(Data):
         return len(self._require_values())
 
     def type(self) -> DataType:
-        return DataType.Any
+        return self._dtype
 
     def get_value(self, index: int) -> Any:
         return self._require_values()[index]
@@ -89,12 +106,20 @@ class Generic(Data):
     def set_value(self, index: int, value: Any) -> None:
         self._require_mutable_values()[index] = value
 
-    def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> Generic:
+    def new_like(
+        self,
+        values: Iterable[Any],
+        *,
+        mutable: bool = True,
+        dtype: DataType | None = None,
+    ) -> Generic:
         if type(self) is not Generic:
             raise NotImplementedError(
                 "Generic data factory only supports exact Generic data"
             )
-        return Generic(values, mutable=mutable)
+        return Generic(
+            values, mutable=mutable, dtype=self._dtype if dtype is None else dtype
+        )
 
     def scatter(
         self,
@@ -173,9 +198,14 @@ class GenericEvictable(Generic):
     """Generic data storage that can pickle values to disk while evicted."""
 
     def __init__(
-        self, values: Iterable[Any], path: str | PathLike[str], *, mutable: bool = True
+        self,
+        values: Iterable[Any],
+        path: str | PathLike[str],
+        *,
+        mutable: bool = True,
+        dtype: DataType = DataType.Floating,
     ):
-        super().__init__(values, mutable=mutable)
+        super().__init__(values, mutable=mutable, dtype=dtype)
         self.path = fspath(path)
         self._size = super().size()
 
@@ -186,11 +216,20 @@ class GenericEvictable(Generic):
         return True
 
     def new_like(
-        self, values: Iterable[Any], *, mutable: bool = True
+        self,
+        values: Iterable[Any],
+        *,
+        mutable: bool = True,
+        dtype: DataType | None = None,
     ) -> GenericEvictable:
         path = Path(self.path)
         new_path = path.with_name(f"{path.stem}-{uuid4().hex}{path.suffix}")
-        return GenericEvictable(values, new_path, mutable=mutable)
+        return GenericEvictable(
+            values,
+            new_path,
+            mutable=mutable,
+            dtype=self._dtype if dtype is None else dtype,
+        )
 
     def _evict(self) -> None:
         with open(self.path, "wb") as file:

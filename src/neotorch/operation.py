@@ -4,10 +4,11 @@ import math
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from importlib import import_module
-from numbers import Number
+from numbers import Integral, Number
 from operator import index as operator_index
 from typing import Any, cast, overload
 
+from .data import DataType
 from .layout import Layout, Shape, Stride, Tree
 
 _get_index = cast(Any, import_module("neotorch._index")).get_index
@@ -142,6 +143,30 @@ def _require_number(value: Any, name: str) -> Number:
     return value
 
 
+def _is_integral_number(value: Any) -> bool:
+    return isinstance(value, Integral) and not isinstance(value, bool)
+
+
+def _generic_binary_dtype(lhs: Any, rhs: Any) -> DataType:
+    if lhs.dtype() is DataType.Floating or rhs.dtype() is DataType.Floating:
+        return DataType.Floating
+    return DataType.Any
+
+
+def _generic_scalar_mul_dtype(tensor: Any, scalar: Any) -> DataType:
+    if tensor.dtype() is DataType.Floating or not _is_integral_number(scalar):
+        return DataType.Floating
+    return DataType.Any
+
+
+def _generic_pow_dtype(tensor: Any, exponent: Any) -> DataType:
+    if tensor.dtype() is DataType.Floating:
+        return DataType.Floating
+    if not _is_integral_number(exponent) or exponent < 0:
+        return DataType.Floating
+    return DataType.Any
+
+
 def _logical_values(tensor: Any) -> list[Any]:
     return [tensor[i] for i in range(tensor.size())]
 
@@ -209,16 +234,25 @@ def _physical_values_for_layout(
 
 
 def _tensor_with_layout_like(
-    target: Any, layout: Layout, logical_values: Iterable[Any]
+    target: Any,
+    layout: Layout,
+    logical_values: Iterable[Any],
+    dtype: DataType | None = None,
 ) -> Any:
     from .tensor import Tensor
 
-    data = target.data.new_like(_physical_values_for_layout(layout, logical_values))
+    values = _physical_values_for_layout(layout, logical_values)
+    if dtype is None:
+        data = target.data.new_like(values)
+    else:
+        data = target.data.new_like(values, dtype=dtype)
     return Tensor(data, 0, layout)
 
 
-def _detached_tensor_like(target: Any, values: Iterable[Any]) -> Any:
-    return _tensor_with_layout_like(target, target.layout, values)
+def _detached_tensor_like(
+    target: Any, values: Iterable[Any], dtype: DataType | None = None
+) -> Any:
+    return _tensor_with_layout_like(target, target.layout, values, dtype)
 
 
 def _zero_tensor_like(target: Any) -> Any:
@@ -316,8 +350,9 @@ class GenericAddOperation(Operation):
         rhs = _require_unevicted_tensor(rhs, "rhs")
         _require_same_layout(lhs, rhs)
 
+        dtype = _generic_binary_dtype(lhs, rhs)
         values = [lhs[i] + rhs[i] for i in range(lhs.size())]
-        return _detached_tensor_like(lhs, values)
+        return _detached_tensor_like(lhs, values, dtype)
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
@@ -333,8 +368,9 @@ class GenericScalarMulOperation(Operation):
         scalar = _require_number(scalar, "scalar")
 
         self.ctx["scalar"] = scalar
+        dtype = _generic_scalar_mul_dtype(tensor, scalar)
         values = [tensor[i] * scalar for i in range(tensor.size())]
-        return _detached_tensor_like(tensor, values)
+        return _detached_tensor_like(tensor, values, dtype)
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
@@ -354,8 +390,9 @@ class GenericElementwiseMulOperation(Operation):
         rhs = _require_unevicted_tensor(rhs, "rhs")
         _require_same_layout(lhs, rhs)
 
+        dtype = _generic_binary_dtype(lhs, rhs)
         values = [lhs[i] * rhs[i] for i in range(lhs.size())]
-        return _detached_tensor_like(lhs, values)
+        return _detached_tensor_like(lhs, values, dtype)
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
@@ -378,7 +415,7 @@ class GenericDivOperation(Operation):
         _require_same_layout(lhs, rhs)
 
         values = [lhs[i] / rhs[i] for i in range(lhs.size())]
-        return _detached_tensor_like(lhs, values)
+        return _detached_tensor_like(lhs, values, DataType.Floating)
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
@@ -402,7 +439,7 @@ class GenericExpOperation(Operation):
 
         values = [math.exp(tensor[i]) for i in range(tensor.size())]
         self.ctx["output_values"] = values
-        return _detached_tensor_like(tensor, values)
+        return _detached_tensor_like(tensor, values, DataType.Floating)
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
@@ -440,7 +477,7 @@ class GenericSigmoidOperation(Operation):
 
         values = [1.0 / (1.0 + math.exp(-tensor[i])) for i in range(tensor.size())]
         self.ctx["output_values"] = values
-        return _detached_tensor_like(tensor, values)
+        return _detached_tensor_like(tensor, values, DataType.Floating)
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
@@ -463,8 +500,9 @@ class GenericPowOperation(Operation):
         exponent = _require_number(exponent, "exponent")
 
         self.ctx["exponent"] = exponent
+        dtype = _generic_pow_dtype(tensor, exponent)
         values = [tensor[i] ** exponent for i in range(tensor.size())]
-        return _detached_tensor_like(tensor, values)
+        return _detached_tensor_like(tensor, values, dtype)
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
@@ -523,12 +561,13 @@ class GenericMatmulOperation(Operation):
         )
 
         self.ctx["output_layout"] = output_layout
+        dtype = _generic_binary_dtype(lhs, rhs)
         values = [
             sum(lhs[i, k] * rhs[j, k] for k in range(lhs_k_size))
             for j in range(m_size)
             for i in range(n_size)
         ]
-        return _tensor_with_layout_like(lhs, output_layout, values)
+        return _tensor_with_layout_like(lhs, output_layout, values, dtype)
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
