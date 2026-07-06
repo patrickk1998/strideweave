@@ -179,6 +179,22 @@ def _softplus_value(value: float) -> float:
     return math.log1p(math.exp(-abs(value))) + max(value, 0.0)
 
 
+_INV_SQRT2 = math.sqrt(0.5)
+_INV_SQRT_2PI = 1.0 / math.sqrt(2.0 * math.pi)
+_LEAKY_RELU_NEGATIVE_SLOPE = 0.01
+
+
+def _gelu_value(value: float) -> float:
+    return 0.5 * value * (1.0 + math.erf(value * _INV_SQRT2))
+
+
+def _gelu_derivative(value: float) -> float:
+    return (
+        0.5 * (1.0 + math.erf(value * _INV_SQRT2))
+        + value * math.exp(-0.5 * value * value) * _INV_SQRT_2PI
+    )
+
+
 def _logical_values(tensor: Any) -> list[Any]:
     return [tensor[i] for i in range(tensor.size())]
 
@@ -532,10 +548,7 @@ class GenericGELUOperation(Operation):
     def _forward(self, tensor: Any) -> Any:
         tensor = _require_unevicted_tensor(tensor, "tensor")
 
-        values = [
-            0.5 * tensor[i] * (1.0 + math.erf(tensor[i] / math.sqrt(2.0)))
-            for i in range(tensor.size())
-        ]
+        values = [_gelu_value(float(tensor[i])) for i in range(tensor.size())]
         return _detached_tensor_like(tensor, values, DataType.Floating)
 
     def backward(self, gradient: Any) -> tuple[Any]:
@@ -544,11 +557,7 @@ class GenericGELUOperation(Operation):
         _require_same_layout(tensor, gradient)
 
         values = [
-            gradient[i]
-            * (
-                0.5 * (1.0 + math.erf(tensor[i] / math.sqrt(2.0)))
-                + tensor[i] * math.exp(-0.5 * tensor[i] ** 2) / math.sqrt(2.0 * math.pi)
-            )
+            gradient[i] * _gelu_derivative(float(tensor[i]))
             for i in range(gradient.size())
         ]
         return (_detached_tensor_like(tensor, values),)
@@ -609,7 +618,7 @@ class GenericELUOperation(Operation):
         tensor = _require_unevicted_tensor(tensor, "tensor")
 
         values = [
-            tensor[i] if tensor[i] > 0 else math.exp(tensor[i]) - 1.0
+            float(tensor[i]) if tensor[i] > 0 else math.expm1(tensor[i])
             for i in range(tensor.size())
         ]
         return _detached_tensor_like(tensor, values, DataType.Floating)
@@ -633,7 +642,9 @@ class GenericLeakyReLUOperation(Operation):
         tensor = _require_unevicted_tensor(tensor, "tensor")
 
         values = [
-            tensor[i] if tensor[i] >= 0 else 0.01 * tensor[i]
+            float(tensor[i])
+            if tensor[i] >= 0
+            else _LEAKY_RELU_NEGATIVE_SLOPE * tensor[i]
             for i in range(tensor.size())
         ]
         return _detached_tensor_like(tensor, values, DataType.Floating)
@@ -644,7 +655,7 @@ class GenericLeakyReLUOperation(Operation):
         _require_same_layout(tensor, gradient)
 
         values = [
-            gradient[i] if tensor[i] >= 0 else 0.01 * gradient[i]
+            gradient[i] if tensor[i] >= 0 else _LEAKY_RELU_NEGATIVE_SLOPE * gradient[i]
             for i in range(gradient.size())
         ]
         return (_detached_tensor_like(tensor, values),)

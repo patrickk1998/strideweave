@@ -722,16 +722,17 @@ float softplus_value(float value) {
     return std::log1p(std::exp(-std::fabs(value))) + std::max(value, 0.0f);
 }
 
+constexpr float kInvSqrt2 = 0.70710678118654752440f;
+constexpr float kInvSqrt2Pi = 0.39894228040143267794f;
+constexpr float kLeakyReluNegativeSlope = 0.01f;
+
 float gelu_value(float value) {
-    constexpr float inv_sqrt_two = 0.70710678118654752440f;
-    return 0.5f * value * (1.0f + std::erf(value * inv_sqrt_two));
+    return 0.5f * value * (1.0f + std::erf(value * kInvSqrt2));
 }
 
 float gelu_gradient_multiplier(float value) {
-    constexpr float inv_sqrt_two = 0.70710678118654752440f;
-    constexpr float inv_sqrt_two_pi = 0.39894228040143267794f;
-    return 0.5f * (1.0f + std::erf(value * inv_sqrt_two)) +
-           value * std::exp(-0.5f * value * value) * inv_sqrt_two_pi;
+    return 0.5f * (1.0f + std::erf(value * kInvSqrt2)) +
+           value * std::exp(-0.5f * value * value) * kInvSqrt2Pi;
 }
 
 class CpuOperation {
@@ -1490,7 +1491,7 @@ public:
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 const float value = tensor_view.read_float_expanded(key);
                 result.view.write_float_expanded(
-                    key, value > 0.0f ? value : std::exp(value) - 1.0f
+                    key, value > 0.0f ? value : std::expm1(value)
                 );
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
@@ -1547,7 +1548,7 @@ public:
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 const float value = tensor_view.read_float_expanded(key);
                 result.view.write_float_expanded(
-                    key, value >= 0.0f ? value : 0.01f * value
+                    key, value >= 0.0f ? value : kLeakyReluNegativeSlope * value
                 );
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
@@ -1574,7 +1575,9 @@ public:
                 const float value = tensor_view.read_float_expanded(key);
                 const float gradient_value = gradient_view.read_float_expanded(key);
                 result.view.write_float_expanded(
-                    key, value >= 0.0f ? gradient_value : 0.01f * gradient_value
+                    key,
+                    value >= 0.0f ? gradient_value
+                                  : kLeakyReluNegativeSlope * gradient_value
                 );
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
