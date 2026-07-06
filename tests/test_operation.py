@@ -1,10 +1,9 @@
-import math
 import threading
 from typing import Any
 
 import neotorch
 import pytest
-from neotorch import Generic, GenericEvictable, Layout, Operation, Shape, Stride, Tensor
+from neotorch import Generic, Layout, Operation, Shape, Stride, Tensor
 from neotorch.operation import is_grad_enabled, set_grad_enabled
 
 
@@ -37,15 +36,6 @@ class MissingBackwardOperation(Operation):
 
 def make_tensor(values: list[Any]) -> Tensor:
     return Tensor(Generic(values), 0, Layout(Shape(len(values)), Stride(1)))
-
-
-def tensor_values(tensor: Tensor) -> list[Any]:
-    return [tensor[i] for i in range(tensor.size())]
-
-
-def require_grad(tensor: Tensor) -> Tensor:
-    assert tensor.grad is not None
-    return tensor.grad
 
 
 def test_operation_public_api_imports():
@@ -177,48 +167,3 @@ def test_operation_subclass_missing_backward_raises():
 
     with pytest.raises(RuntimeError):
         operation.backward("grad")
-
-
-def test_relu_forward_and_backward():
-    tensor = make_tensor([-2, 0, 3])
-    gradient = make_tensor([10, 20, 30])
-
-    result = neotorch.relu(tensor)
-    result.backward(gradient)
-    tensor_grad = require_grad(tensor)
-
-    assert type(result.autograd_ctx).__name__ == "GenericReLUOperation"
-    assert tensor_values(result) == [0, 0, 3]
-    assert tensor_values(tensor_grad) == [0, 0, 30]
-
-
-def test_sigmoid_forward_and_backward():
-    values = [-2.0, 0.0, 1.0]
-    gradient_values = [10.0, 20.0, 30.0]
-    tensor = make_tensor(values)
-    gradient = make_tensor(gradient_values)
-
-    result = neotorch.sigmoid(tensor)
-    result.backward(gradient)
-    tensor_grad = require_grad(tensor)
-
-    expected = [1.0 / (1.0 + math.exp(-value)) for value in values]
-    expected_grad = [
-        grad * sigmoid_value * (1.0 - sigmoid_value)
-        for grad, sigmoid_value in zip(gradient_values, expected)
-    ]
-    assert type(result.autograd_ctx).__name__ == "GenericSigmoidOperation"
-    assert tensor_values(result) == pytest.approx(expected)
-    assert tensor_values(tensor_grad) == pytest.approx(expected_grad)
-
-
-def test_relu_and_sigmoid_propagate_evicted_data_errors(tmp_path):
-    data = GenericEvictable([1.0], tmp_path / "data.pkl")
-    tensor = Tensor(data, 0, Layout(Shape(1), Stride(1)))
-    tensor.evict()
-
-    with pytest.raises(RuntimeError, match="tensor data is evicted"):
-        neotorch.relu(tensor)
-
-    with pytest.raises(RuntimeError, match="tensor data is evicted"):
-        neotorch.sigmoid(tensor)

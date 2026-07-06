@@ -1,0 +1,185 @@
+from collections.abc import Callable, Iterable
+from typing import Any
+
+import neotorch
+import pytest
+import torch
+import torch.nn.functional as F
+from neotorch import CPU, DataType, Generic, Layout, Shape, Stride, Tensor
+
+ACTIVATION_LAYOUTS = (
+    pytest.param(Layout(Shape([8, 16]), Stride([1, 8])), id="current_8x16"),
+    pytest.param(Layout(Shape([64, 64]), Stride([1, 64])), id="large_64x64"),
+    pytest.param(Layout(Shape([37, 53]), Stride([1, 37])), id="irregular_37x53"),
+)
+ACTIVATION_VALUE_SEED = 20260531
+ACTIVATION_GRADIENT_SEED = 20260532
+BACKENDS = ("generic", "cpu")
+
+
+def seeded_activation_values(seed: int, size: int) -> list[float]:
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    values = torch.randn(size, generator=generator, dtype=torch.float32)
+    return values.mul(3.0).tolist()
+
+
+def make_activation_tensor(
+    values: Iterable[float], backend: str, layout: Layout
+) -> Tensor:
+    materialized = list(values)
+    if backend == "generic":
+        data: Any = Generic([0.0] * layout._cache.cosize)
+    elif backend == "cpu":
+        data = CPU(layout._cache.cosize, dtype=DataType.Float32)
+    else:
+        raise ValueError(f"unknown activation test backend: {backend}")
+
+    for logical_index, value in enumerate(materialized):
+        data[layout.index(logical_index)] = value
+    return Tensor(data, 0, layout)
+
+
+def tensor_values(tensor: Tensor) -> list[float]:
+    return [tensor[i] for i in range(tensor.size())]
+
+
+def assert_tensor_close(
+    neotorch_tensor: Tensor,
+    torch_tensor: torch.Tensor,
+    *,
+    rtol: float = 1e-5,
+    atol: float = 1e-6,
+) -> None:
+    actual = torch.tensor(tensor_values(neotorch_tensor), dtype=torch.float32)
+    torch.testing.assert_close(actual, torch_tensor.detach(), rtol=rtol, atol=atol)
+
+
+def run_activation_case(
+    operation_name: str,
+    torch_activation: Callable[[torch.Tensor], torch.Tensor],
+    backend: str,
+    layout: Layout,
+) -> None:
+    values = seeded_activation_values(ACTIVATION_VALUE_SEED, layout.shape.logical_size)
+    gradient_values = seeded_activation_values(
+        ACTIVATION_GRADIENT_SEED, layout.shape.logical_size
+    )
+    tensor = make_activation_tensor(values, backend, layout)
+    gradient = make_activation_tensor(gradient_values, backend, layout)
+    operation = type(tensor.data).dispatch_op(operation_name)
+
+    torch_input = torch.tensor(values, dtype=torch.float32, requires_grad=True)
+    torch_gradient = torch.tensor(gradient_values, dtype=torch.float32)
+
+    result = operation.forward(tensor)
+    torch_result = torch_activation(torch_input)
+
+    result.backward(gradient)
+    torch_result.backward(torch_gradient)
+
+    assert_tensor_close(result, torch_result)
+    neotorch_grad = tensor.grad
+    assert neotorch_grad is not None
+    assert torch_input.grad is not None
+    assert_tensor_close(neotorch_grad, torch_input.grad)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
+def test_relu_activation_matches_pytorch(backend: str, layout: Layout):
+    """ReLU: forward ``y = max(x, 0)``; backward ``dx = dy`` if ``x > 0`` else ``0``."""
+
+    run_activation_case("relu", torch.relu, backend, layout)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
+def test_sigmoid_activation_matches_pytorch(backend: str, layout: Layout):
+    """Sigmoid: forward ``y = 1 / (1 + exp(-x))``; backward ``dx = dy * y * (1 - y)``."""
+
+    run_activation_case("sigmoid", torch.sigmoid, backend, layout)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
+@pytest.mark.xfail(
+    raises=(AttributeError, NotImplementedError),
+    reason="Tanh activation is specified here before its operation is implemented.",
+)
+def test_tanh_activation_matches_pytorch(backend: str, layout: Layout):
+    """Tanh: forward ``y = tanh(x)``; backward ``dx = dy * (1 - y**2)``."""
+
+    run_activation_case("tanh", torch.tanh, backend, layout)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
+@pytest.mark.xfail(
+    raises=(AttributeError, NotImplementedError),
+    reason="GELU activation is specified here before its operation is implemented.",
+)
+def test_gelu_activation_matches_pytorch(backend: str, layout: Layout):
+    """GELU: forward ``y = 0.5 * x * (1 + erf(x / sqrt(2)))``; backward ``dx = dy * (0.5 * (1 + erf(x / sqrt(2))) + x * exp(-0.5 * x**2) / sqrt(2 * pi))``."""
+
+    run_activation_case("gelu", F.gelu, backend, layout)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
+@pytest.mark.xfail(
+    raises=(AttributeError, NotImplementedError),
+    reason="SiLU activation is specified here before its operation is implemented.",
+)
+def test_silu_activation_matches_pytorch(backend: str, layout: Layout):
+    """SiLU: forward ``y = x * sigmoid(x)``; backward ``dx = dy * (sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x)))``."""
+
+    run_activation_case("silu", F.silu, backend, layout)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
+@pytest.mark.xfail(
+    raises=(AttributeError, NotImplementedError),
+    reason="Softplus activation is specified here before its operation is implemented.",
+)
+def test_softplus_activation_matches_pytorch(backend: str, layout: Layout):
+    """Softplus: forward ``y = log(1 + exp(x))``; backward ``dx = dy * sigmoid(x)``."""
+
+    run_activation_case("softplus", F.softplus, backend, layout)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
+@pytest.mark.xfail(
+    raises=(AttributeError, NotImplementedError),
+    reason="ELU activation is specified here before its operation is implemented.",
+)
+def test_elu_activation_matches_pytorch(backend: str, layout: Layout):
+    """ELU: forward ``y = x`` if ``x > 0`` else ``exp(x) - 1``; backward ``dx = dy`` if ``x > 0`` else ``dy * exp(x)``."""
+
+    run_activation_case("elu", F.elu, backend, layout)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
+@pytest.mark.xfail(
+    raises=(AttributeError, NotImplementedError),
+    reason="Leaky ReLU activation is specified here before its operation is implemented.",
+)
+def test_leaky_relu_activation_matches_pytorch(backend: str, layout: Layout):
+    """Leaky ReLU: forward ``y = x`` if ``x >= 0`` else ``0.01 * x``; backward ``dx = dy`` if ``x >= 0`` else ``0.01 * dy``."""
+
+    run_activation_case("leaky_relu", F.leaky_relu, backend, layout)
+
+
+@pytest.mark.parametrize("operation_name", ("relu", "sigmoid"))
+def test_existing_activations_propagate_evicted_data_errors(
+    operation_name: str, tmp_path: Any
+):
+    data = neotorch.GenericEvictable([1.0], tmp_path / "data.pkl")
+    tensor = Tensor(data, 0, Layout(Shape(1), Stride(1)))
+    tensor.evict()
+
+    with pytest.raises(RuntimeError, match="tensor data is evicted"):
+        type(tensor.data).dispatch_op(operation_name).forward(tensor)

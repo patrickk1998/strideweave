@@ -511,43 +511,6 @@ def test_cpu_exp_uses_native_operation_and_backpropagates():
     assert type(tensor_grad.data) is CPU
 
 
-def test_cpu_relu_uses_native_operation_and_backpropagates():
-    layout = Layout(Shape([[2, 2]]), Stride([[1, 3]]))
-    tensor = make_cpu_tensor_with_logical_values([-2.0, 0.0, 3.0, -4.0], layout)
-    gradient = make_cpu_tensor_with_logical_values([1.0, 2.0, 3.0, 4.0], layout)
-
-    result = neotorch.relu(tensor)
-    result.backward(gradient)
-    tensor_grad = require_grad(tensor)
-
-    assert type(result.autograd_ctx).__name__ == "_CPUReLUOperation"
-    assert tensor_values(result) == pytest.approx([0.0, 0.0, 3.0, 0.0])
-    assert tensor_values(tensor_grad) == pytest.approx([0.0, 0.0, 3.0, 0.0])
-    assert type(tensor_grad.data) is CPU
-
-
-def test_cpu_sigmoid_uses_native_operation_and_backpropagates():
-    layout = Layout(Shape([[2, 2]]), Stride([[1, 3]]))
-    values = [-2.0, 0.0, 1.0, 2.0]
-    gradient_values = [1.0, 2.0, 3.0, 4.0]
-    tensor = make_cpu_tensor_with_logical_values(values, layout)
-    gradient = make_cpu_tensor_with_logical_values(gradient_values, layout)
-
-    result = neotorch.sigmoid(tensor)
-    result.backward(gradient)
-    tensor_grad = require_grad(tensor)
-
-    expected = [1.0 / (1.0 + math.exp(-value)) for value in values]
-    expected_grad = [
-        grad * sigmoid_value * (1.0 - sigmoid_value)
-        for grad, sigmoid_value in zip(gradient_values, expected)
-    ]
-    assert type(result.autograd_ctx).__name__ == "_CPUSigmoidOperation"
-    assert tensor_values(result) == pytest.approx(expected)
-    assert tensor_values(tensor_grad) == pytest.approx(expected_grad)
-    assert type(tensor_grad.data) is CPU
-
-
 def test_cpu_pow_scalar_uses_native_operation_and_backpropagates():
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = make_cpu_tensor([1.0, 2.0, 3.0, 4.0], layout)
