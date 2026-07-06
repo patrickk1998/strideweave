@@ -45,6 +45,12 @@ def test_operation_public_api_imports():
     assert neotorch.no_grad is not None
     assert neotorch.relu is not None
     assert neotorch.sigmoid is not None
+    assert neotorch.tanh is not None
+    assert neotorch.gelu is not None
+    assert neotorch.silu is not None
+    assert neotorch.softplus is not None
+    assert neotorch.elu is not None
+    assert neotorch.leaky_relu is not None
 
 
 def test_grad_is_enabled_by_default():

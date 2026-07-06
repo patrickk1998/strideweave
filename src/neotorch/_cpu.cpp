@@ -214,11 +214,20 @@ public:
         if (operation_name == "div") {
             return native_data.attr("_CPUDivOperation")();
         }
+        if (operation_name == "elu") {
+            return native_data.attr("_CPUELUOperation")();
+        }
         if (operation_name == "elementwise_mul") {
             return native_data.attr("_CPUElementwiseMulOperation")();
         }
         if (operation_name == "exp") {
             return native_data.attr("_CPUExpOperation")();
+        }
+        if (operation_name == "gelu") {
+            return native_data.attr("_CPUGELUOperation")();
+        }
+        if (operation_name == "leaky_relu") {
+            return native_data.attr("_CPULeakyReLUOperation")();
         }
         if (operation_name == "matmul") {
             return native_data.attr("_CPUMatmulOperation")();
@@ -237,6 +246,15 @@ public:
         }
         if (operation_name == "sigmoid") {
             return native_data.attr("_CPUSigmoidOperation")();
+        }
+        if (operation_name == "silu") {
+            return native_data.attr("_CPUSiLUOperation")();
+        }
+        if (operation_name == "softplus") {
+            return native_data.attr("_CPUSoftplusOperation")();
+        }
+        if (operation_name == "tanh") {
+            return native_data.attr("_CPUTanhOperation")();
         }
         if (operation_name == "permute") {
             return py::module_::import("neotorch.operation").attr("PermuteOperation")();
@@ -689,6 +707,31 @@ void write_int_result(
     CpuTensorView& view, const std::vector<Index>& key, long long value
 ) {
     view.write_int_expanded(key, checked_int32(value));
+}
+
+float sigmoid_value(float value) {
+    if (value >= 0.0f) {
+        const float inverse = std::exp(-value);
+        return 1.0f / (1.0f + inverse);
+    }
+    const float exponential = std::exp(value);
+    return exponential / (1.0f + exponential);
+}
+
+float softplus_value(float value) {
+    return std::log1p(std::exp(-std::fabs(value))) + std::max(value, 0.0f);
+}
+
+float gelu_value(float value) {
+    constexpr float inv_sqrt_two = 0.70710678118654752440f;
+    return 0.5f * value * (1.0f + std::erf(value * inv_sqrt_two));
+}
+
+float gelu_gradient_multiplier(float value) {
+    constexpr float inv_sqrt_two = 0.70710678118654752440f;
+    constexpr float inv_sqrt_two_pi = 0.39894228040143267794f;
+    return 0.5f * (1.0f + std::erf(value * inv_sqrt_two)) +
+           value * std::exp(-0.5f * value * value) * inv_sqrt_two_pi;
 }
 
 class CpuOperation {
@@ -1173,8 +1216,116 @@ public:
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 const float value = tensor_view.read_float_expanded(key);
+                result.view.write_float_expanded(key, sigmoid_value(value));
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        require_same_layout(tensor, gradient);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+        CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                const float value = tensor_view.read_float_expanded(key);
+                const float sigmoid = sigmoid_value(value);
                 result.view.write_float_expanded(
-                    key, 1.0f / (1.0f + std::exp(-value))
+                    key,
+                    gradient_view.read_float_expanded(key) * sigmoid * (1.0f - sigmoid)
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return py::make_tuple(
+            make_tensor(std::move(result.data_object), std::move(result.layout_object))
+        );
+    }
+};
+
+class CpuTanhOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 1) {
+            throw py::type_error("CPU tanh requires a tensor");
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                result.view.write_float_expanded(
+                    key, std::tanh(tensor_view.read_float_expanded(key))
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        require_same_layout(tensor, gradient);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+        CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                const float output = std::tanh(tensor_view.read_float_expanded(key));
+                result.view.write_float_expanded(
+                    key,
+                    gradient_view.read_float_expanded(key) *
+                        (1.0f - output * output)
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return py::make_tuple(
+            make_tensor(std::move(result.data_object), std::move(result.layout_object))
+        );
+    }
+};
+
+class CpuGELUOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 1) {
+            throw py::type_error("CPU GELU requires a tensor");
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                result.view.write_float_expanded(
+                    key, gelu_value(tensor_view.read_float_expanded(key))
                 );
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
@@ -1199,10 +1350,231 @@ public:
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 const float value = tensor_view.read_float_expanded(key);
-                const float sigmoid = 1.0f / (1.0f + std::exp(-value));
                 result.view.write_float_expanded(
                     key,
-                    gradient_view.read_float_expanded(key) * sigmoid * (1.0f - sigmoid)
+                    gradient_view.read_float_expanded(key) *
+                        gelu_gradient_multiplier(value)
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return py::make_tuple(
+            make_tensor(std::move(result.data_object), std::move(result.layout_object))
+        );
+    }
+};
+
+class CpuSiLUOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 1) {
+            throw py::type_error("CPU SiLU requires a tensor");
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                const float value = tensor_view.read_float_expanded(key);
+                result.view.write_float_expanded(key, value * sigmoid_value(value));
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        require_same_layout(tensor, gradient);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+        CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                const float value = tensor_view.read_float_expanded(key);
+                const float sigmoid = sigmoid_value(value);
+                result.view.write_float_expanded(
+                    key,
+                    gradient_view.read_float_expanded(key) *
+                        (sigmoid + value * sigmoid * (1.0f - sigmoid))
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return py::make_tuple(
+            make_tensor(std::move(result.data_object), std::move(result.layout_object))
+        );
+    }
+};
+
+class CpuSoftplusOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 1) {
+            throw py::type_error("CPU softplus requires a tensor");
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                result.view.write_float_expanded(
+                    key, softplus_value(tensor_view.read_float_expanded(key))
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        require_same_layout(tensor, gradient);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+        CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                result.view.write_float_expanded(
+                    key,
+                    gradient_view.read_float_expanded(key) *
+                        sigmoid_value(tensor_view.read_float_expanded(key))
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return py::make_tuple(
+            make_tensor(std::move(result.data_object), std::move(result.layout_object))
+        );
+    }
+};
+
+class CpuELUOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 1) {
+            throw py::type_error("CPU ELU requires a tensor");
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                const float value = tensor_view.read_float_expanded(key);
+                result.view.write_float_expanded(
+                    key, value > 0.0f ? value : std::exp(value) - 1.0f
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        require_same_layout(tensor, gradient);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+        CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                const float value = tensor_view.read_float_expanded(key);
+                result.view.write_float_expanded(
+                    key,
+                    value > 0.0f ? gradient_view.read_float_expanded(key)
+                                  : gradient_view.read_float_expanded(key) *
+                                        std::exp(value)
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return py::make_tuple(
+            make_tensor(std::move(result.data_object), std::move(result.layout_object))
+        );
+    }
+};
+
+class CpuLeakyReLUOperation : public CpuOperation {
+public:
+    py::object forward(py::args inputs) {
+        if (py::len(inputs) != 1) {
+            throw py::type_error("CPU leaky ReLU requires a tensor");
+        }
+        const bool build_graph = begin_forward(inputs);
+        py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                const float value = tensor_view.read_float_expanded(key);
+                result.view.write_float_expanded(
+                    key, value >= 0.0f ? value : 0.01f * value
+                );
+                tensor_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return finish_forward(
+            this,
+            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
+            build_graph
+        );
+    }
+
+    py::object backward(py::object gradient) {
+        py::tuple input_tensors = inputs();
+        py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        require_same_layout(tensor, gradient);
+        CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+        CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
+
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(tensor_view.leaf_rank(), 0);
+            for (Index i = 0; i < tensor_view.logical_size; ++i) {
+                const float value = tensor_view.read_float_expanded(key);
+                const float gradient_value = gradient_view.read_float_expanded(key);
+                result.view.write_float_expanded(
+                    key, value >= 0.0f ? gradient_value : 0.01f * gradient_value
                 );
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
@@ -1700,6 +2072,78 @@ void bind_cpu(py::module_& module) {
         .def("backward", &CpuSigmoidOperation::backward, py::arg("gradient"))
         .def_property_readonly("ctx", &CpuSigmoidOperation::ctx)
         .def("inputs", &CpuSigmoidOperation::inputs);
+
+    py::class_<CpuTanhOperation>(module, "_CPUTanhOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuTanhOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuTanhOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuTanhOperation::ctx)
+        .def("inputs", &CpuTanhOperation::inputs);
+
+    py::class_<CpuGELUOperation>(module, "_CPUGELUOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuGELUOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuGELUOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuGELUOperation::ctx)
+        .def("inputs", &CpuGELUOperation::inputs);
+
+    py::class_<CpuSiLUOperation>(module, "_CPUSiLUOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuSiLUOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuSiLUOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuSiLUOperation::ctx)
+        .def("inputs", &CpuSiLUOperation::inputs);
+
+    py::class_<CpuSoftplusOperation>(module, "_CPUSoftplusOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuSoftplusOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuSoftplusOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuSoftplusOperation::ctx)
+        .def("inputs", &CpuSoftplusOperation::inputs);
+
+    py::class_<CpuELUOperation>(module, "_CPUELUOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuELUOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuELUOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuELUOperation::ctx)
+        .def("inputs", &CpuELUOperation::inputs);
+
+    py::class_<CpuLeakyReLUOperation>(module, "_CPULeakyReLUOperation")
+        .def(py::init<>())
+        .def(
+            "forward",
+            [](CpuLeakyReLUOperation& operation, py::args inputs) {
+                return operation.forward(inputs);
+            }
+        )
+        .def("backward", &CpuLeakyReLUOperation::backward, py::arg("gradient"))
+        .def_property_readonly("ctx", &CpuLeakyReLUOperation::ctx)
+        .def("inputs", &CpuLeakyReLUOperation::inputs);
 
     py::class_<CpuPowOperation>(module, "_CPUPowOperation")
         .def(py::init<>())

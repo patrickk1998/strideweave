@@ -15,6 +15,16 @@ ACTIVATION_LAYOUTS = (
 ACTIVATION_VALUE_SEED = 20260531
 ACTIVATION_GRADIENT_SEED = 20260532
 BACKENDS = ("generic", "cpu")
+ACTIVATION_OPERATION_NAMES = (
+    "relu",
+    "sigmoid",
+    "tanh",
+    "gelu",
+    "silu",
+    "softplus",
+    "elu",
+    "leaky_relu",
+)
 
 
 def seeded_activation_values(seed: int, size: int) -> list[float]:
@@ -78,10 +88,13 @@ def run_activation_case(
     result.backward(gradient)
     torch_result.backward(torch_gradient)
 
+    expected_dtype = DataType.Floating if backend == "generic" else DataType.Float32
+    assert result.dtype() is expected_dtype
     assert_tensor_close(result, torch_result)
     neotorch_grad = tensor.grad
     assert neotorch_grad is not None
     assert torch_input.grad is not None
+    assert neotorch_grad.dtype() is expected_dtype
     assert_tensor_close(neotorch_grad, torch_input.grad)
 
 
@@ -103,10 +116,6 @@ def test_sigmoid_activation_matches_pytorch(backend: str, layout: Layout):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-@pytest.mark.xfail(
-    raises=(AttributeError, NotImplementedError),
-    reason="Tanh activation is specified here before its operation is implemented.",
-)
 def test_tanh_activation_matches_pytorch(backend: str, layout: Layout):
     """Tanh: forward ``y = tanh(x)``; backward ``dx = dy * (1 - y**2)``."""
 
@@ -115,10 +124,6 @@ def test_tanh_activation_matches_pytorch(backend: str, layout: Layout):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-@pytest.mark.xfail(
-    raises=(AttributeError, NotImplementedError),
-    reason="GELU activation is specified here before its operation is implemented.",
-)
 def test_gelu_activation_matches_pytorch(backend: str, layout: Layout):
     """GELU: forward ``y = 0.5 * x * (1 + erf(x / sqrt(2)))``; backward ``dx = dy * (0.5 * (1 + erf(x / sqrt(2))) + x * exp(-0.5 * x**2) / sqrt(2 * pi))``."""
 
@@ -127,10 +132,6 @@ def test_gelu_activation_matches_pytorch(backend: str, layout: Layout):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-@pytest.mark.xfail(
-    raises=(AttributeError, NotImplementedError),
-    reason="SiLU activation is specified here before its operation is implemented.",
-)
 def test_silu_activation_matches_pytorch(backend: str, layout: Layout):
     """SiLU: forward ``y = x * sigmoid(x)``; backward ``dx = dy * (sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x)))``."""
 
@@ -139,10 +140,6 @@ def test_silu_activation_matches_pytorch(backend: str, layout: Layout):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-@pytest.mark.xfail(
-    raises=(AttributeError, NotImplementedError),
-    reason="Softplus activation is specified here before its operation is implemented.",
-)
 def test_softplus_activation_matches_pytorch(backend: str, layout: Layout):
     """Softplus: forward ``y = log(1 + exp(x))``; backward ``dx = dy * sigmoid(x)``."""
 
@@ -151,10 +148,6 @@ def test_softplus_activation_matches_pytorch(backend: str, layout: Layout):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-@pytest.mark.xfail(
-    raises=(AttributeError, NotImplementedError),
-    reason="ELU activation is specified here before its operation is implemented.",
-)
 def test_elu_activation_matches_pytorch(backend: str, layout: Layout):
     """ELU: forward ``y = x`` if ``x > 0`` else ``exp(x) - 1``; backward ``dx = dy`` if ``x > 0`` else ``dy * exp(x)``."""
 
@@ -163,20 +156,14 @@ def test_elu_activation_matches_pytorch(backend: str, layout: Layout):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-@pytest.mark.xfail(
-    raises=(AttributeError, NotImplementedError),
-    reason="Leaky ReLU activation is specified here before its operation is implemented.",
-)
 def test_leaky_relu_activation_matches_pytorch(backend: str, layout: Layout):
     """Leaky ReLU: forward ``y = x`` if ``x >= 0`` else ``0.01 * x``; backward ``dx = dy`` if ``x >= 0`` else ``0.01 * dy``."""
 
     run_activation_case("leaky_relu", F.leaky_relu, backend, layout)
 
 
-@pytest.mark.parametrize("operation_name", ("relu", "sigmoid"))
-def test_existing_activations_propagate_evicted_data_errors(
-    operation_name: str, tmp_path: Any
-):
+@pytest.mark.parametrize("operation_name", ACTIVATION_OPERATION_NAMES)
+def test_activations_propagate_evicted_data_errors(operation_name: str, tmp_path: Any):
     data = neotorch.GenericEvictable([1.0], tmp_path / "data.pkl")
     tensor = Tensor(data, 0, Layout(Shape(1), Stride(1)))
     tensor.evict()

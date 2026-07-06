@@ -80,14 +80,22 @@ def test_generic_data_dispatch_op_returns_supported_operations():
     cases = {
         "add": neotorch.GenericAddOperation,
         "div": neotorch.GenericDivOperation,
+        "elu": neotorch.GenericELUOperation,
         "elementwise_mul": neotorch.GenericElementwiseMulOperation,
         "exp": neotorch.GenericExpOperation,
+        "gelu": neotorch.GenericGELUOperation,
+        "leaky_relu": neotorch.GenericLeakyReLUOperation,
         "matmul": neotorch.GenericMatmulOperation,
         "mul": neotorch.GenericScalarMulOperation,
         "permute": neotorch.PermuteOperation,
         "pow": neotorch.GenericPowOperation,
         "rearrange": neotorch.RearrangeOperation,
         "reduce": neotorch.GenericReduceSumOperation,
+        "relu": neotorch.GenericReLUOperation,
+        "sigmoid": neotorch.GenericSigmoidOperation,
+        "silu": neotorch.GenericSiLUOperation,
+        "softplus": neotorch.GenericSoftplusOperation,
+        "tanh": neotorch.GenericTanhOperation,
         "view": neotorch.GenericViewOperation,
     }
 

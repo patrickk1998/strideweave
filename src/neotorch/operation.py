@@ -167,6 +167,18 @@ def _generic_pow_dtype(tensor: Any, exponent: Any) -> DataType:
     return DataType.Any
 
 
+def _sigmoid_value(value: float) -> float:
+    if value >= 0.0:
+        inverse = math.exp(-value)
+        return 1.0 / (1.0 + inverse)
+    exponential = math.exp(value)
+    return exponential / (1.0 + exponential)
+
+
+def _softplus_value(value: float) -> float:
+    return math.log1p(math.exp(-abs(value))) + max(value, 0.0)
+
+
 def _logical_values(tensor: Any) -> list[Any]:
     return [tensor[i] for i in range(tensor.size())]
 
@@ -475,7 +487,7 @@ class GenericSigmoidOperation(Operation):
     def _forward(self, tensor: Any) -> Any:
         tensor = _require_unevicted_tensor(tensor, "tensor")
 
-        values = [1.0 / (1.0 + math.exp(-tensor[i])) for i in range(tensor.size())]
+        values = [_sigmoid_value(tensor[i]) for i in range(tensor.size())]
         self.ctx["output_values"] = values
         return _detached_tensor_like(tensor, values, DataType.Floating)
 
@@ -487,6 +499,152 @@ class GenericSigmoidOperation(Operation):
         output_values = self.ctx["output_values"]
         values = [
             gradient[i] * output_values[i] * (1.0 - output_values[i])
+            for i in range(gradient.size())
+        ]
+        return (_detached_tensor_like(tensor, values),)
+
+
+class GenericTanhOperation(Operation):
+    """Generic elementwise hyperbolic tangent operation."""
+
+    def _forward(self, tensor: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+
+        values = [math.tanh(tensor[i]) for i in range(tensor.size())]
+        self.ctx["output_values"] = values
+        return _detached_tensor_like(tensor, values, DataType.Floating)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        output_values = self.ctx["output_values"]
+        values = [
+            gradient[i] * (1.0 - output_values[i] ** 2) for i in range(gradient.size())
+        ]
+        return (_detached_tensor_like(tensor, values),)
+
+
+class GenericGELUOperation(Operation):
+    """Generic elementwise Gaussian error linear unit operation."""
+
+    def _forward(self, tensor: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+
+        values = [
+            0.5 * tensor[i] * (1.0 + math.erf(tensor[i] / math.sqrt(2.0)))
+            for i in range(tensor.size())
+        ]
+        return _detached_tensor_like(tensor, values, DataType.Floating)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        values = [
+            gradient[i]
+            * (
+                0.5 * (1.0 + math.erf(tensor[i] / math.sqrt(2.0)))
+                + tensor[i] * math.exp(-0.5 * tensor[i] ** 2) / math.sqrt(2.0 * math.pi)
+            )
+            for i in range(gradient.size())
+        ]
+        return (_detached_tensor_like(tensor, values),)
+
+
+class GenericSiLUOperation(Operation):
+    """Generic elementwise sigmoid linear unit operation."""
+
+    def _forward(self, tensor: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+
+        sigmoid_values = [_sigmoid_value(tensor[i]) for i in range(tensor.size())]
+        self.ctx["sigmoid_values"] = sigmoid_values
+        values = [tensor[i] * sigmoid_values[i] for i in range(tensor.size())]
+        return _detached_tensor_like(tensor, values, DataType.Floating)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        sigmoid_values = self.ctx["sigmoid_values"]
+        values = [
+            gradient[i]
+            * (
+                sigmoid_values[i]
+                + tensor[i] * sigmoid_values[i] * (1.0 - sigmoid_values[i])
+            )
+            for i in range(gradient.size())
+        ]
+        return (_detached_tensor_like(tensor, values),)
+
+
+class GenericSoftplusOperation(Operation):
+    """Generic elementwise softplus operation."""
+
+    def _forward(self, tensor: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+
+        values = [_softplus_value(tensor[i]) for i in range(tensor.size())]
+        return _detached_tensor_like(tensor, values, DataType.Floating)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        values = [
+            gradient[i] * _sigmoid_value(tensor[i]) for i in range(gradient.size())
+        ]
+        return (_detached_tensor_like(tensor, values),)
+
+
+class GenericELUOperation(Operation):
+    """Generic elementwise exponential linear unit operation."""
+
+    def _forward(self, tensor: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+
+        values = [
+            tensor[i] if tensor[i] > 0 else math.exp(tensor[i]) - 1.0
+            for i in range(tensor.size())
+        ]
+        return _detached_tensor_like(tensor, values, DataType.Floating)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        values = [
+            gradient[i] if tensor[i] > 0 else gradient[i] * math.exp(tensor[i])
+            for i in range(gradient.size())
+        ]
+        return (_detached_tensor_like(tensor, values),)
+
+
+class GenericLeakyReLUOperation(Operation):
+    """Generic elementwise leaky rectified linear unit operation."""
+
+    def _forward(self, tensor: Any) -> Any:
+        tensor = _require_unevicted_tensor(tensor, "tensor")
+
+        values = [
+            tensor[i] if tensor[i] >= 0 else 0.01 * tensor[i]
+            for i in range(tensor.size())
+        ]
+        return _detached_tensor_like(tensor, values, DataType.Floating)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _require_unevicted_tensor(gradient, "gradient")
+        _require_same_layout(tensor, gradient)
+
+        values = [
+            gradient[i] if tensor[i] >= 0 else 0.01 * gradient[i]
             for i in range(gradient.size())
         ]
         return (_detached_tensor_like(tensor, values),)
@@ -859,6 +1017,152 @@ def sigmoid(tensor: Any) -> Any:
     return _dispatch_unary("sigmoid", tensor).forward(tensor)
 
 
+def tanh(tensor: Any) -> Any:
+    """Apply the hyperbolic tangent function elementwise.
+
+    Tanh maps each value ``x`` to ``math.tanh(x)``. Its autograd derivative
+    multiplies the incoming gradient by ``1 - tanh(x) ** 2``.
+
+    Args:
+        tensor: Tensor whose logical values should be transformed.
+
+    Returns:
+        Tensor containing the hyperbolic tangent of each input element.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> neotorch.tanh(x)[0]
+        0.0
+    """
+
+    return _dispatch_unary("tanh", tensor).forward(tensor)
+
+
+def gelu(tensor: Any) -> Any:
+    """Apply the exact Gaussian error linear unit function elementwise.
+
+    GELU maps each value ``x`` to ``0.5 * x * (1 + erf(x / sqrt(2)))`` using
+    PyTorch's default exact formula. Its autograd derivative multiplies the
+    incoming gradient by ``0.5 * (1 + erf(x / sqrt(2))) + x * exp(-0.5 *
+    x**2) / sqrt(2 * pi)``.
+
+    Args:
+        tensor: Tensor whose logical values should be transformed.
+
+    Returns:
+        Tensor containing the exact GELU value of each input element.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> neotorch.gelu(x)[0]
+        0.0
+    """
+
+    return _dispatch_unary("gelu", tensor).forward(tensor)
+
+
+def silu(tensor: Any) -> Any:
+    """Apply the sigmoid linear unit function elementwise.
+
+    SiLU maps each value ``x`` to ``x * sigmoid(x)``. Its autograd derivative
+    multiplies the incoming gradient by ``sigmoid(x) + x * sigmoid(x) * (1 -
+    sigmoid(x))``.
+
+    Args:
+        tensor: Tensor whose logical values should be transformed.
+
+    Returns:
+        Tensor containing the SiLU value of each input element.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> neotorch.silu(x)[0]
+        0.0
+    """
+
+    return _dispatch_unary("silu", tensor).forward(tensor)
+
+
+def softplus(tensor: Any) -> Any:
+    """Apply the softplus function elementwise.
+
+    Softplus maps each value ``x`` to ``log(1 + exp(x))`` using a numerically
+    stable equivalent formula. Its autograd derivative multiplies the incoming
+    gradient by ``sigmoid(x)``.
+
+    Args:
+        tensor: Tensor whose logical values should be transformed.
+
+    Returns:
+        Tensor containing the softplus value of each input element.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> round(neotorch.softplus(x)[0], 6)
+        0.693147
+    """
+
+    return _dispatch_unary("softplus", tensor).forward(tensor)
+
+
+def elu(tensor: Any) -> Any:
+    """Apply the exponential linear unit function elementwise.
+
+    ELU uses PyTorch's default ``alpha=1.0``. It maps ``x`` to ``x`` when
+    ``x > 0`` and to ``exp(x) - 1`` otherwise. Its autograd derivative
+    multiplies the incoming gradient by ``1`` when ``x > 0`` and by ``exp(x)``
+    otherwise.
+
+    Args:
+        tensor: Tensor whose logical values should be transformed.
+
+    Returns:
+        Tensor containing the ELU value of each input element.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> neotorch.elu(x)[0]
+        0.0
+    """
+
+    return _dispatch_unary("elu", tensor).forward(tensor)
+
+
+def leaky_relu(tensor: Any) -> Any:
+    """Apply the leaky rectified linear unit function elementwise.
+
+    Leaky ReLU uses PyTorch's default negative slope ``0.01``. It maps ``x`` to
+    ``x`` when ``x >= 0`` and to ``0.01 * x`` otherwise. Its autograd
+    derivative multiplies the incoming gradient by ``1`` when ``x >= 0`` and by
+    ``0.01`` otherwise.
+
+    Args:
+        tensor: Tensor whose logical values should be transformed.
+
+    Returns:
+        Tensor containing the leaky ReLU value of each input element.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([-2]), 0, Layout(Shape(1), Stride(1)))
+        >>> neotorch.leaky_relu(x)[0]
+        -0.02
+    """
+
+    return _dispatch_unary("leaky_relu", tensor).forward(tensor)
+
+
 def pow(tensor: Any, exponent: Any) -> Any:
     """Raise each tensor element to a scalar exponent.
 
@@ -1073,14 +1377,20 @@ def view(tensor: Any, key: Any) -> Any:
 __all__ = [
     "GenericAddOperation",
     "GenericDivOperation",
+    "GenericELUOperation",
     "GenericElementwiseMulOperation",
     "GenericExpOperation",
+    "GenericGELUOperation",
+    "GenericLeakyReLUOperation",
     "GenericMatmulOperation",
     "GenericPowOperation",
     "GenericReLUOperation",
     "GenericReduceSumOperation",
     "GenericScalarMulOperation",
+    "GenericSiLUOperation",
     "GenericSigmoidOperation",
+    "GenericSoftplusOperation",
+    "GenericTanhOperation",
     "GenericViewOperation",
     "Operation",
     "PermuteOperation",
@@ -1088,9 +1398,12 @@ __all__ = [
     "add",
     "div",
     "elementwise_mul",
+    "elu",
     "einsum",
     "exp",
+    "gelu",
     "is_grad_enabled",
+    "leaky_relu",
     "matmul",
     "mul",
     "no_grad",
@@ -1101,5 +1414,8 @@ __all__ = [
     "relu",
     "set_grad_enabled",
     "sigmoid",
+    "silu",
+    "softplus",
+    "tanh",
     "view",
 ]

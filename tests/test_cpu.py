@@ -180,14 +180,20 @@ def test_cpu_dispatch_op_returns_supported_operations():
     native_cases = {
         "add": "_CPUAddOperation",
         "div": "_CPUDivOperation",
+        "elu": "_CPUELUOperation",
         "elementwise_mul": "_CPUElementwiseMulOperation",
         "exp": "_CPUExpOperation",
+        "gelu": "_CPUGELUOperation",
+        "leaky_relu": "_CPULeakyReLUOperation",
         "matmul": "_CPUMatmulOperation",
         "mul": "_CPUScalarMulOperation",
         "pow": "_CPUPowOperation",
         "reduce": "_CPUReduceSumOperation",
         "relu": "_CPUReLUOperation",
         "sigmoid": "_CPUSigmoidOperation",
+        "silu": "_CPUSiLUOperation",
+        "softplus": "_CPUSoftplusOperation",
+        "tanh": "_CPUTanhOperation",
     }
 
     for operation_name, operation_type_name in native_cases.items():
