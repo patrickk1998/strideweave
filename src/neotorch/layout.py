@@ -430,7 +430,6 @@ class Layout:
     @staticmethod
     def check_tree(shape: _ShapeLevel, stride: _StrideLevel) -> bool:
         if len(shape) != len(stride):
-            print("Wrong length")
             return False
         for sh, st in zip(shape, stride):
             if isinstance(sh, int) and isinstance(st, int):
@@ -444,8 +443,8 @@ class Layout:
 
     @staticmethod
     def expand_int(key: int, shape: _ShapeLevel) -> list[int]:
-        if key >= shape.logical_size:
-            raise ValueError("key is to large!")
+        if key < 0 or key >= shape.logical_size:
+            raise ValueError("Key is not in domain of shape")
 
         cord = []
         for el in shape:
@@ -454,8 +453,7 @@ class Layout:
             else:
                 lsize = el.logical_size
             cord.append(key % lsize)
-            key -= cord[-1]
-            key = int(key / lsize)
+            key //= lsize
         return cord
 
     @staticmethod
@@ -477,7 +475,7 @@ class Layout:
         idx = 0
         for sh, stride_value, k in zip(shape, stride, curr_key):
             if isinstance(sh, int):
-                if k >= sh:
+                if k < 0 or k >= sh:
                     raise ValueError("Key is not in domain of shape")
                 idx += stride_value * k
             else:
@@ -801,7 +799,7 @@ class Layout:
     @staticmethod
     def choose(A: Layout, d: int) -> Layout:
         if A.shape.logical_size % d != 0:
-            raise ValueError("Can not choose the d-th element of Layout {A}")
+            raise ValueError(f"Can not choose the {d}-th element of Layout {A}")
         new_stride = []
         new_shape = []
         d_remaining = d
@@ -814,8 +812,8 @@ class Layout:
             if cur_shape > d_remaining:
                 if cur_shape % d_remaining != 0:
                     raise ValueError(
-                        "Can not choose the d-th element of Layout {A}, "
-                        "{cur_shape} can not be reduced by {d_reamaining}"
+                        f"Can not choose the {d}-th element of Layout {A}, "
+                        f"{cur_shape} can not be reduced by {d_remaining}"
                     )
                 new_stride.append(d_remaining * int(el.stride))
                 new_shape.append(cur_shape // d_remaining)
@@ -823,8 +821,8 @@ class Layout:
             else:
                 if d_remaining % cur_shape != 0:
                     raise ValueError(
-                        "Can not choose the d-th element of Layout {A}, "
-                        "{cur_shape} can not be reduced by {d_reamaining}"
+                        f"Can not choose the {d}-th element of Layout {A}, "
+                        f"{cur_shape} can not be reduced by {d_remaining}"
                     )
                 new_stride.append(d_remaining * int(el.stride))
                 new_shape.append(1)
@@ -845,7 +843,7 @@ class Layout:
             else:
                 if s % cur != 0:
                     raise ValueError(
-                        "Shape divisibility condition not meet for {A} and {s}"
+                        f"Shape divisibility condition not met for {A} and {s}"
                     )
                 new_shape.append(s // cur)
                 cur = s

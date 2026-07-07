@@ -627,3 +627,32 @@ def test_cpu_view_operations_reuse_python_layout_operations():
     assert result.layout == Layout(Shape([3, 2]), Stride([2, 1]))
     assert result[2, 1] == tensor[1, 2]
     assert isinstance(result.autograd_ctx, PermuteOperation)
+
+
+def test_cpu_int32_pow_handles_large_exponents():
+    tensor = make_cpu_tensor([1, 0, -1], Layout(Shape(3), Stride(1)), DataType.Int32)
+
+    even = neotorch.pow(tensor, 2**30)
+    # The exponent is carried as float32, so the odd exponent must stay
+    # within float32's exact-integer range.
+    odd = neotorch.pow(tensor, 2**24 - 1)
+
+    assert even.dtype() is DataType.Int32
+    assert [even[0], even[1], even[2]] == [1, 0, 1]
+    assert [odd[0], odd[1], odd[2]] == [1, 0, -1]
+
+
+def test_cpu_int32_pow_overflow_raises():
+    tensor = make_cpu_tensor([3], Layout(Shape(1), Stride(1)), DataType.Int32)
+
+    with pytest.raises(OverflowError):
+        neotorch.pow(tensor, 40)
+
+
+def test_cpu_bool_scalar_multiplies_as_float():
+    tensor = make_cpu_tensor([3], Layout(Shape(1), Stride(1)), DataType.Int32)
+
+    result = neotorch.mul(tensor, True)
+
+    assert result.dtype() is DataType.Float32
+    assert result[0] == 3.0

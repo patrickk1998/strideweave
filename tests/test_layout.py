@@ -565,3 +565,49 @@ def test_layout_complement():
     assert Layout.complement(Layout.leaf(4, 2), 24) == Layout(
         Shape([2, 3]), Stride([1, 8])
     )
+
+
+def test_layout_index_rejects_negative_keys():
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+
+    with pytest.raises(ValueError, match="not in domain"):
+        layout.index(-1)
+    with pytest.raises(ValueError, match="not in domain"):
+        layout.index((-1, 2))
+    with pytest.raises(ValueError, match="not in domain"):
+        native_index.get_index(layout, [0, -1])
+
+
+def test_layout_cache_index_expanded_rejects_negative_coordinates():
+    cache = native_index._LayoutCache(Layout(Shape([2, 3]), Stride([1, 2])))
+
+    with pytest.raises(ValueError, match="not in domain"):
+        cache.index_expanded([-1, 0])
+
+
+def test_layout_expand_int_rejects_negative_key():
+    with pytest.raises(ValueError, match="not in domain"):
+        Layout.expand_int(-1, Shape([2, 3]).top_level)
+
+
+def test_layout_expand_int_is_exact_for_large_keys():
+    coordinate = Layout.expand_int(2**60 + 1, Shape([2, 2**62]).top_level)
+
+    assert coordinate == [1, 2**59]
+
+
+def test_layout_choose_error_message_includes_values():
+    with pytest.raises(ValueError, match="choose the 2-th element"):
+        Layout.choose(Layout(Shape([3]), Stride([1])), 2)
+
+
+def test_layout_modout_error_message_includes_values():
+    with pytest.raises(ValueError, match="not met for"):
+        Layout.modout(Layout(Shape([2, 3]), Stride([1, 2])), 3)
+
+
+def test_layout_structure_mismatch_does_not_print(capsys):
+    with pytest.raises(ValueError, match="do not match in Structure"):
+        Layout(Shape([2]), Stride([1, 2]))
+
+    assert capsys.readouterr().out == ""

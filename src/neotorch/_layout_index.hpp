@@ -126,7 +126,7 @@ public:
 
         Index index = 0;
         for (std::size_t i = 0; i < size; ++i) {
-            if (key[i] >= leaf_shapes_[i]) {
+            if (key[i] < 0 || key[i] >= leaf_shapes_[i]) {
                 throw py::value_error("Key is not in domain of shape");
             }
             index += leaf_strides_[i] * key[i];
@@ -261,8 +261,8 @@ private:
     void expand_logical_key(
         const LayoutNode& node, Index logical_key, std::vector<Index>& expanded
     ) const {
-        if (logical_key >= node.logical_size) {
-            throw py::value_error("key is to large!");
+        if (logical_key < 0 || logical_key >= node.logical_size) {
+            throw py::value_error("Key is not in domain of shape");
         }
 
         for (const LayoutNode& child : node.children) {
@@ -279,8 +279,8 @@ private:
     }
 
     Index index_logical_node(const LayoutNode& node, Index logical_key) const {
-        if (logical_key >= node.logical_size) {
-            throw py::value_error("key is to large!");
+        if (logical_key < 0 || logical_key >= node.logical_size) {
+            throw py::value_error("Key is not in domain of shape");
         }
 
         Index index = 0;
@@ -290,7 +290,7 @@ private:
             logical_key /= child.logical_size;
 
             if (child.leaf) {
-                if (coordinate_value >= child.shape) {
+                if (coordinate_value < 0 || coordinate_value >= child.shape) {
                     throw py::value_error("Key is not in domain of shape");
                 }
                 index += child.stride * coordinate_value;
@@ -316,7 +316,7 @@ private:
             ++key_position;
 
             if (child.leaf) {
-                if (coordinate_value >= child.shape) {
+                if (coordinate_value < 0 || coordinate_value >= child.shape) {
                     throw py::value_error("Key is not in domain of shape");
                 }
                 index += child.stride * coordinate_value;
@@ -344,7 +344,7 @@ private:
             py::object coordinate = sequence[i];
             if (child.leaf) {
                 const Index coordinate_value = as_index(coordinate);
-                if (coordinate_value >= child.shape) {
+                if (coordinate_value < 0 || coordinate_value >= child.shape) {
                     throw py::value_error("Key is not in domain of shape");
                 }
                 index += child.stride * coordinate_value;
@@ -375,8 +375,8 @@ inline std::vector<py::object> expand_int(
     py::handle key_object, py::handle shape_object
 ) {
     Index key = as_index(key_object);
-    if (key >= logical_size(shape_object)) {
-        throw py::value_error("key is to large!");
+    if (key < 0 || key >= logical_size(shape_object)) {
+        throw py::value_error("Key is not in domain of shape");
     }
 
     py::sequence shape = py::reinterpret_borrow<py::sequence>(shape_object);
@@ -430,7 +430,7 @@ inline Index get_index_levels(
         py::object stride_value = stride[i];
         if (is_int(shape_value)) {
             Index coordinate_value = as_index(coordinate);
-            if (coordinate_value >= as_index(shape_value)) {
+            if (coordinate_value < 0 || coordinate_value >= as_index(shape_value)) {
                 throw py::value_error("Key is not in domain of shape");
             }
             index += as_index(stride_value) * coordinate_value;

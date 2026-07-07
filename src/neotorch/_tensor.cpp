@@ -1,7 +1,10 @@
 #include <pybind11/pybind11.h>
 
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "_layout_index.hpp"
 
@@ -195,27 +198,127 @@ public:
             return;
         }
 
-        py::object input_gradients_object = operation.attr("backward")(gradient);
-        py::object inputs_object = operation.attr("inputs")();
-        py::sequence input_gradients =
-            py::reinterpret_borrow<py::sequence>(input_gradients_object);
-        py::sequence inputs = py::reinterpret_borrow<py::sequence>(inputs_object);
-
-        if (py::len(input_gradients) != py::len(inputs)) {
-            throw py::value_error("Operation backward returned wrong number of gradients");
+        // Phase 1: discover the reachable operation graph and count, for each
+        // differentiable tensor, the number of reachable operations consuming
+        // it. The counts allow phase 2 to run every operation's backward
+        // exactly once, with the summed gradient of its output, instead of
+        // re-traversing shared subgraphs once per consumer.
+        std::unordered_map<PyObject*, Index> remaining_consumers;
+        std::unordered_set<PyObject*> visited_operations;
+        std::vector<py::object> keepalive;
+        std::vector<py::object> operation_stack;
+        visited_operations.insert(operation.ptr());
+        operation_stack.push_back(operation);
+        while (!operation_stack.empty()) {
+            py::object current = std::move(operation_stack.back());
+            operation_stack.pop_back();
+            py::sequence inputs =
+                py::reinterpret_borrow<py::sequence>(current.attr("inputs")());
+            std::unordered_set<PyObject*> seen_inputs;
+            for (py::ssize_t i = 0; i < py::len(inputs); ++i) {
+                py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
+                if (!seen_inputs.insert(input.ptr()).second) {
+                    continue;
+                }
+                if (!py::cast<bool>(input.attr("is_differentiable")())) {
+                    continue;
+                }
+                ++remaining_consumers[input.ptr()];
+                keepalive.push_back(input);
+                py::object input_ctx = input.attr("autograd_ctx");
+                if (!input_ctx.is_none() &&
+                    visited_operations.insert(input_ctx.ptr()).second) {
+                    operation_stack.push_back(std::move(input_ctx));
+                }
+            }
+            keepalive.push_back(std::move(current));
         }
 
-        for (py::ssize_t i = 0; i < py::len(inputs); ++i) {
-            py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
-            py::object input_gradient =
-                py::reinterpret_borrow<py::object>(input_gradients[i]);
-            if (input_gradient.is_none()) {
-                continue;
+        // Phase 2: propagate gradients in topological order. A tensor is
+        // finalized once every consuming operation has reported its
+        // contribution; only then are its gradient accumulated and its own
+        // producing operation scheduled. Operations whose output received no
+        // gradient are still visited (with a none gradient) so that consumer
+        // counts keep decrementing across skipped branches.
+        std::unordered_map<PyObject*, py::object> pending_gradients;
+        std::vector<std::pair<py::object, py::object>> ready;
+        ready.emplace_back(operation, std::move(gradient));
+        while (!ready.empty()) {
+            auto [current, current_gradient] = std::move(ready.back());
+            ready.pop_back();
+
+            py::sequence inputs =
+                py::reinterpret_borrow<py::sequence>(current.attr("inputs")());
+
+            if (!current_gradient.is_none()) {
+                py::object input_gradients_object =
+                    current.attr("backward")(current_gradient);
+                py::sequence input_gradients =
+                    py::reinterpret_borrow<py::sequence>(input_gradients_object);
+                if (py::len(input_gradients) != py::len(inputs)) {
+                    throw py::value_error(
+                        "Operation backward returned wrong number of gradients"
+                    );
+                }
+
+                for (py::ssize_t i = 0; i < py::len(inputs); ++i) {
+                    py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
+                    py::object input_gradient =
+                        py::reinterpret_borrow<py::object>(input_gradients[i]);
+                    if (input_gradient.is_none()) {
+                        continue;
+                    }
+                    if (!py::cast<bool>(input.attr("is_differentiable")())) {
+                        continue;
+                    }
+                    Tensor& input_tensor = py::cast<Tensor&>(input);
+                    input_tensor.validate_gradient(input_gradient);
+                    auto found = pending_gradients.find(input.ptr());
+                    if (found == pending_gradients.end()) {
+                        pending_gradients.emplace(
+                            input.ptr(), std::move(input_gradient)
+                        );
+                    } else {
+                        found->second = input_tensor.combined_gradient(
+                            found->second, input_gradient
+                        );
+                    }
+                }
             }
-            if (!py::cast<bool>(input.attr("is_differentiable")())) {
-                continue;
+
+            std::unordered_set<PyObject*> seen_inputs;
+            for (py::ssize_t i = 0; i < py::len(inputs); ++i) {
+                py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
+                if (!seen_inputs.insert(input.ptr()).second) {
+                    continue;
+                }
+                auto consumer = remaining_consumers.find(input.ptr());
+                if (consumer == remaining_consumers.end()) {
+                    continue;
+                }
+                if (--consumer->second != 0) {
+                    continue;
+                }
+
+                py::object total_gradient = py::none();
+                auto found = pending_gradients.find(input.ptr());
+                if (found != pending_gradients.end()) {
+                    total_gradient = std::move(found->second);
+                    pending_gradients.erase(found);
+                }
+
+                Tensor& input_tensor = py::cast<Tensor&>(input);
+                if (!total_gradient.is_none() &&
+                    input_tensor.should_accumulate_grad()) {
+                    input_tensor.accumulate_grad(total_gradient);
+                }
+                py::object input_ctx = input.attr("autograd_ctx");
+                if (!input_ctx.is_none()) {
+                    ready.emplace_back(
+                        std::move(input_ctx), std::move(total_gradient)
+                    );
+                }
             }
-            input.attr("backward")(input_gradient);
         }
     }
 
@@ -284,6 +387,18 @@ private:
 
         py::object grad_data = data_.attr("new_like")(values);
         return tensor_type()(grad_data, py::int_(0), layout_);
+    }
+
+    py::object combined_gradient(py::handle accumulated, py::handle addition) const {
+        py::object combined = detached_gradient_copy(accumulated);
+        for (Index i = 0; i < size(); ++i) {
+            py::object key = py::int_(i);
+            py::object combined_value = add_python_objects(
+                combined.attr("__getitem__")(key), addition.attr("__getitem__")(key)
+            );
+            combined.attr("__setitem__")(key, combined_value);
+        }
+        return combined;
     }
 
     void accumulate_grad(py::handle gradient) {

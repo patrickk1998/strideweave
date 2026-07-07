@@ -1385,3 +1385,73 @@ def test_tensor_setitem_propagates_backing_data_lifecycle_errors(tmp_path):
 
     data.promote()
     assert tensor[1, 1] == "updated"
+
+
+def test_tensor_rejects_negative_index_keys():
+    tensor = Tensor(
+        Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
+
+    with pytest.raises(ValueError, match="not in domain"):
+        tensor[-1, 2]
+    with pytest.raises(ValueError, match="not in domain"):
+        tensor[-1]
+    with pytest.raises(ValueError, match="not in domain"):
+        tensor[[0, -1]]
+    with pytest.raises(ValueError, match="not in domain"):
+        tensor[-1, 0] = 9.0
+
+
+def test_tensor_backward_deep_graph_does_not_exhaust_recursion():
+    leaf = Tensor(Generic([1.0]), 0, Layout(Shape(1), Stride(1)))
+
+    output = leaf
+    for _ in range(3000):
+        output = neotorch.mul(output, 1.0)
+    output.backward()
+
+    assert leaf.grad is not None
+    assert leaf.grad[0] == 1.0
+
+
+def test_tensor_backward_shared_subgraph_runs_each_operation_once():
+    # A doubling chain of depth 60 re-traverses 2**60 paths under naive
+    # per-path backward propagation; topological propagation visits each
+    # operation once and finishes immediately.
+    leaf = Tensor(Generic([1.0]), 0, Layout(Shape(1), Stride(1)))
+
+    output = leaf
+    for _ in range(60):
+        output = neotorch.add(output, output)
+    output.backward()
+
+    assert leaf.grad is not None
+    assert leaf.grad[0] == 2.0**60
+
+
+def test_tensor_backward_diamond_graph_accumulates_gradients():
+    layout = Layout(Shape(2), Stride(1))
+    leaf = Tensor(Generic([1.0, 2.0]), 0, layout)
+
+    doubled = neotorch.mul(leaf, 2.0)
+    tripled = neotorch.mul(leaf, 3.0)
+    combined = neotorch.add(doubled, tripled)
+    combined.backward(Tensor(Generic([1.0, 1.0]), 0, layout))
+
+    assert leaf.grad is not None
+    assert [leaf.grad[0], leaf.grad[1]] == [5.0, 5.0]
+
+
+def test_tensor_backward_retains_summed_gradient_on_interior_tensor():
+    layout = Layout(Shape(1), Stride(1))
+    leaf = Tensor(Generic([1.0]), 0, layout)
+
+    interior = neotorch.mul(leaf, 2.0)
+    interior.retain_grad()
+    combined = neotorch.add(interior, interior)
+    combined.backward()
+
+    assert interior.grad is not None
+    assert interior.grad[0] == 2.0
+    assert leaf.grad is not None
+    assert leaf.grad[0] == 4.0
