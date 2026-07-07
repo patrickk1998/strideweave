@@ -136,13 +136,12 @@ using CpuSoftplusOperation = CpuUnaryElementwiseOperation<CpuSoftplusScalar>;
 using CpuELUOperation = CpuUnaryElementwiseOperation<CpuELUScalar>;
 using CpuLeakyReLUOperation = CpuUnaryElementwiseOperation<CpuLeakyReLUScalar>;
 
-class CpuAddOperation : public CpuOperation {
+class CpuAddOperation : public neotorch::operation::Operation {
 public:
-    py::object forward(py::args inputs) {
+    py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 2) {
             throw py::type_error("CPU add requires lhs and rhs tensors");
         }
-        const bool build_graph = begin_forward(inputs);
         py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
         CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
@@ -172,14 +171,10 @@ public:
                 lhs_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return finish_forward(
-            this,
-            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
-            build_graph
-        );
+        return make_tensor(std::move(result.data_object), std::move(result.layout_object));
     }
 
-    py::object backward(py::object gradient) {
+    py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
@@ -190,13 +185,12 @@ public:
     }
 };
 
-class CpuScalarMulOperation : public CpuOperation {
+class CpuScalarMulOperation : public neotorch::operation::Operation {
 public:
-    py::object forward(py::args inputs) {
+    py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 2) {
             throw py::type_error("CPU scalar multiply requires a tensor and scalar");
         }
-        const bool build_graph = begin_forward(inputs);
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         scalar_ = require_float(inputs[1], "scalar");
@@ -229,14 +223,10 @@ public:
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return finish_forward(
-            this,
-            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
-            build_graph
-        );
+        return make_tensor(std::move(result.data_object), std::move(result.layout_object));
     }
 
-    py::object backward(py::object gradient) {
+    py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
         require_same_layout(tensor, gradient);
@@ -262,15 +252,14 @@ private:
     float scalar_ = 0.0f;
 };
 
-class CpuElementwiseMulOperation : public CpuOperation {
+class CpuElementwiseMulOperation : public neotorch::operation::Operation {
 public:
-    py::object forward(py::args inputs) {
+    py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 2) {
             throw py::type_error(
                 "CPU elementwise multiply requires lhs and rhs tensors"
             );
         }
-        const bool build_graph = begin_forward(inputs);
         py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
         CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
@@ -300,14 +289,10 @@ public:
                 lhs_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return finish_forward(
-            this,
-            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
-            build_graph
-        );
+        return make_tensor(std::move(result.data_object), std::move(result.layout_object));
     }
 
-    py::object backward(py::object gradient) {
+    py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
@@ -347,13 +332,12 @@ public:
     }
 };
 
-class CpuDivOperation : public CpuOperation {
+class CpuDivOperation : public neotorch::operation::Operation {
 public:
-    py::object forward(py::args inputs) {
+    py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 2) {
             throw py::type_error("CPU division requires lhs and rhs tensors");
         }
-        const bool build_graph = begin_forward(inputs);
         py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
         CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
@@ -372,14 +356,10 @@ public:
                 lhs_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return finish_forward(
-            this,
-            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
-            build_graph
-        );
+        return make_tensor(std::move(result.data_object), std::move(result.layout_object));
     }
 
-    py::object backward(py::object gradient) {
+    py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
@@ -419,13 +399,12 @@ public:
     }
 };
 
-class CpuReLUOperation : public CpuOperation {
+class CpuReLUOperation : public neotorch::operation::Operation {
 public:
-    py::object forward(py::args inputs) {
+    py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 1) {
             throw py::type_error("CPU ReLU requires a tensor");
         }
-        const bool build_graph = begin_forward(inputs);
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
 
@@ -447,14 +426,10 @@ public:
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return finish_forward(
-            this,
-            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
-            build_graph
-        );
+        return make_tensor(std::move(result.data_object), std::move(result.layout_object));
     }
 
-    py::object backward(py::object gradient) {
+    py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
         require_same_layout(tensor, gradient);
@@ -479,13 +454,12 @@ public:
     }
 };
 
-class CpuPowOperation : public CpuOperation {
+class CpuPowOperation : public neotorch::operation::Operation {
 public:
-    py::object forward(py::args inputs) {
+    py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 2) {
             throw py::type_error("CPU power requires a tensor and exponent");
         }
-        const bool build_graph = begin_forward(inputs);
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         exponent_ = require_float(inputs[1], "exponent");
@@ -517,14 +491,10 @@ public:
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return finish_forward(
-            this,
-            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
-            build_graph
-        );
+        return make_tensor(std::move(result.data_object), std::move(result.layout_object));
     }
 
-    py::object backward(py::object gradient) {
+    py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
         require_same_layout(tensor, gradient);
@@ -555,13 +525,12 @@ private:
     float exponent_ = 0.0f;
 };
 
-class CpuReduceSumOperation : public CpuOperation {
+class CpuReduceSumOperation : public neotorch::operation::Operation {
 public:
-    py::object forward(py::args inputs) {
+    py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 1) {
             throw py::type_error("CPU reduce requires a tensor");
         }
-        const bool build_graph = begin_forward(inputs);
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         require_two_mode_tensor(tensor, "tensor");
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
@@ -607,14 +576,10 @@ public:
                 );
             }
         }
-        return finish_forward(
-            this,
-            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
-            build_graph
-        );
+        return make_tensor(std::move(result.data_object), std::move(result.layout_object));
     }
 
-    py::object backward(py::object gradient) {
+    py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
         require_layout(gradient, output_layout_);
@@ -652,13 +617,12 @@ private:
     py::object output_layout_ = py::none();
 };
 
-class CpuMatmulOperation : public CpuOperation {
+class CpuMatmulOperation : public neotorch::operation::Operation {
 public:
-    py::object forward(py::args inputs) {
+    py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 2) {
             throw py::type_error("CPU matmul requires lhs and rhs tensors");
         }
-        const bool build_graph = begin_forward(inputs);
         py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
         require_two_mode_tensor(lhs, "lhs");
@@ -739,14 +703,10 @@ public:
                 );
             }
         }
-        return finish_forward(
-            this,
-            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
-            build_graph
-        );
+        return make_tensor(std::move(result.data_object), std::move(result.layout_object));
     }
 
-    py::object backward(py::object gradient) {
+    py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);

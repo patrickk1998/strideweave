@@ -119,5 +119,6 @@ PYBIND11_MODULE(_data, module) {
     py::class_<VectorDataForTest, Data>(module, "_VectorDataForTest")
         .def(py::init<py::iterable>(), py::arg("values"));
 
+    py::module_::import("neotorch._operation");
     neotorch::data::bind_cpu(module);
 }

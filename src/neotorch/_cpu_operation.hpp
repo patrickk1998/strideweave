@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "_cpu_data.hpp"
+#include "_operation.hpp"
 
 namespace py = pybind11;
 
@@ -38,77 +39,6 @@ inline float gelu_gradient_multiplier(float value) {
            value * std::exp(-0.5f * value * value) * kInvSqrt2Pi;
 }
 
-class CpuOperation {
-public:
-    CpuOperation() : ctx_(py::dict()), inputs_(py::tuple()) {}
-
-    py::dict ctx() const { return ctx_; }
-
-    py::tuple inputs() const { return inputs_; }
-
-protected:
-    bool begin_forward(py::args inputs) {
-        const bool build_autograd_graph = py::cast<bool>(
-            py::module_::import("neotorch.operation").attr("is_grad_enabled")()
-        );
-        if (!build_autograd_graph || !has_differentiable_tensor_input(inputs)) {
-            inputs_ = py::tuple();
-            return false;
-        }
-
-        py::object tensor = tensor_type();
-        py::ssize_t tensor_count = 0;
-        for (py::handle input : inputs) {
-            if (py::isinstance(input, tensor)) {
-                ++tensor_count;
-            }
-        }
-
-        py::tuple stored(tensor_count);
-        py::ssize_t stored_index = 0;
-        for (py::handle input : inputs) {
-            if (py::isinstance(input, tensor)) {
-                stored[stored_index] = py::reinterpret_borrow<py::object>(input);
-                ++stored_index;
-            }
-        }
-        inputs_ = std::move(stored);
-        return true;
-    }
-
-    template <typename Operation>
-    py::object finish_forward(
-        Operation* operation, py::object result, bool build_graph
-    ) {
-        if (!py::isinstance(result, tensor_type())) {
-            throw py::type_error("CPU operation forward must return a Tensor");
-        }
-        if (build_graph && py::cast<bool>(result.attr("is_differentiable")())) {
-            result.attr("autograd_ctx") =
-                py::cast(operation, py::return_value_policy::reference);
-        } else {
-            inputs_ = py::tuple();
-        }
-        return result;
-    }
-
-    py::dict ctx_;
-
-private:
-    bool has_differentiable_tensor_input(py::args inputs) {
-        py::object tensor = tensor_type();
-        for (py::handle input : inputs) {
-            if (py::isinstance(input, tensor) &&
-                py::cast<bool>(input.attr("is_differentiable")())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    py::tuple inputs_;
-};
-
 // Unary elementwise CPU operation parameterized on a scalar policy:
 //
 //     struct Scalar {
@@ -120,13 +50,12 @@ private:
 // forward writes value(x) elementwise into a Float32 result; backward writes
 // gradient * gradient_multiplier(x).
 template <typename Scalar>
-class CpuUnaryElementwiseOperation : public CpuOperation {
+class CpuUnaryElementwiseOperation : public neotorch::operation::Operation {
 public:
-    py::object forward(py::args inputs) {
+    py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 1) {
             throw py::type_error(Scalar::kForwardError);
         }
-        const bool build_graph = begin_forward(inputs);
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
 
@@ -142,14 +71,12 @@ public:
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return finish_forward(
-            this,
-            make_tensor(std::move(result.data_object), std::move(result.layout_object)),
-            build_graph
+        return make_tensor(
+            std::move(result.data_object), std::move(result.layout_object)
         );
     }
 
-    py::object backward(py::object gradient) {
+    py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
         require_same_layout(tensor, gradient);
@@ -178,19 +105,10 @@ public:
     }
 };
 
-template <typename Operation>
+template <typename Derived>
 void bind_cpu_operation(py::module_& module, const char* name) {
-    py::class_<Operation>(module, name)
-        .def(py::init<>())
-        .def(
-            "forward",
-            [](Operation& operation, py::args inputs) {
-                return operation.forward(inputs);
-            }
-        )
-        .def("backward", &Operation::backward, py::arg("gradient"))
-        .def_property_readonly("ctx", &Operation::ctx)
-        .def("inputs", &Operation::inputs);
+    py::class_<Derived, neotorch::operation::Operation>(module, name)
+        .def(py::init<>());
 }
 
 }  // namespace neotorch::data

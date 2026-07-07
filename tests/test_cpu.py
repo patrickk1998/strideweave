@@ -11,7 +11,9 @@ from neotorch import (
     DataType,
     GenericViewOperation,
     Layout,
+    Operation,
     PermuteOperation,
+    RearrangeOperation,
     Shape,
     Stride,
 )
@@ -197,9 +199,12 @@ def test_cpu_dispatch_op_returns_supported_operations():
     }
 
     for operation_name, operation_type_name in native_cases.items():
-        assert type(CPU.dispatch_op(operation_name)).__name__ == operation_type_name
+        operation = CPU.dispatch_op(operation_name)
+        assert type(operation).__name__ == operation_type_name
+        assert isinstance(operation, Operation)
 
     assert isinstance(CPU.dispatch_op("permute"), PermuteOperation)
+    assert isinstance(CPU.dispatch_op("rearrange"), RearrangeOperation)
     assert isinstance(CPU.dispatch_op("view"), GenericViewOperation)
 
     with pytest.raises(NotImplementedError):
