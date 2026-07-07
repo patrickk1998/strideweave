@@ -206,77 +206,7 @@ public:
         );
     }
 
-    static py::object dispatch_op(const std::string& operation_name) {
-        py::object native_data = py::module_::import("neotorch._data");
-        if (operation_name == "add") {
-            return native_data.attr("_CPUAddOperation")();
-        }
-        if (operation_name == "div") {
-            return native_data.attr("_CPUDivOperation")();
-        }
-        if (operation_name == "elu") {
-            return native_data.attr("_CPUELUOperation")();
-        }
-        if (operation_name == "elementwise_mul") {
-            return native_data.attr("_CPUElementwiseMulOperation")();
-        }
-        if (operation_name == "exp") {
-            return native_data.attr("_CPUExpOperation")();
-        }
-        if (operation_name == "gelu") {
-            return native_data.attr("_CPUGELUOperation")();
-        }
-        if (operation_name == "leaky_relu") {
-            return native_data.attr("_CPULeakyReLUOperation")();
-        }
-        if (operation_name == "matmul") {
-            return native_data.attr("_CPUMatmulOperation")();
-        }
-        if (operation_name == "mul") {
-            return native_data.attr("_CPUScalarMulOperation")();
-        }
-        if (operation_name == "pow") {
-            return native_data.attr("_CPUPowOperation")();
-        }
-        if (operation_name == "reduce") {
-            return native_data.attr("_CPUReduceSumOperation")();
-        }
-        if (operation_name == "relu") {
-            return native_data.attr("_CPUReLUOperation")();
-        }
-        if (operation_name == "sigmoid") {
-            return native_data.attr("_CPUSigmoidOperation")();
-        }
-        if (operation_name == "silu") {
-            return native_data.attr("_CPUSiLUOperation")();
-        }
-        if (operation_name == "softplus") {
-            return native_data.attr("_CPUSoftplusOperation")();
-        }
-        if (operation_name == "tanh") {
-            return native_data.attr("_CPUTanhOperation")();
-        }
-        if (operation_name == "permute") {
-            return py::module_::import("neotorch.operation").attr("PermuteOperation")();
-        }
-        if (operation_name == "rearrange") {
-            return py::module_::import("neotorch.operation").attr(
-                "RearrangeOperation"
-            )();
-        }
-        if (operation_name == "view") {
-            return py::module_::import("neotorch.operation").attr(
-                "GenericViewOperation"
-            )();
-        }
-
-        PyErr_Format(
-            PyExc_NotImplementedError,
-            "CPU data does not support operation '%s'",
-            operation_name.c_str()
-        );
-        throw py::error_already_set();
-    }
+    static py::object dispatch_op(const std::string& operation_name);
 
 protected:
     void set_value(Index index, py::object value) override {

@@ -4,7 +4,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -16,6 +19,37 @@ namespace py = pybind11;
 
 namespace neotorch::data {
 namespace {
+
+using CpuOperationFactory = std::function<py::object()>;
+
+std::unordered_map<std::string, CpuOperationFactory>& cpu_operation_registry() {
+    static std::unordered_map<std::string, CpuOperationFactory> registry;
+    return registry;
+}
+
+void register_cpu_operation(
+    std::string operation_name, CpuOperationFactory operation_factory
+) {
+    cpu_operation_registry().insert_or_assign(
+        std::move(operation_name), std::move(operation_factory)
+    );
+}
+
+template <typename Operation>
+void register_native_cpu_operation(const char* operation_name) {
+    register_cpu_operation(operation_name, [] {
+        return py::cast(new Operation(), py::return_value_policy::take_ownership);
+    });
+}
+
+void register_python_cpu_operation(
+    const char* operation_name, const char* operation_type_name
+) {
+    register_cpu_operation(operation_name, [operation_type_name] {
+        return py::module_::import("neotorch.operation")
+            .attr(operation_type_name)();
+    });
+}
 
 bool exponent_preserves_int32(float exponent) {
     if (!std::isfinite(exponent)) {
@@ -825,6 +859,20 @@ private:
 
 }  // namespace
 
+py::object CPU::dispatch_op(const std::string& operation_name) {
+    auto& registry = cpu_operation_registry();
+    auto operation_factory = registry.find(operation_name);
+    if (operation_factory == registry.end()) {
+        PyErr_Format(
+            PyExc_NotImplementedError,
+            "CPU data does not support operation '%s'",
+            operation_name.c_str()
+        );
+        throw py::error_already_set();
+    }
+    return operation_factory->second();
+}
+
 void bind_cpu(py::module_& module) {
     py::class_<CPU, Data>(module, "CPU")
         .def(
@@ -865,6 +913,26 @@ void bind_cpu(py::module_& module) {
     bind_cpu_operation<CpuPowOperation>(module, "_CPUPowOperation");
     bind_cpu_operation<CpuReduceSumOperation>(module, "_CPUReduceSumOperation");
     bind_cpu_operation<CpuMatmulOperation>(module, "_CPUMatmulOperation");
+
+    register_native_cpu_operation<CpuAddOperation>("add");
+    register_native_cpu_operation<CpuDivOperation>("div");
+    register_native_cpu_operation<CpuELUOperation>("elu");
+    register_native_cpu_operation<CpuElementwiseMulOperation>("elementwise_mul");
+    register_native_cpu_operation<CpuExpOperation>("exp");
+    register_native_cpu_operation<CpuGELUOperation>("gelu");
+    register_native_cpu_operation<CpuLeakyReLUOperation>("leaky_relu");
+    register_native_cpu_operation<CpuMatmulOperation>("matmul");
+    register_native_cpu_operation<CpuScalarMulOperation>("mul");
+    register_native_cpu_operation<CpuPowOperation>("pow");
+    register_native_cpu_operation<CpuReduceSumOperation>("reduce");
+    register_native_cpu_operation<CpuReLUOperation>("relu");
+    register_native_cpu_operation<CpuSigmoidOperation>("sigmoid");
+    register_native_cpu_operation<CpuSiLUOperation>("silu");
+    register_native_cpu_operation<CpuSoftplusOperation>("softplus");
+    register_native_cpu_operation<CpuTanhOperation>("tanh");
+    register_python_cpu_operation("permute", "PermuteOperation");
+    register_python_cpu_operation("rearrange", "RearrangeOperation");
+    register_python_cpu_operation("view", "GenericViewOperation");
 }
 
 }  // namespace neotorch::data
