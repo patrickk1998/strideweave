@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import pickle
 from collections.abc import Iterable
-from enum import Enum
-from importlib import import_module
 from operator import index as operator_index
 from os import PathLike, fspath
 from pathlib import Path
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
-_data = import_module("neotorch._data")
-Data = cast(type[Any], _data.Data)
-CPU = cast(type[Any], _data.CPU)
+from ..base import Data
+from ..dtype import DataType
 
 
 @runtime_checkable
@@ -24,15 +21,6 @@ class _SizedIndexable(Protocol):
 @runtime_checkable
 class _MutableSizedIndexable(_SizedIndexable, Protocol):
     def __setitem__(self, index: int, value: Any, /) -> None: ...
-
-
-class DataType(Enum):
-    """Logical data type tags used by Neotorch data backends."""
-
-    Any = "Any"
-    Floating = "Floating"
-    Float32 = "Float32"
-    Int32 = "Int32"
 
 
 def _as_sized_indexable(
@@ -128,8 +116,8 @@ class Generic(Data):
         mapping: Any,
         mapping_offset: int = 0,
     ) -> None:
-        from .layout import Layout
-        from .tensor import Tensor
+        from ...layout import Layout
+        from ...tensor import Tensor
 
         if not isinstance(to_scatter, Tensor):
             raise TypeError("to_scatter must be a Tensor")
@@ -154,7 +142,12 @@ class Generic(Data):
 
     @staticmethod
     def dispatch_op(operation_name: str) -> Any:
-        from .operation import (
+        from ..shared_ops import (
+            GenericViewOperation,
+            PermuteOperation,
+            RearrangeOperation,
+        )
+        from .ops import (
             GenericAddOperation,
             GenericDivOperation,
             GenericElementwiseMulOperation,
@@ -171,9 +164,6 @@ class Generic(Data):
             GenericSiLUOperation,
             GenericSoftplusOperation,
             GenericTanhOperation,
-            GenericViewOperation,
-            PermuteOperation,
-            RearrangeOperation,
         )
 
         operations = {
@@ -254,9 +244,6 @@ class GenericEvictable(Generic):
 
 
 __all__ = [
-    "Data",
-    "CPU",
-    "DataType",
     "Generic",
     "GenericEvictable",
 ]

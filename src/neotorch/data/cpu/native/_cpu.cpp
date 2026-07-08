@@ -43,10 +43,12 @@ void register_native_cpu_operation(const char* operation_name) {
 }
 
 void register_python_cpu_operation(
-    const char* operation_name, const char* operation_type_name
+    const char* operation_name,
+    const char* operation_module_name,
+    const char* operation_type_name
 ) {
-    register_cpu_operation(operation_name, [operation_type_name] {
-        return py::module_::import("neotorch.operation")
+    register_cpu_operation(operation_name, [operation_module_name, operation_type_name] {
+        return py::module_::import(operation_module_name)
             .attr(operation_type_name)();
     });
 }
@@ -890,9 +892,15 @@ void bind_cpu(py::module_& module) {
     register_native_cpu_operation<CpuSiLUOperation>("silu");
     register_native_cpu_operation<CpuSoftplusOperation>("softplus");
     register_native_cpu_operation<CpuTanhOperation>("tanh");
-    register_python_cpu_operation("permute", "PermuteOperation");
-    register_python_cpu_operation("rearrange", "RearrangeOperation");
-    register_python_cpu_operation("view", "GenericViewOperation");
+    register_python_cpu_operation(
+        "permute", "neotorch.data.shared_ops", "PermuteOperation"
+    );
+    register_python_cpu_operation(
+        "rearrange", "neotorch.data.shared_ops", "RearrangeOperation"
+    );
+    register_python_cpu_operation(
+        "view", "neotorch.data.shared_ops", "GenericViewOperation"
+    );
 }
 
 }  // namespace neotorch::data

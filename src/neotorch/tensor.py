@@ -1,7 +1,6 @@
-from importlib import import_module
-from typing import Any, cast
+"""Compatibility exports for Neotorch tensors."""
 
-Tensor = cast(type[Any], import_module("neotorch._tensor").Tensor)
+from .core.tensor import Tensor
 
 __all__ = [
     "Tensor",

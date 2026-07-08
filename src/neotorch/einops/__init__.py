@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Literal, cast
 
-from .layout import Layout, Node, Tree
+from ..core.layout import Layout, Node, Tree
 
 TokenKind = Literal[
     "left_paren",
@@ -323,9 +323,9 @@ def rearrange(tensor: Any, description: str) -> Any:
         raise TypeError("description must be a str")
     spec = parse_rearrange(description)
 
-    from .operation import rearrange as tree_rearrange
+    from ..functional.api import _rearrange_tree
 
-    return tree_rearrange(tensor, spec.output, spec.selection)
+    return _rearrange_tree(tensor, spec.output, spec.selection)
 
 
 def reduce(tensor: Any, description: str) -> Any:
@@ -369,11 +369,10 @@ def reduce(tensor: Any, description: str) -> Any:
         raise TypeError("description must be a str")
     spec = parse_reduce(description)
 
-    from .operation import rearrange as tree_rearrange
-    from .operation import reduce as tensor_reduce
+    from ..functional.api import _rearrange_tree, _reduce_second_mode
 
-    intermediate = tree_rearrange(tensor, spec.rearrange_output, spec.selection)
-    return tensor_reduce(intermediate)
+    intermediate = _rearrange_tree(tensor, spec.rearrange_output, spec.selection)
+    return _reduce_second_mode(intermediate)
 
 
 def einsum(lhs: Any, rhs: Any, description: str) -> Any:
@@ -422,17 +421,16 @@ def einsum(lhs: Any, rhs: Any, description: str) -> Any:
     spec = parse_einsum(description)
     _validate_einsum_shared_symbol_sizes(lhs, rhs, spec)
 
-    from .operation import matmul
-    from .operation import rearrange as tree_rearrange
+    from ..functional.api import _matmul_2mode, _rearrange_tree
 
-    lhs_intermediate = tree_rearrange(
+    lhs_intermediate = _rearrange_tree(
         lhs, spec.lhs_rearrange_output, spec.lhs_selection
     )
-    rhs_intermediate = tree_rearrange(
+    rhs_intermediate = _rearrange_tree(
         rhs, spec.rhs_rearrange_output, spec.rhs_selection
     )
-    result = matmul(lhs_intermediate, rhs_intermediate)
-    return tree_rearrange(result, spec.output, spec.matmul_output_selection)
+    result = _matmul_2mode(lhs_intermediate, rhs_intermediate)
+    return _rearrange_tree(result, spec.output, spec.matmul_output_selection)
 
 
 def _parse_rearrange_uncached(command: str) -> RearrangeSpec:

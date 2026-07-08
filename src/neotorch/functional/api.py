@@ -2,19 +2,70 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, overload
+from importlib import import_module
+from typing import Any, cast, overload
 
-from ._operation_helpers import (
-    _dispatch_binary,
-    _dispatch_unary,
-    _is_grad_enabled,
-    _set_grad_enabled,
-)
-from .layout import Tree
+from ..core.layout import Tree
+from ..data.operation_helpers import _as_tensor
 
 _REDUCE_DESCRIPTION_MISSING = object()
+
+_operation = import_module("neotorch._operation")
+_is_grad_enabled = cast(Callable[[], bool], _operation.is_grad_enabled)
+_set_grad_enabled = cast(Callable[[bool], None], _operation.set_grad_enabled)
+
+__all__ = [
+    "add",
+    "div",
+    "einsum",
+    "elementwise_mul",
+    "elu",
+    "exp",
+    "gelu",
+    "is_grad_enabled",
+    "leaky_relu",
+    "matmul",
+    "mul",
+    "no_grad",
+    "permute",
+    "pow",
+    "rearrange",
+    "reduce",
+    "relu",
+    "set_grad_enabled",
+    "sigmoid",
+    "silu",
+    "softplus",
+    "tanh",
+    "view",
+]
+
+
+def _dispatch_unary(operation_name: str, tensor: Any) -> Any:
+    tensor = _as_tensor(tensor, "tensor")
+    return type(tensor.data).dispatch_op(operation_name)
+
+
+def _dispatch_binary(operation_name: str, lhs: Any, rhs: Any) -> Any:
+    lhs = _as_tensor(lhs, "lhs")
+    rhs = _as_tensor(rhs, "rhs")
+    if type(lhs.data) is not type(rhs.data):
+        raise TypeError("Tensor backing data classes must match")
+    return type(lhs.data).dispatch_op(operation_name)
+
+
+def _reduce_second_mode(tensor: Any) -> Any:
+    return _dispatch_unary("reduce", tensor).forward(tensor)
+
+
+def _matmul_2mode(lhs: Any, rhs: Any) -> Any:
+    return _dispatch_binary("matmul", lhs, rhs).forward(lhs, rhs)
+
+
+def _rearrange_tree(tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
+    return _dispatch_unary("rearrange", tensor).forward(tensor, output, selection)
 
 
 def is_grad_enabled() -> bool:
@@ -156,7 +207,7 @@ def mul(tensor: Any, scalar: Any) -> Any:
         30
     """
 
-    from .tensor import Tensor
+    from ..core.tensor import Tensor
 
     if isinstance(scalar, Tensor):
         return elementwise_mul(tensor, scalar)
@@ -454,11 +505,11 @@ def reduce(tensor: Any, description: Any = _REDUCE_DESCRIPTION_MISSING) -> Any:
     """
 
     if description is _REDUCE_DESCRIPTION_MISSING:
-        return _dispatch_unary("reduce", tensor).forward(tensor)
+        return _reduce_second_mode(tensor)
     if not isinstance(description, str):
         raise TypeError("description must be a str")
 
-    from .einops import reduce as einops_reduce
+    from ..einops import reduce as einops_reduce
 
     return einops_reduce(tensor, description)
 
@@ -485,7 +536,7 @@ def matmul(lhs: Any, rhs: Any) -> Any:
         22
     """
 
-    return _dispatch_binary("matmul", lhs, rhs).forward(lhs, rhs)
+    return _matmul_2mode(lhs, rhs)
 
 
 def einsum(lhs: Any, rhs: Any, description: str) -> Any:
@@ -514,7 +565,7 @@ def einsum(lhs: Any, rhs: Any, description: str) -> Any:
     if not isinstance(description, str):
         raise TypeError("description must be a str")
 
-    from .einops import einsum as einops_einsum
+    from ..einops import einsum as einops_einsum
 
     return einops_einsum(lhs, rhs, description)
 
@@ -559,10 +610,10 @@ def rearrange(tensor: Any, output: Tree | str, selection: Tree | None = None) ->
             raise TypeError(
                 "String rearrange descriptions do not accept an explicit selection"
             )
-        from .einops import rearrange as einops_rearrange
+        from ..einops import rearrange as einops_rearrange
 
         return einops_rearrange(tensor, output)
-    return _dispatch_unary("rearrange", tensor).forward(tensor, output, selection)
+    return _rearrange_tree(tensor, output, selection)
 
 
 def permute(tensor: Any, *order: Any) -> Any:

@@ -2,8 +2,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from .layout import Tree
-from .tensor import Tensor
+from ..core.layout import Tree
+from ..core.tensor import Tensor
 
 TokenKind = Literal[
     "left_paren",
