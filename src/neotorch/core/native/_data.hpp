@@ -28,6 +28,13 @@ public:
     virtual bool is_evictable() const { return false; }
     virtual bool is_mutable() const { return false; }
 
+    virtual py::dict dlpack_info() const {
+        PyErr_SetString(
+            PyExc_BufferError, "DLPack is not supported for this data class"
+        );
+        throw py::error_already_set();
+    }
+
     static py::object dispatch_op(const std::string& operation_name) {
         PyErr_Format(
             PyExc_NotImplementedError,

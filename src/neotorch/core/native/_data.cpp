@@ -46,6 +46,10 @@ public:
         PYBIND11_OVERRIDE(bool, Data, is_mutable);
     }
 
+    py::dict dlpack_info() const override {
+        PYBIND11_OVERRIDE(py::dict, Data, dlpack_info);
+    }
+
 protected:
     void set_value(Index index, py::object value) override {
         PYBIND11_OVERRIDE(void, Data, set_value, index, value);
@@ -109,6 +113,7 @@ PYBIND11_MODULE(_data, module) {
         )
         .def("is_evictable", &Data::is_evictable)
         .def("is_mutable", &Data::is_mutable)
+        .def("dlpack_info", &Data::dlpack_info)
         .def("is_evicted", &Data::is_evicted)
         .def("evict", &Data::evict)
         .def("promote", &Data::promote)

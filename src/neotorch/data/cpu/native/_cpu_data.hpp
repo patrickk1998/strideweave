@@ -165,6 +165,14 @@ public:
         return reinterpret_cast<std::uintptr_t>(data_);
     }
 
+    py::dict dlpack_info() const override {
+        py::dict info;
+        info["pointer"] = py::int_(pointer());
+        info["device_type"] = py::int_(1);
+        info["device_id"] = py::int_(0);
+        return info;
+    }
+
     void set_value_public(Index index, py::object value) {
         if (!is_mutable()) {
             throw std::runtime_error("Data is not mutable");

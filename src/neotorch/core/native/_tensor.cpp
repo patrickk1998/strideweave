@@ -1,5 +1,8 @@
 #include <pybind11/pybind11.h>
 
+#include <cstdint>
+#include <limits>
+#include <memory>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -13,6 +16,91 @@ namespace py = pybind11;
 namespace {
 
 using Index = neotorch::layout_index::Index;
+
+enum DLDeviceType : std::int32_t {
+    kDLCPU = 1,
+};
+
+enum DLDataTypeCode : std::uint8_t {
+    kDLInt = 0U,
+    kDLFloat = 2U,
+};
+
+struct DLPackVersion {
+    std::uint32_t major;
+    std::uint32_t minor;
+};
+
+struct DLDevice {
+    DLDeviceType device_type;
+    std::int32_t device_id;
+};
+
+struct DLDataType {
+    std::uint8_t code;
+    std::uint8_t bits;
+    std::uint16_t lanes;
+};
+
+struct DLTensor {
+    void* data;
+    DLDevice device;
+    std::int32_t ndim;
+    DLDataType dtype;
+    std::int64_t* shape;
+    std::int64_t* strides;
+    std::uint64_t byte_offset;
+};
+
+struct DLManagedTensor {
+    DLTensor dl_tensor;
+    void* manager_ctx;
+    void (*deleter)(DLManagedTensor* self);
+};
+
+struct DLManagedTensorVersioned {
+    DLPackVersion version;
+    void* manager_ctx;
+    void (*deleter)(DLManagedTensorVersioned* self);
+    std::uint64_t flags;
+    DLTensor dl_tensor;
+};
+
+constexpr std::uint64_t dlpack_flag_read_only = 1UL << 0UL;
+constexpr const char* dlpack_capsule_name = "dltensor";
+constexpr const char* used_dlpack_capsule_name = "used_dltensor";
+constexpr const char* versioned_dlpack_capsule_name = "dltensor_versioned";
+constexpr const char* used_versioned_dlpack_capsule_name =
+    "used_dltensor_versioned";
+
+struct DLPackDTypeInfo {
+    DLDataType dtype;
+    std::uint64_t item_size;
+};
+
+struct DLPackStorageInfo {
+    std::uintptr_t pointer;
+    DLDevice device;
+};
+
+struct LegacyDLPackTensor {
+    DLManagedTensor managed;
+    std::vector<std::int64_t> shape;
+    std::vector<std::int64_t> strides;
+    PyObject* owner = nullptr;
+};
+
+struct VersionedDLPackTensor {
+    DLManagedTensorVersioned managed;
+    std::vector<std::int64_t> shape;
+    std::vector<std::int64_t> strides;
+    PyObject* owner = nullptr;
+};
+
+[[noreturn]] void throw_buffer_error(const char* message) {
+    PyErr_SetString(PyExc_BufferError, message);
+    throw py::error_already_set();
+}
 
 py::object add_python_objects(py::handle left, py::handle right) {
     PyObject* result = PyNumber_Add(left.ptr(), right.ptr());
@@ -88,6 +176,113 @@ py::object data_type(const char* name) {
 bool is_differentiable_dtype(py::handle dtype) {
     return objects_equal(dtype, data_type("Float32")) ||
            objects_equal(dtype, data_type("Floating"));
+}
+
+DLPackDTypeInfo dlpack_dtype_info(py::handle dtype) {
+    if (objects_equal(dtype, data_type("Float32"))) {
+        return {{kDLFloat, 32, 1}, sizeof(float)};
+    }
+    if (objects_equal(dtype, data_type("Int32"))) {
+        return {{kDLInt, 32, 1}, sizeof(std::int32_t)};
+    }
+    throw_buffer_error("DLPack export supports only Float32 and Int32 tensors");
+}
+
+std::vector<std::int64_t> to_int64_vector(const std::vector<Index>& values) {
+    std::vector<std::int64_t> result;
+    result.reserve(values.size());
+    for (Index value : values) {
+        result.push_back(static_cast<std::int64_t>(value));
+    }
+    return result;
+}
+
+void decref_owner(PyObject* owner) {
+    if (owner == nullptr) {
+        return;
+    }
+    if (!Py_IsInitialized()) {
+        return;
+    }
+    PyGILState_STATE state = PyGILState_Ensure();
+    Py_DECREF(owner);
+    PyGILState_Release(state);
+}
+
+void legacy_dlpack_managed_deleter(DLManagedTensor* self) {
+    auto* holder = reinterpret_cast<LegacyDLPackTensor*>(self);
+    decref_owner(holder->owner);
+    delete holder;
+}
+
+void versioned_dlpack_managed_deleter(DLManagedTensorVersioned* self) {
+    auto* holder = reinterpret_cast<VersionedDLPackTensor*>(self);
+    decref_owner(holder->owner);
+    delete holder;
+}
+
+void legacy_dlpack_capsule_deleter(PyObject* capsule) {
+    if (PyCapsule_IsValid(capsule, used_dlpack_capsule_name)) {
+        return;
+    }
+    auto* managed = static_cast<DLManagedTensor*>(
+        PyCapsule_GetPointer(capsule, dlpack_capsule_name)
+    );
+    if (managed == nullptr) {
+        PyErr_WriteUnraisable(capsule);
+        return;
+    }
+    if (managed->deleter != nullptr) {
+        managed->deleter(managed);
+    }
+}
+
+void versioned_dlpack_capsule_deleter(PyObject* capsule) {
+    if (PyCapsule_IsValid(capsule, used_versioned_dlpack_capsule_name)) {
+        return;
+    }
+    auto* managed = static_cast<DLManagedTensorVersioned*>(
+        PyCapsule_GetPointer(capsule, versioned_dlpack_capsule_name)
+    );
+    if (managed == nullptr) {
+        PyErr_WriteUnraisable(capsule);
+        return;
+    }
+    if (managed->deleter != nullptr) {
+        managed->deleter(managed);
+    }
+}
+
+bool should_export_versioned_dlpack(py::handle max_version) {
+    if (max_version.is_none()) {
+        return false;
+    }
+    if (!py::isinstance<py::tuple>(max_version) &&
+        !py::isinstance<py::list>(max_version)) {
+        throw py::type_error("DLPack max_version must be a tuple or list");
+    }
+    py::sequence version = py::reinterpret_borrow<py::sequence>(max_version);
+    if (py::len(version) != 2) {
+        throw py::value_error("DLPack max_version must have two elements");
+    }
+    const int major = py::cast<int>(version[0]);
+    const int minor = py::cast<int>(version[1]);
+    if (major < 0 || minor < 0) {
+        throw py::value_error("DLPack max_version elements must be non-negative");
+    }
+    return major >= 1;
+}
+
+std::uint64_t byte_offset_for(Index offset, std::uint64_t item_size) {
+    const auto offset_u = static_cast<std::uint64_t>(offset);
+    if (offset_u > std::numeric_limits<std::uint64_t>::max() / item_size) {
+        throw_buffer_error("Tensor offset is too large for DLPack export");
+    }
+    return offset_u * item_size;
+}
+
+std::int32_t sequence_device_component(py::sequence device, py::ssize_t index) {
+    return py::cast<std::int32_t>(device[index]);
 }
 
 class Tensor {
@@ -182,6 +377,38 @@ public:
 
     py::object device() const {
         return py::module_::import("builtins").attr("type")(data_);
+    }
+
+    py::tuple dlpack_device() const {
+        DLPackStorageInfo storage = dlpack_storage_info();
+        return py::make_tuple(
+            static_cast<std::int32_t>(storage.device.device_type),
+            storage.device.device_id
+        );
+    }
+
+    py::object dlpack(
+        py::object self,
+        py::object stream,
+        py::object max_version,
+        py::object dl_device,
+        py::object copy
+    ) const {
+        (void)stream;
+        if (!copy.is_none() && py::cast<bool>(copy)) {
+            throw_buffer_error("DLPack copy exports are not supported");
+        }
+
+        DLPackStorageInfo storage = dlpack_storage_info();
+        validate_dlpack_device_request(dl_device, storage.device);
+        DLPackDTypeInfo dtype_info = dlpack_dtype_info(dtype());
+        const bool versioned = should_export_versioned_dlpack(max_version);
+        if (versioned) {
+            return make_versioned_dlpack_capsule(
+                std::move(self), storage, dtype_info
+            );
+        }
+        return make_legacy_dlpack_capsule(std::move(self), storage, dtype_info);
     }
 
     void backward(py::object gradient) {
@@ -332,6 +559,119 @@ private:
     Index data_index(py::object key) const {
         const Index layout_index = neotorch::layout_index::get_index(layout_, key);
         return offset_ + layout_index;
+    }
+
+    DLPackStorageInfo dlpack_storage_info() const {
+        py::dict info = py::cast<py::dict>(data_.attr("dlpack_info")());
+        const auto pointer = py::cast<std::uintptr_t>(info["pointer"]);
+        const auto device_type_int = py::cast<std::int32_t>(info["device_type"]);
+        const auto device_id = py::cast<std::int32_t>(info["device_id"]);
+        if (pointer == 0 && size() != 0) {
+            throw_buffer_error("DLPack data pointer must be non-null");
+        }
+        return {
+            pointer,
+            {static_cast<DLDeviceType>(device_type_int), device_id},
+        };
+    }
+
+    void validate_dlpack_device_request(
+        py::handle requested_device, DLDevice actual_device
+    ) const {
+        if (requested_device.is_none()) {
+            return;
+        }
+        if (!py::isinstance<py::tuple>(requested_device) &&
+            !py::isinstance<py::list>(requested_device)) {
+            throw py::type_error("DLPack dl_device must be a tuple or list");
+        }
+        py::sequence device = py::reinterpret_borrow<py::sequence>(requested_device);
+        if (py::len(device) != 2) {
+            throw py::value_error("DLPack dl_device must have two elements");
+        }
+        const auto requested_type = sequence_device_component(device, 0);
+        const auto requested_id = sequence_device_component(device, 1);
+        if (requested_type != static_cast<std::int32_t>(actual_device.device_type) ||
+            requested_id != actual_device.device_id) {
+            throw_buffer_error(
+                "DLPack cross-device exports are not supported for this tensor"
+            );
+        }
+    }
+
+    void populate_dlpack_tensor(
+        DLTensor& dl_tensor,
+        std::vector<std::int64_t>& shape,
+        std::vector<std::int64_t>& strides,
+        DLPackStorageInfo storage,
+        DLPackDTypeInfo dtype_info
+    ) const {
+        const neotorch::layout_index::LayoutCache& cache =
+            neotorch::layout_index::cache_from_layout(layout_);
+        shape = to_int64_vector(cache.leaf_shapes());
+        strides = to_int64_vector(cache.leaf_strides());
+
+        dl_tensor.data = reinterpret_cast<void*>(storage.pointer);
+        dl_tensor.device = storage.device;
+        dl_tensor.ndim = static_cast<std::int32_t>(shape.size());
+        dl_tensor.dtype = dtype_info.dtype;
+        dl_tensor.shape = shape.empty() ? nullptr : shape.data();
+        dl_tensor.strides = strides.empty() ? nullptr : strides.data();
+        dl_tensor.byte_offset = byte_offset_for(offset_, dtype_info.item_size);
+    }
+
+    py::object make_legacy_dlpack_capsule(
+        py::object self,
+        DLPackStorageInfo storage,
+        DLPackDTypeInfo dtype_info
+    ) const {
+        auto holder = std::make_unique<LegacyDLPackTensor>();
+        populate_dlpack_tensor(
+            holder->managed.dl_tensor,
+            holder->shape,
+            holder->strides,
+            storage,
+            dtype_info
+        );
+        holder->managed.manager_ctx = holder.get();
+        holder->managed.deleter = legacy_dlpack_managed_deleter;
+        holder->owner = self.ptr();
+        Py_INCREF(holder->owner);
+
+        DLManagedTensor* managed = &holder->managed;
+        holder.release();
+        return py::capsule(
+            managed, dlpack_capsule_name, legacy_dlpack_capsule_deleter
+        );
+    }
+
+    py::object make_versioned_dlpack_capsule(
+        py::object self,
+        DLPackStorageInfo storage,
+        DLPackDTypeInfo dtype_info
+    ) const {
+        auto holder = std::make_unique<VersionedDLPackTensor>();
+        populate_dlpack_tensor(
+            holder->managed.dl_tensor,
+            holder->shape,
+            holder->strides,
+            storage,
+            dtype_info
+        );
+        holder->managed.version = {1, 0};
+        holder->managed.manager_ctx = holder.get();
+        holder->managed.deleter = versioned_dlpack_managed_deleter;
+        holder->managed.flags = is_mutable() ? 0 : dlpack_flag_read_only;
+        holder->owner = self.ptr();
+        Py_INCREF(holder->owner);
+
+        DLManagedTensorVersioned* managed = &holder->managed;
+        holder.release();
+        return py::capsule(
+            managed,
+            versioned_dlpack_capsule_name,
+            versioned_dlpack_capsule_deleter
+        );
     }
 
     py::object normalize_backward_gradient(py::object gradient) const {
@@ -515,6 +855,29 @@ PYBIND11_MODULE(_tensor, module) {
         .def("dtype", &Tensor::dtype)
         .def("is_differentiable", &Tensor::is_differentiable)
         .def("device", &Tensor::device)
+        .def("__dlpack_device__", &Tensor::dlpack_device)
+        .def(
+            "__dlpack__",
+            [](py::object self,
+               py::object stream,
+               py::object max_version,
+               py::object dl_device,
+               py::object copy) {
+                const Tensor& tensor = py::cast<const Tensor&>(self);
+                return tensor.dlpack(
+                    std::move(self),
+                    std::move(stream),
+                    std::move(max_version),
+                    std::move(dl_device),
+                    std::move(copy)
+                );
+            },
+            py::arg("stream") = py::none(),
+            py::kw_only(),
+            py::arg("max_version") = py::none(),
+            py::arg("dl_device") = py::none(),
+            py::arg("copy") = py::none()
+        )
         .def("backward", &Tensor::backward, py::arg("gradient") = py::none())
         .def_static(
             "backwards_traversal",

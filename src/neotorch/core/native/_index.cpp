@@ -46,6 +46,12 @@ PYBIND11_MODULE(_index, module) {
         .def_property_readonly("rank", &neotorch::layout_index::LayoutCache::rank)
         .def_property_readonly(
             "leaf_rank", &neotorch::layout_index::LayoutCache::leaf_rank
+        )
+        .def_property_readonly(
+            "leaf_shapes", &neotorch::layout_index::LayoutCache::leaf_shapes
+        )
+        .def_property_readonly(
+            "leaf_strides", &neotorch::layout_index::LayoutCache::leaf_strides
         );
 
     module.def(
