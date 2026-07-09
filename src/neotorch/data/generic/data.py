@@ -68,8 +68,13 @@ class Generic(Data):
 
     def _require_values(self) -> _SizedIndexable:
         if self._values is None:
+            if self.is_released():
+                raise RuntimeError("Data is released")
             raise RuntimeError("Data is evicted")
         return self._values
+
+    def _release(self) -> None:
+        self._values = None
 
     def _require_mutable_values(self) -> _MutableSizedIndexable:
         if not self.is_mutable():

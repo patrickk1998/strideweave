@@ -29,4 +29,7 @@ target_compile_features(_operation PRIVATE cxx_std_17)
 pybind11_add_module(_tensor src/neotorch/core/native/_tensor.cpp)
 target_compile_features(_tensor PRIVATE cxx_std_17)
 
-install(TARGETS _index _einops _data _operation _tensor DESTINATION neotorch)
+pybind11_add_module(_move src/neotorch/data/move/native/_move.cpp)
+target_compile_features(_move PRIVATE cxx_std_17)
+
+install(TARGETS _index _einops _data _operation _tensor _move DESTINATION neotorch)

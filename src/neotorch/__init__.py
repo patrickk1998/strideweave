@@ -10,6 +10,9 @@ from .data import (
     DataType as DataType,
 )
 from .data import (
+    FileBacked as FileBacked,
+)
+from .data import (
     Generic as Generic,
 )
 from .data import (
@@ -40,6 +43,7 @@ _CORE_EXPORTS = [
     "CPU",
     "Data",
     "DataType",
+    "FileBacked",
     "Generic",
     "GenericEvictable",
     "Layout",

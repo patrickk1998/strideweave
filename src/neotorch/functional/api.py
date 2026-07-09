@@ -27,6 +27,7 @@ __all__ = [
     "is_grad_enabled",
     "leaky_relu",
     "matmul",
+    "move",
     "mul",
     "no_grad",
     "permute",
@@ -537,6 +538,52 @@ def matmul(lhs: Any, rhs: Any) -> Any:
     """
 
     return _matmul_2mode(lhs, rhs)
+
+
+def move(tensor: Any, destination: Any) -> Any:
+    """Move a tensor's values into another data class instance.
+
+    The destination data object is filled with the tensor's values, the
+    source data is released (further access raises), and a tensor backed by
+    the destination is returned. Move is not owned by any data class: the
+    concrete move operation is dispatched on the (source, destination) data
+    class pair, with native bulk-copy operations registered for
+    CPU/FileBacked pairs and an elementwise fallback for every other pair.
+    The destination dtype must match the tensor dtype (for example
+    ``DataType.Float32`` to ``DataType.Float32``). Move participates in
+    autograd: gradients flowing into the result are moved back into the
+    source data class during backward, so gradients cross data class
+    boundaries.
+
+    Logical tensor values are identical regardless of the dispatched
+    operation, but storage contents at layout holes may differ: bulk
+    operations copy the whole physical span including holes, while the
+    elementwise fallback leaves destination hole values untouched. Do not
+    rely on the storage contents of hole positions.
+
+    Args:
+        tensor: Tensor whose values should be moved.
+        destination: Pre-constructed mutable ``Data`` instance with the
+            tensor's dtype that receives the values, such as ``FileBacked()``
+            or ``CPU(6)``.
+
+    Returns:
+        Tensor backed by ``destination`` with the input tensor's layout.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import FileBacked, Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([1, 2]), 0, Layout(Shape(2), Stride(1)))
+        >>> moved = neotorch.move(x, FileBacked())
+        >>> moved[1]
+        2.0
+    """
+
+    from ..data.move.ops import dispatch_move
+
+    tensor = _as_tensor(tensor, "tensor")
+    operation_class = dispatch_move(type(tensor.data), type(destination))
+    return operation_class().forward(tensor, destination)
 
 
 def einsum(lhs: Any, rhs: Any, description: str) -> Any:

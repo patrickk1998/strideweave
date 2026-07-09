@@ -58,6 +58,8 @@ protected:
     void _evict() override { PYBIND11_OVERRIDE(void, Data, _evict); }
 
     void _promote() override { PYBIND11_OVERRIDE(void, Data, _promote); }
+
+    void _release() override { PYBIND11_OVERRIDE(void, Data, _release); }
 };
 
 class VectorDataForTest : public Data {
@@ -117,6 +119,16 @@ PYBIND11_MODULE(_data, module) {
         .def("is_evicted", &Data::is_evicted)
         .def("evict", &Data::evict)
         .def("promote", &Data::promote)
+        .def("is_released", &Data::is_released)
+        .def(
+            "release",
+            &Data::release,
+            "Release the data's storage; further element access raises.\n\n"
+            "Contract: ``new_like`` must remain usable after ``release()`` --\n"
+            "it constructs fresh storage and reads nothing from the released\n"
+            "instance. Move's backward pass relies on this to materialize\n"
+            "gradients in a released source data class."
+        )
         .def_static("dispatch_op", &Data::dispatch_op, py::arg("operation_name"))
         .def("__getitem__", &Data::get_item, py::arg("index"))
         .def("__setitem__", &Data::set_item, py::arg("index"), py::arg("value"));

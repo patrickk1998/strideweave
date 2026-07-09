@@ -55,6 +55,18 @@ from .data.generic.ops import (
 from .data.generic.ops import (
     GenericTanhOperation as GenericTanhOperation,
 )
+from .data.move.ops import (
+    CpuToFileBackedMoveOperation as CpuToFileBackedMoveOperation,
+)
+from .data.move.ops import (
+    ElementwiseMoveOperation as ElementwiseMoveOperation,
+)
+from .data.move.ops import (
+    FileBackedToCpuMoveOperation as FileBackedToCpuMoveOperation,
+)
+from .data.move.ops import (
+    MoveOperation as MoveOperation,
+)
 from .data.operation_helpers import Operation as Operation
 from .data.shared_ops import (
     GenericViewOperation as GenericViewOperation,
@@ -69,6 +81,9 @@ from .functional import *  # noqa: F403
 from .functional import __all__ as _functional_all
 
 _OPERATION_CLASS_EXPORTS = [
+    "CpuToFileBackedMoveOperation",
+    "ElementwiseMoveOperation",
+    "FileBackedToCpuMoveOperation",
     "GenericAddOperation",
     "GenericDivOperation",
     "GenericELUOperation",
@@ -86,6 +101,7 @@ _OPERATION_CLASS_EXPORTS = [
     "GenericSoftplusOperation",
     "GenericTanhOperation",
     "GenericViewOperation",
+    "MoveOperation",
     "Operation",
     "PermuteOperation",
     "RearrangeOperation",

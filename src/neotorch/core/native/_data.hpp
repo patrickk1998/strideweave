@@ -45,6 +45,7 @@ public:
     }
 
     py::object get_item(Index index) const {
+        require_not_released();
         const Index data_size = size();
         if (index < 0 || index >= data_size) {
             throw py::index_error("Data index out of range");
@@ -53,6 +54,7 @@ public:
     }
 
     void set_item(Index index, py::object value) {
+        require_not_released();
         if (!is_mutable()) {
             throw std::runtime_error("Data is not mutable");
         }
@@ -66,6 +68,7 @@ public:
     bool is_evicted() const { return is_evicted_; }
 
     void evict() {
+        require_not_released();
         if (!is_evictable()) {
             throw std::runtime_error("Data is not evictable");
         }
@@ -77,6 +80,7 @@ public:
     }
 
     void promote() {
+        require_not_released();
         if (!is_evictable()) {
             throw std::runtime_error("Data is not evictable");
         }
@@ -85,6 +89,16 @@ public:
         }
         _promote();
         is_evicted_ = false;
+    }
+
+    bool is_released() const { return is_released_; }
+
+    void release() {
+        if (is_released_) {
+            return;
+        }
+        _release();
+        is_released_ = true;
     }
 
 protected:
@@ -96,8 +110,17 @@ protected:
 
     virtual void _promote() { throw std::runtime_error("Data is not evictable"); }
 
+    virtual void _release() {}
+
 private:
+    void require_not_released() const {
+        if (is_released_) {
+            throw std::runtime_error("Data is released");
+        }
+    }
+
     bool is_evicted_ = false;
+    bool is_released_ = false;
 };
 
 void bind_cpu(py::module_& module);

@@ -221,6 +221,13 @@ protected:
         set_value_at(index, value);
     }
 
+    void _release() override {
+        owned_float_data_.reset();
+        owned_int_data_.reset();
+        data_ = nullptr;
+        size_ = 0;
+    }
+
 private:
     void write_zero(Index index) {
         if (dtype_ == CpuDType::Float32) {
@@ -354,7 +361,11 @@ inline CPU& cpu_data_from_tensor(py::handle tensor, const char* name) {
     if (py::cast<bool>(data.attr("is_evicted")())) {
         throw std::runtime_error(std::string(name) + " data is evicted");
     }
-    return py::cast<CPU&>(data);
+    CPU& cpu_data = py::cast<CPU&>(data);
+    if (cpu_data.is_released()) {
+        throw std::runtime_error(std::string(name) + " data is released");
+    }
+    return cpu_data;
 }
 
 inline Index tensor_offset(py::handle tensor) {
