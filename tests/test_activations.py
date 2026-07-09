@@ -1,7 +1,6 @@
 from collections.abc import Callable, Iterable
 from typing import Any
 
-import neotorch
 import pytest
 import torch
 import torch.nn.functional as F
@@ -163,10 +162,10 @@ def test_leaky_relu_activation_matches_pytorch(backend: str, layout: Layout):
 
 
 @pytest.mark.parametrize("operation_name", ACTIVATION_OPERATION_NAMES)
-def test_activations_propagate_evicted_data_errors(operation_name: str, tmp_path: Any):
-    data = neotorch.GenericEvictable([1.0], tmp_path / "data.pkl")
+def test_activations_propagate_released_data_errors(operation_name: str):
+    data = Generic([1.0])
     tensor = Tensor(data, 0, Layout(Shape(1), Stride(1)))
-    tensor.evict()
+    data.release()
 
-    with pytest.raises(RuntimeError, match="tensor data is evicted"):
+    with pytest.raises(RuntimeError, match="released"):
         type(tensor.data).dispatch_op(operation_name).forward(tensor)

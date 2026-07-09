@@ -22,10 +22,10 @@ def _as_tensor(value: Any, name: str) -> Any:
     return value
 
 
-def _require_unevicted_tensor(value: Any, name: str) -> Any:
+def _require_live_tensor(value: Any, name: str) -> Any:
     tensor = _as_tensor(value, name)
-    if tensor.data.is_evicted():
-        raise RuntimeError(f"{name} data is evicted")
+    if tensor.data.is_released():
+        raise RuntimeError(f"{name} data is released")
     return tensor
 
 
@@ -40,7 +40,7 @@ def _require_layout(tensor: Any, layout: Layout) -> None:
 
 
 def _require_two_mode_tensor(tensor: Any, name: str) -> Any:
-    tensor = _require_unevicted_tensor(tensor, name)
+    tensor = _require_live_tensor(tensor, name)
     if len(tensor.layout) != 2:
         raise ValueError(f"{name} must have a two-mode layout")
     return tensor

@@ -63,7 +63,6 @@ def test_cpu_data_contract_and_mutation():
 
     assert isinstance(data, Data)
     assert data.is_mutable()
-    assert not data.is_evictable()
     assert data.size() == 3
     assert data.type() is DataType.Float32
     assert data.pointer() > 0

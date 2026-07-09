@@ -12,7 +12,6 @@ from neotorch import (
     GenericAddOperation,
     GenericDivOperation,
     GenericElementwiseMulOperation,
-    GenericEvictable,
     GenericExpOperation,
     GenericMatmulOperation,
     GenericPowOperation,
@@ -125,48 +124,6 @@ def test_tensor_mutability_delegates_to_backing_data():
 
     assert mutable_tensor.is_mutable()
     assert not immutable_tensor.is_mutable()
-
-
-def test_tensor_non_evictable_lifecycle_delegates_to_backing_data():
-    tensor = Tensor(Generic(range(4)), 0, Layout(Shape([2, 2]), Stride([1, 2])))
-
-    assert not tensor.is_evictable()
-    assert not tensor.is_evicted()
-
-    with pytest.raises(RuntimeError):
-        tensor.evict()
-
-    with pytest.raises(RuntimeError):
-        tensor.promote()
-
-    assert not tensor.is_evicted()
-
-
-def test_tensor_evictable_lifecycle_delegates_to_backing_data(tmp_path):
-    data = GenericEvictable(range(4), tmp_path / "data.pkl")
-    tensor = Tensor(data, 0, Layout(Shape([2, 2]), Stride([1, 2])))
-
-    assert tensor.is_evictable()
-    assert not tensor.is_evicted()
-
-    tensor.evict()
-
-    assert data.is_evicted()
-    assert tensor.is_evicted()
-    with pytest.raises(RuntimeError):
-        tensor[1, 1]
-
-    tensor.evict()
-    assert tensor.is_evicted()
-
-    tensor.promote()
-
-    assert not data.is_evicted()
-    assert not tensor.is_evicted()
-    assert tensor[1, 1] == 3
-
-    tensor.promote()
-    assert not tensor.is_evicted()
 
 
 def test_tensor_indexes_flat_coordinate_key():
@@ -525,15 +482,15 @@ def test_tensor_generic_any_non_integer_result_ops_promote_to_floating():
     assert pow_result.autograd_ctx is None
 
 
-def test_tensor_add_accepts_unevicted_generic_evictable_data(tmp_path):
+def test_tensor_add_preserves_generic_data_class():
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
-    lhs = Tensor(GenericEvictable([1, 2, 3, 4], tmp_path / "lhs.pkl"), 0, layout)
-    rhs = Tensor(GenericEvictable([10, 20, 30, 40], tmp_path / "rhs.pkl"), 0, layout)
+    lhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    rhs = Tensor(Generic([10, 20, 30, 40]), 0, layout)
 
     result = lhs + rhs
 
     assert tensor_values(result) == [11, 22, 33, 44]
-    assert type(result.data) is GenericEvictable
+    assert type(result.data) is Generic
 
 
 def test_tensor_add_rejects_mismatched_layouts():
@@ -552,10 +509,10 @@ def test_tensor_add_rejects_non_tensor_operand():
         _ = lhs + 1
 
 
-def test_tensor_add_rejects_non_generic_data(tmp_path):
+def test_tensor_add_rejects_mismatched_data_classes():
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
-    lhs = Tensor(GenericEvictable([1, 2, 3, 4], tmp_path / "lhs.pkl"), 0, layout)
-    rhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    lhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    rhs = Tensor(CPU(4), 0, layout)
 
     with pytest.raises(TypeError):
         _ = lhs + rhs
@@ -600,30 +557,12 @@ def test_tensor_scalar_mul_backward_scales_gradient():
     assert type(tensor_grad.data) is type(tensor.data)
 
 
-def test_tensor_scalar_mul_backward_preserves_generic_evictable_data_class(tmp_path):
-    layout = Layout(Shape([2, 2]), Stride([1, 2]))
-    tensor = Tensor(GenericEvictable([1, 2, 3, 4], tmp_path / "data.pkl"), 0, layout)
-    result = tensor * 5
-    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
-
-    result.backward(gradient)
-    tensor_grad = require_grad(tensor)
-
-    assert tensor_values(tensor_grad) == [5, 5, 5, 5]
-    assert type(tensor_grad.data) is GenericEvictable
-
-
-def test_tensor_scalar_mul_rejects_non_numeric_scalar_and_evicted_data(tmp_path):
+def test_tensor_scalar_mul_rejects_non_numeric_scalar():
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
-    evictable = Tensor(GenericEvictable([1, 2, 3, 4], tmp_path / "data.pkl"), 0, layout)
 
     with pytest.raises(TypeError):
         _ = tensor * "x"
-
-    evictable.data.evict()
-    with pytest.raises(RuntimeError):
-        _ = evictable * 2
 
 
 def test_tensor_elementwise_mul_forward_and_backward():
@@ -727,18 +666,6 @@ def test_tensor_reduce_preserves_hierarchical_first_mode_with_column_major_layou
     assert tensor_values(result) == [15, 18, 21, 24]
 
 
-def test_tensor_reduce_accepts_unevicted_generic_evictable_data(tmp_path):
-    layout = Layout(Shape([2, 3]), Stride([1, 2]))
-    tensor = Tensor(
-        GenericEvictable([1, 2, 3, 4, 5, 6], tmp_path / "data.pkl"), 0, layout
-    )
-
-    result = neotorch.reduce(tensor)
-
-    assert tensor_values(result) == [9, 12]
-    assert type(result.data) is GenericEvictable
-
-
 def test_tensor_reduce_backward_copies_gradient_over_second_mode():
     layout = Layout(Shape([2, 3]), Stride([1, 2]))
     tensor = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, layout)
@@ -752,20 +679,11 @@ def test_tensor_reduce_backward_copies_gradient_over_second_mode():
     assert type(tensor_grad.data) is type(tensor.data)
 
 
-def test_tensor_reduce_rejects_non_two_mode_or_evicted_data(tmp_path):
+def test_tensor_reduce_rejects_non_two_mode_tensor():
     one_mode = Tensor(Generic([1, 2]), 0, Layout(Shape(2), Stride(1)))
-    evictable = Tensor(
-        GenericEvictable([1, 2, 3, 4], tmp_path / "data.pkl"),
-        0,
-        Layout(Shape([2, 2]), Stride([1, 2])),
-    )
 
     with pytest.raises(ValueError):
         neotorch.reduce(one_mode)
-
-    evictable.data.evict()
-    with pytest.raises(RuntimeError):
-        neotorch.reduce(evictable)
 
 
 def test_tensor_matmul_computes_nk_by_mk_to_nm():
@@ -801,24 +719,6 @@ def test_tensor_matmul_preserves_hierarchical_row_modes():
     assert tensor_values(result) == [1, 2, 3, 4, 5, 6, 7, 8]
 
 
-def test_tensor_matmul_accepts_unevicted_generic_evictable_data(tmp_path):
-    a = Tensor(
-        GenericEvictable([1, 2, 3, 4, 5, 6], tmp_path / "a.pkl"),
-        0,
-        Layout(Shape([2, 3]), Stride([1, 2])),
-    )
-    b = Tensor(
-        GenericEvictable([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1], tmp_path / "b.pkl"),
-        0,
-        Layout(Shape([4, 3]), Stride([1, 4])),
-    )
-
-    result = a @ b
-
-    assert tensor_values(result) == [1, 2, 3, 4, 5, 6, 9, 12]
-    assert type(result.data) is GenericEvictable
-
-
 def test_tensor_matmul_backward_computes_input_gradients():
     a = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
     b = Tensor(
@@ -839,13 +739,11 @@ def test_tensor_matmul_backward_computes_input_gradients():
     assert type(b_grad.data) is type(b.data)
 
 
-def test_tensor_matmul_rejects_invalid_shapes_and_data(tmp_path):
+def test_tensor_matmul_rejects_invalid_shapes_and_data():
     a = Tensor(Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([1, 2])))
     bad_k = Tensor(Generic([1, 2, 3]), 0, Layout(Shape([1, 3]), Stride([1, 1])))
     one_mode = Tensor(Generic([1, 2]), 0, Layout(Shape(2), Stride(1)))
-    evictable = Tensor(
-        GenericEvictable([1, 2, 3, 4], tmp_path / "data.pkl"), 0, a.layout
-    )
+    cpu_tensor = Tensor(CPU(4), 0, a.layout)
 
     with pytest.raises(ValueError):
         _ = a @ bad_k
@@ -854,7 +752,7 @@ def test_tensor_matmul_rejects_invalid_shapes_and_data(tmp_path):
         _ = a @ one_mode
 
     with pytest.raises(TypeError):
-        _ = evictable @ a
+        _ = cpu_tensor @ a
 
 
 def test_tensor_rearrange_forward_returns_view_with_rearranged_layout():
@@ -1354,37 +1252,29 @@ def test_tensor_storage_validation_uses_cosize_not_logical_size():
     assert tensor[1, 1] == 11
 
 
-def test_tensor_propagates_backing_data_lifecycle_errors(tmp_path):
-    path = tmp_path / "data.pkl"
-    data = GenericEvictable(range(16), path)
+def test_tensor_propagates_released_backing_data_errors():
+    data = Generic(range(16))
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(data, 3, layout)
 
     assert tensor[1, 1] == 6
 
-    data.evict()
+    data.release()
     with pytest.raises(RuntimeError):
         tensor[1, 1]
 
-    data.promote()
-    assert tensor[1, 1] == 6
 
-
-def test_tensor_setitem_propagates_backing_data_lifecycle_errors(tmp_path):
-    path = tmp_path / "data.pkl"
-    data = GenericEvictable(range(16), path)
+def test_tensor_setitem_propagates_released_backing_data_errors():
+    data = Generic(range(16))
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(data, 3, layout)
 
     tensor[1, 1] = "updated"
     assert tensor[1, 1] == "updated"
 
-    data.evict()
+    data.release()
     with pytest.raises(RuntimeError):
-        tensor[1, 1] = "evicted"
-
-    data.promote()
-    assert tensor[1, 1] == "updated"
+        tensor[1, 1] = "released"
 
 
 def test_tensor_rejects_negative_index_keys():

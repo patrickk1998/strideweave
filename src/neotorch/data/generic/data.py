@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import pickle
 from collections.abc import Iterable
 from operator import index as operator_index
-from os import PathLike, fspath
-from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
-from uuid import uuid4
 
 from ..base import Data
 from ..dtype import DataType
@@ -201,54 +197,6 @@ class Generic(Data):
         return operation_type()
 
 
-class GenericEvictable(Generic):
-    """Generic data storage that can pickle values to disk while evicted."""
-
-    def __init__(
-        self,
-        values: Iterable[Any],
-        path: str | PathLike[str],
-        *,
-        mutable: bool = True,
-        dtype: DataType = DataType.Floating,
-    ):
-        super().__init__(values, mutable=mutable, dtype=dtype)
-        self.path = fspath(path)
-        self._size = super().size()
-
-    def size(self) -> int:
-        return self._size
-
-    def is_evictable(self) -> bool:
-        return True
-
-    def new_like(
-        self,
-        values: Iterable[Any],
-        *,
-        mutable: bool = True,
-        dtype: DataType | None = None,
-    ) -> GenericEvictable:
-        path = Path(self.path)
-        new_path = path.with_name(f"{path.stem}-{uuid4().hex}{path.suffix}")
-        return GenericEvictable(
-            values,
-            new_path,
-            mutable=mutable,
-            dtype=self._dtype if dtype is None else dtype,
-        )
-
-    def _evict(self) -> None:
-        with open(self.path, "wb") as file:
-            pickle.dump(self._require_values(), file)
-        self._values = None
-
-    def _promote(self) -> None:
-        with open(self.path, "rb") as file:
-            self._values = pickle.load(file)
-
-
 __all__ = [
     "Generic",
-    "GenericEvictable",
 ]

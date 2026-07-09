@@ -1,5 +1,4 @@
 from collections.abc import Iterable
-from os import PathLike
 from typing import Any
 
 from ..base import Data
@@ -34,23 +33,3 @@ class Generic(Data):
     ) -> None: ...
     @staticmethod
     def dispatch_op(operation_name: str) -> Any: ...
-
-class GenericEvictable(Generic):
-    path: str
-    def __init__(
-        self,
-        values: Iterable[Any],
-        path: str | PathLike[str],
-        *,
-        mutable: bool = True,
-        dtype: DataType = DataType.Floating,
-    ) -> None: ...
-    def size(self) -> int: ...
-    def is_evictable(self) -> bool: ...
-    def new_like(
-        self,
-        values: Iterable[Any],
-        *,
-        mutable: bool = True,
-        dtype: DataType | None = None,
-    ) -> GenericEvictable: ...

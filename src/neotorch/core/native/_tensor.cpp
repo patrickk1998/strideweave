@@ -359,18 +359,6 @@ public:
         return py::cast<bool>(data_.attr("is_mutable")());
     }
 
-    bool is_evictable() const {
-        return py::cast<bool>(data_.attr("is_evictable")());
-    }
-
-    bool is_evicted() const {
-        return py::cast<bool>(data_.attr("is_evicted")());
-    }
-
-    void evict() const { data_.attr("evict")(); }
-
-    void promote() const { data_.attr("promote")(); }
-
     py::object dtype() const { return data_.attr("type")(); }
 
     bool is_differentiable() const { return is_differentiable_dtype(dtype()); }
@@ -848,10 +836,6 @@ PYBIND11_MODULE(_tensor, module) {
         )
         .def("size", &Tensor::size)
         .def("is_mutable", &Tensor::is_mutable)
-        .def("is_evictable", &Tensor::is_evictable)
-        .def("is_evicted", &Tensor::is_evicted)
-        .def("evict", &Tensor::evict)
-        .def("promote", &Tensor::promote)
         .def("dtype", &Tensor::dtype)
         .def("is_differentiable", &Tensor::is_differentiable)
         .def("device", &Tensor::device)

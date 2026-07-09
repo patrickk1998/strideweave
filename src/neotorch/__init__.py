@@ -15,9 +15,6 @@ from .data import (
 from .data import (
     Generic as Generic,
 )
-from .data import (
-    GenericEvictable as GenericEvictable,
-)
 from .layout import (
     Layout as Layout,
 )
@@ -45,7 +42,6 @@ _CORE_EXPORTS = [
     "DataType",
     "FileBacked",
     "Generic",
-    "GenericEvictable",
     "Layout",
     "Module",
     "Node",

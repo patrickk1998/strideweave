@@ -15,10 +15,10 @@ from ..operation_helpers import (
     _mode_logical_size,
     _mode_shape,
     _require_layout,
+    _require_live_tensor,
     _require_number,
     _require_same_layout,
     _require_two_mode_tensor,
-    _require_unevicted_tensor,
     _tensor_with_layout_like,
 )
 from .helpers import (
@@ -50,7 +50,7 @@ def _unary_elementwise_operation(
     """
 
     def _forward(self: Any, tensor: Any) -> Any:
-        tensor = _require_unevicted_tensor(tensor, "tensor")
+        tensor = _require_live_tensor(tensor, "tensor")
 
         values = []
         saved_values = []
@@ -63,7 +63,7 @@ def _unary_elementwise_operation(
 
     def backward(self: Any, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
-        gradient = _require_unevicted_tensor(gradient, "gradient")
+        gradient = _require_live_tensor(gradient, "gradient")
         _require_same_layout(tensor, gradient)
 
         saved_values = self.ctx["saved_values"]
@@ -179,8 +179,8 @@ class GenericAddOperation(Operation):
     """Generic elementwise tensor addition operation with autograd support."""
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
-        lhs = _require_unevicted_tensor(lhs, "lhs")
-        rhs = _require_unevicted_tensor(rhs, "rhs")
+        lhs = _require_live_tensor(lhs, "lhs")
+        rhs = _require_live_tensor(rhs, "rhs")
         _require_same_layout(lhs, rhs)
 
         dtype = _generic_binary_dtype(lhs, rhs)
@@ -189,7 +189,7 @@ class GenericAddOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
-        gradient = _require_unevicted_tensor(gradient, "gradient")
+        gradient = _require_live_tensor(gradient, "gradient")
         return _copy_gradient_for(lhs, gradient), _copy_gradient_for(rhs, gradient)
 
 
@@ -197,7 +197,7 @@ class GenericScalarMulOperation(Operation):
     """Generic tensor-by-scalar multiplication operation."""
 
     def _forward(self, tensor: Any, scalar: Any) -> Any:
-        tensor = _require_unevicted_tensor(tensor, "tensor")
+        tensor = _require_live_tensor(tensor, "tensor")
         scalar = _require_number(scalar, "scalar")
 
         self.ctx["scalar"] = scalar
@@ -207,7 +207,7 @@ class GenericScalarMulOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
-        gradient = _require_unevicted_tensor(gradient, "gradient")
+        gradient = _require_live_tensor(gradient, "gradient")
         _require_same_layout(tensor, gradient)
 
         scalar = self.ctx["scalar"]
@@ -219,8 +219,8 @@ class GenericElementwiseMulOperation(Operation):
     """Generic elementwise tensor multiplication operation."""
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
-        lhs = _require_unevicted_tensor(lhs, "lhs")
-        rhs = _require_unevicted_tensor(rhs, "rhs")
+        lhs = _require_live_tensor(lhs, "lhs")
+        rhs = _require_live_tensor(rhs, "rhs")
         _require_same_layout(lhs, rhs)
 
         dtype = _generic_binary_dtype(lhs, rhs)
@@ -229,7 +229,7 @@ class GenericElementwiseMulOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
-        gradient = _require_unevicted_tensor(gradient, "gradient")
+        gradient = _require_live_tensor(gradient, "gradient")
         _require_same_layout(lhs, gradient)
 
         lhs_values = [gradient[i] * rhs[i] for i in range(gradient.size())]
@@ -243,8 +243,8 @@ class GenericDivOperation(Operation):
     """Generic elementwise tensor division operation."""
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
-        lhs = _require_unevicted_tensor(lhs, "lhs")
-        rhs = _require_unevicted_tensor(rhs, "rhs")
+        lhs = _require_live_tensor(lhs, "lhs")
+        rhs = _require_live_tensor(rhs, "rhs")
         _require_same_layout(lhs, rhs)
 
         values = [lhs[i] / rhs[i] for i in range(lhs.size())]
@@ -252,7 +252,7 @@ class GenericDivOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
-        gradient = _require_unevicted_tensor(gradient, "gradient")
+        gradient = _require_live_tensor(gradient, "gradient")
         _require_same_layout(lhs, gradient)
 
         lhs_values = [gradient[i] / rhs[i] for i in range(gradient.size())]
@@ -268,7 +268,7 @@ class GenericPowOperation(Operation):
     """Generic elementwise power-to-scalar operation."""
 
     def _forward(self, tensor: Any, exponent: Any) -> Any:
-        tensor = _require_unevicted_tensor(tensor, "tensor")
+        tensor = _require_live_tensor(tensor, "tensor")
         exponent = _require_number(exponent, "exponent")
 
         self.ctx["exponent"] = exponent
@@ -278,7 +278,7 @@ class GenericPowOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
-        gradient = _require_unevicted_tensor(gradient, "gradient")
+        gradient = _require_live_tensor(gradient, "gradient")
         _require_same_layout(tensor, gradient)
 
         exponent = self.ctx["exponent"]
@@ -305,7 +305,7 @@ class GenericReduceSumOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
-        gradient = _require_unevicted_tensor(gradient, "gradient")
+        gradient = _require_live_tensor(gradient, "gradient")
         _require_layout(gradient, self.ctx["output_layout"])
 
         n_size = _mode_logical_size(tensor.layout, 0)
@@ -343,7 +343,7 @@ class GenericMatmulOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
-        gradient = _require_unevicted_tensor(gradient, "gradient")
+        gradient = _require_live_tensor(gradient, "gradient")
         _require_layout(gradient, self.ctx["output_layout"])
 
         n_size = _mode_logical_size(lhs.layout, 0)

@@ -13,8 +13,8 @@ from ..file_backed.data import FileBacked
 from ..operation_helpers import (
     Operation,
     _logical_values,
+    _require_live_tensor,
     _require_same_layout,
-    _require_unevicted_tensor,
     _tensor_with_layout_like,
 )
 
@@ -47,7 +47,7 @@ class MoveOperation(Operation):
     def _forward(self, tensor: Any, destination: Any) -> Any:
         from ...tensor import Tensor
 
-        tensor = _require_unevicted_tensor(tensor, "tensor")
+        tensor = _require_live_tensor(tensor, "tensor")
         if tensor.data.is_released():
             raise RuntimeError("tensor data is released")
         if not isinstance(destination, Data):
@@ -93,7 +93,7 @@ class MoveOperation(Operation):
 
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
-        gradient = _require_unevicted_tensor(gradient, "gradient")
+        gradient = _require_live_tensor(gradient, "gradient")
         _require_same_layout(tensor, gradient)
         return (
             _tensor_with_layout_like(tensor, tensor.layout, _logical_values(gradient)),

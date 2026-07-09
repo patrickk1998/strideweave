@@ -9,7 +9,6 @@ from neotorch import (
     Data,
     DataType,
     Generic,
-    GenericEvictable,
     Layout,
     Shape,
     Stride,
@@ -64,7 +63,6 @@ def test_data_public_api_imports():
     assert neotorch.CPU is CPU
     assert neotorch.DataType is DataType
     assert neotorch.Generic is Generic
-    assert neotorch.GenericEvictable is GenericEvictable
     assert DataType.Any.value == "Any"
     assert DataType.Floating.value == "Floating"
     assert DataType.Float32.value == "Float32"
@@ -378,7 +376,7 @@ def test_generic_data_scatter_validates_mapping_shape():
         destination_data.scatter(source, destination, mapping, 12)
 
 
-def test_generic_data_scatter_uses_destination_mutability_and_lifecycle(tmp_path):
+def test_generic_data_scatter_uses_destination_mutability():
     source = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
     mapping = Layout(Shape(3), Stride(5))
     immutable_data = Generic([0] * 50, mutable=False)
@@ -388,15 +386,6 @@ def test_generic_data_scatter_uses_destination_mutability_and_lifecycle(tmp_path
 
     with pytest.raises(RuntimeError):
         immutable_data.scatter(source, immutable_destination, mapping, 12)
-
-    evictable_data = GenericEvictable([0] * 50, tmp_path / "scatter.pkl")
-    evictable_destination = Tensor(
-        evictable_data, 0, Layout(Shape([5, 10]), Stride([1, 5]))
-    )
-    evictable_data.evict()
-
-    with pytest.raises(RuntimeError):
-        evictable_data.scatter(source, evictable_destination, mapping, 12)
 
 
 def test_cpu_data_scatter_maps_source_values_into_destination_storage():
@@ -414,139 +403,3 @@ def test_cpu_data_scatter_maps_source_values_into_destination_storage():
     assert destination_data[17] == pytest.approx(20.0)
     assert destination_data[22] == pytest.approx(30.0)
     assert destination_data[0] == pytest.approx(0.0)
-
-
-def test_non_evictable_data_rejects_lifecycle_methods():
-    cases = [
-        PythonData(["alpha"]),
-        native_data._VectorDataForTest(["alpha"]),
-        Generic(["alpha"], dtype=DataType.Any),
-    ]
-
-    for data in cases:
-        assert not data.is_evictable()
-        assert not data.is_evicted()
-
-        with pytest.raises(RuntimeError):
-            data.evict()
-
-        with pytest.raises(RuntimeError):
-            data.promote()
-
-        assert not data.is_evicted()
-
-
-def test_generic_evictable_data_lifecycle(tmp_path):
-    path = tmp_path / "data.pkl"
-    data = GenericEvictable(["alpha", 2, None], path, dtype=DataType.Any)
-
-    assert isinstance(data, Data)
-    assert data.is_evictable()
-    assert data.is_mutable()
-    assert not data.is_evicted()
-    assert data.size() == 3
-    assert data.type() is DataType.Any
-    assert data.get_value(1) == 2
-    assert data[0] == "alpha"
-
-    data.evict()
-
-    assert path.exists()
-    assert data.is_evicted()
-    assert data.size() == 3
-    with pytest.raises(RuntimeError):
-        data.get_value(0)
-    with pytest.raises(RuntimeError):
-        data[0]
-
-    data.evict()
-    assert data.is_evicted()
-
-    data.promote()
-
-    assert not data.is_evicted()
-    assert path.exists()
-    assert data.size() == 3
-    assert data.get_value(1) == 2
-    assert data[2] is None
-
-    data.promote()
-    assert not data.is_evicted()
-
-
-def test_generic_evictable_new_like_preserves_data_class(tmp_path):
-    data = GenericEvictable(
-        ["alpha", "beta"], tmp_path / "data.pkl", dtype=DataType.Any
-    )
-
-    new_data = data.new_like(["gamma", "delta"])
-    floating_data = data.new_like([1, 2], dtype=DataType.Floating)
-
-    assert type(new_data) is GenericEvictable
-    assert new_data.path != data.path
-    assert new_data.size() == 2
-    assert new_data[0] == "gamma"
-    assert new_data.is_mutable()
-    assert new_data.type() is DataType.Any
-    assert floating_data.type() is DataType.Floating
-
-
-def test_generic_evictable_mutation_lifecycle(tmp_path):
-    path = tmp_path / "mutable.pkl"
-    data = GenericEvictable(["alpha", "beta"], path)
-
-    data[1] = "updated"
-    assert data[1] == "updated"
-
-    data.evict()
-
-    with pytest.raises(RuntimeError):
-        data[0] = "evicted"
-
-    data.promote()
-
-    assert data[1] == "updated"
-    data[0] = "promoted"
-    assert data[0] == "promoted"
-
-
-def test_generic_evictable_can_be_immutable(tmp_path):
-    path = tmp_path / "immutable.pkl"
-    data = GenericEvictable(["alpha", "beta"], path, mutable=False)
-
-    assert not data.is_mutable()
-
-    with pytest.raises(RuntimeError):
-        data[1] = "updated"
-
-    data.evict()
-    data.promote()
-
-    with pytest.raises(RuntimeError):
-        data[1] = "updated"
-
-    assert data[1] == "beta"
-
-
-def test_generic_evictable_materializes_iterator_and_promotes(tmp_path):
-    path = tmp_path / "iterator.pkl"
-    iterator = iter(["alpha", "beta"])
-    data = GenericEvictable(iterator, path)
-
-    assert data.size() == 2
-    assert data[1] == "beta"
-    assert list(iterator) == []
-
-    data.evict()
-    data.promote()
-
-    assert data.size() == 2
-    assert data[0] == "alpha"
-    assert data[1] == "beta"
-
-
-def test_generic_evictable_requires_iterable_input(tmp_path):
-    non_iterable: Any = 1
-
-    with pytest.raises(TypeError):
-        GenericEvictable(non_iterable, tmp_path / "data.pkl")

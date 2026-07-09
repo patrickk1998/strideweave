@@ -38,10 +38,6 @@ public:
         );
     }
 
-    bool is_evictable() const override {
-        PYBIND11_OVERRIDE(bool, Data, is_evictable);
-    }
-
     bool is_mutable() const override {
         PYBIND11_OVERRIDE(bool, Data, is_mutable);
     }
@@ -54,10 +50,6 @@ protected:
     void set_value(Index index, py::object value) override {
         PYBIND11_OVERRIDE(void, Data, set_value, index, value);
     }
-
-    void _evict() override { PYBIND11_OVERRIDE(void, Data, _evict); }
-
-    void _promote() override { PYBIND11_OVERRIDE(void, Data, _promote); }
 
     void _release() override { PYBIND11_OVERRIDE(void, Data, _release); }
 };
@@ -113,12 +105,8 @@ PYBIND11_MODULE(_data, module) {
             py::arg("mapping"),
             py::arg("mapping_offset") = 0
         )
-        .def("is_evictable", &Data::is_evictable)
         .def("is_mutable", &Data::is_mutable)
         .def("dlpack_info", &Data::dlpack_info)
-        .def("is_evicted", &Data::is_evicted)
-        .def("evict", &Data::evict)
-        .def("promote", &Data::promote)
         .def("is_released", &Data::is_released)
         .def(
             "release",

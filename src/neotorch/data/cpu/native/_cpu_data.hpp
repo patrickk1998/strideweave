@@ -358,9 +358,6 @@ inline CPU& cpu_data_from_tensor(py::handle tensor, const char* name) {
     if (!py::isinstance<CPU>(data)) {
         throw py::type_error(std::string(name) + " must be backed by CPU data");
     }
-    if (py::cast<bool>(data.attr("is_evicted")())) {
-        throw std::runtime_error(std::string(name) + " data is evicted");
-    }
     CPU& cpu_data = py::cast<CPU&>(data);
     if (cpu_data.is_released()) {
         throw std::runtime_error(std::string(name) + " data is released");

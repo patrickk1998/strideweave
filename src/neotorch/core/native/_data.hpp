@@ -25,7 +25,6 @@ public:
         py::object mapping,
         Index mapping_offset
     ) = 0;
-    virtual bool is_evictable() const { return false; }
     virtual bool is_mutable() const { return false; }
 
     virtual py::dict dlpack_info() const {
@@ -65,32 +64,6 @@ public:
         set_value(index, value);
     }
 
-    bool is_evicted() const { return is_evicted_; }
-
-    void evict() {
-        require_not_released();
-        if (!is_evictable()) {
-            throw std::runtime_error("Data is not evictable");
-        }
-        if (is_evicted_) {
-            return;
-        }
-        _evict();
-        is_evicted_ = true;
-    }
-
-    void promote() {
-        require_not_released();
-        if (!is_evictable()) {
-            throw std::runtime_error("Data is not evictable");
-        }
-        if (!is_evicted_) {
-            return;
-        }
-        _promote();
-        is_evicted_ = false;
-    }
-
     bool is_released() const { return is_released_; }
 
     void release() {
@@ -106,10 +79,6 @@ protected:
         throw std::runtime_error("Data is not mutable");
     }
 
-    virtual void _evict() { throw std::runtime_error("Data is not evictable"); }
-
-    virtual void _promote() { throw std::runtime_error("Data is not evictable"); }
-
     virtual void _release() {}
 
 private:
@@ -119,7 +88,6 @@ private:
         }
     }
 
-    bool is_evicted_ = false;
     bool is_released_ = false;
 };
 
