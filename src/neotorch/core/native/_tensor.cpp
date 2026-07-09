@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "_data.hpp"
 #include "_layout_index.hpp"
 
 namespace py = pybind11;
@@ -313,6 +314,10 @@ public:
 
     py::object layout() const { return layout_; }
 
+    ::neotorch::data::Version version() const {
+        return py::cast<::neotorch::data::Version>(data_.attr("version"));
+    }
+
     py::object autograd_ctx() const { return autograd_ctx_; }
 
     void set_autograd_ctx(py::object autograd_ctx) {
@@ -466,6 +471,7 @@ public:
                 py::reinterpret_borrow<py::sequence>(current.attr("inputs")());
 
             if (!current_gradient.is_none()) {
+                current.attr("validate_input_versions")();
                 py::object input_gradients_object =
                     current.attr("backward")(current_gradient);
                 py::sequence input_gradients =
@@ -771,6 +777,7 @@ PYBIND11_MODULE(_tensor, module) {
         .def_property_readonly("data", &Tensor::data)
         .def_property_readonly("offset", &Tensor::offset)
         .def_property_readonly("layout", &Tensor::layout)
+        .def_property_readonly("version", &Tensor::version)
         .def_property("autograd_ctx", &Tensor::autograd_ctx, &Tensor::set_autograd_ctx)
         .def_property("grad", &Tensor::grad, &Tensor::set_grad)
         .def("retain_grad", &Tensor::retain_grad, py::arg("retain") = true)

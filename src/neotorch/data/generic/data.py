@@ -66,7 +66,7 @@ class Generic(Data):
         if self._values is None:
             if self.is_released():
                 raise RuntimeError("Data is released")
-            raise RuntimeError("Data is evicted")
+            raise RuntimeError("Data storage is unavailable")
         return self._values
 
     def _release(self) -> None:
@@ -94,6 +94,7 @@ class Generic(Data):
 
     def set_value(self, index: int, value: Any) -> None:
         self._require_mutable_values()[index] = value
+        self._increment_version()
 
     def new_like(
         self,

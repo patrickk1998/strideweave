@@ -126,6 +126,42 @@ def test_tensor_mutability_delegates_to_backing_data():
     assert not immutable_tensor.is_mutable()
 
 
+def test_tensor_version_increments_on_in_place_setitem():
+    data = Generic([1, 2, 3, 4])
+    tensor = Tensor(data, 0, Layout(Shape([2, 2]), Stride([1, 2])))
+
+    assert tensor.version == 0
+    assert data.version == 0
+
+    tensor[1, 0] = 10
+
+    assert tensor.version == 1
+    assert data.version == 1
+
+    tensor[1, 1] = 20
+
+    assert tensor.version == 2
+    assert data.version == 2
+
+
+def test_tensor_version_is_shared_by_views_and_same_data_tensors():
+    data = Generic(list(range(6)))
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+    tensor = Tensor(data, 0, layout)
+    alias = Tensor(data, 0, layout)
+    view = tensor[1, :]
+
+    assert tensor.version == 0
+    assert alias.version == 0
+    assert view.version == 0
+
+    view[0] = 99
+
+    assert tensor.version == 1
+    assert alias.version == 1
+    assert view.version == 1
+
+
 def test_tensor_indexes_flat_coordinate_key():
     data = Generic(range(64))
     layout = Layout(Shape([3, 4]), Stride([2, 10]))
@@ -1162,6 +1198,31 @@ def test_tensor_backward_accumulates_shared_input_contributions():
     tensor_grad = require_grad(tensor)
 
     assert tensor_values(tensor_grad) == [2, 4, 6, 8]
+
+
+def test_tensor_backward_rejects_input_modified_in_place_after_forward():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    result = tensor * tensor
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+
+    tensor[0, 0] = 10
+
+    with pytest.raises(RuntimeError, match="modified in-place"):
+        result.backward(gradient)
+
+
+def test_tensor_backward_rejects_view_input_modified_through_source_after_forward():
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+    tensor = Tensor(Generic(list(range(6))), 0, layout)
+    view = tensor[1, :]
+    result = view * view
+    gradient = tensor_with_logical_values([1, 1, 1], view.layout)
+
+    tensor[1, 0] = 99
+
+    with pytest.raises(RuntimeError, match="modified in-place"):
+        result.backward(gradient)
 
 
 def test_tensor_view_backward_scatters_gradient_into_source_layout():

@@ -178,6 +178,7 @@ public:
             throw std::runtime_error("Data is not mutable");
         }
         set_value_at(index, value);
+        increment_version();
     }
 
     template <typename T>
@@ -218,7 +219,7 @@ public:
 
 protected:
     void set_value(Index index, py::object value) override {
-        set_value_at(index, value);
+        set_value_public(index, value);
     }
 
     void _release() override {
@@ -525,6 +526,7 @@ inline void CPU::scatter(
             mapping_cache.increment_key(key.data(), key.size());
         }
     }
+    increment_version();
 }
 
 inline void require_same_layout(py::handle lhs, py::handle rhs) {

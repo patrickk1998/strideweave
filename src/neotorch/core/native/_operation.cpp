@@ -67,5 +67,7 @@ PYBIND11_MODULE(_operation, module) {
                 operation.store_inputs(inputs);
             }
         )
-        .def("inputs", &Operation::inputs);
+        .def("inputs", &Operation::inputs)
+        .def("input_versions", &Operation::input_versions)
+        .def("validate_input_versions", &Operation::validate_input_versions);
 }

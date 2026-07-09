@@ -107,6 +107,8 @@ PYBIND11_MODULE(_data, module) {
         )
         .def("is_mutable", &Data::is_mutable)
         .def("dlpack_info", &Data::dlpack_info)
+        .def_property_readonly("version", &Data::version)
+        .def("_increment_version", &Data::increment_version)
         .def("is_released", &Data::is_released)
         .def(
             "release",

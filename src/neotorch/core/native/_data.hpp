@@ -2,6 +2,7 @@
 
 #include <pybind11/pybind11.h>
 
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -10,6 +11,7 @@ namespace py = pybind11;
 namespace neotorch::data {
 
 using Index = long long;
+using Version = std::uint64_t;
 
 class Data {
 public:
@@ -61,8 +63,16 @@ public:
         if (index < 0 || index >= data_size) {
             throw py::index_error("Data index out of range");
         }
+        const Version previous_version = version_;
         set_value(index, value);
+        if (version_ == previous_version) {
+            increment_version();
+        }
     }
+
+    Version version() const { return version_; }
+
+    void increment_version() { ++version_; }
 
     bool is_released() const { return is_released_; }
 
@@ -89,6 +99,7 @@ private:
     }
 
     bool is_released_ = false;
+    Version version_ = 0;
 };
 
 void bind_cpu(py::module_& module);

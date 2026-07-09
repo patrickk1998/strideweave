@@ -2,12 +2,17 @@
 
 #include <pybind11/pybind11.h>
 
+#include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 namespace py = pybind11;
 
 namespace neotorch::operation {
+
+using Version = std::uint64_t;
 
 inline py::object tensor_type() {
     return py::module_::import("neotorch.tensor").attr("Tensor");
@@ -42,7 +47,7 @@ inline bool is_grad_enabled() {
 
 class Operation {
 public:
-    Operation() : ctx_(py::dict()), inputs_(py::tuple()) {}
+    Operation() : ctx_(py::dict()), inputs_(py::tuple()), input_versions_(py::tuple()) {}
 
     virtual ~Operation() = default;
 
@@ -81,11 +86,34 @@ public:
 
     py::tuple inputs() const { return inputs_; }
 
+    py::tuple input_versions() const { return input_versions_; }
+
+    void validate_input_versions() const {
+        for (py::ssize_t i = 0; i < py::len(inputs_); ++i) {
+            py::object input = py::reinterpret_borrow<py::object>(inputs_[i]);
+            const Version current_version =
+                py::cast<Version>(input.attr("version"));
+            const Version expected_version =
+                py::cast<Version>(input_versions_[i]);
+            if (current_version != expected_version) {
+                throw std::runtime_error(
+                    "A tensor needed for gradient computation was modified "
+                    "in-place: expected version " +
+                    std::to_string(expected_version) + ", got version " +
+                    std::to_string(current_version)
+                );
+            }
+        }
+    }
+
 protected:
     py::dict ctx_;
 
 private:
-    void clear_inputs() { inputs_ = py::tuple(); }
+    void clear_inputs() {
+        inputs_ = py::tuple();
+        input_versions_ = py::tuple();
+    }
 
     bool has_differentiable_tensor_input(py::args inputs) {
         py::object tensor = tensor_type();
@@ -107,13 +135,17 @@ private:
         }
 
         py::tuple stored(tensors.size());
+        py::tuple versions(tensors.size());
         for (std::size_t i = 0; i < tensors.size(); ++i) {
             stored[i] = tensors[i];
+            versions[i] = tensors[i].attr("version");
         }
         inputs_ = std::move(stored);
+        input_versions_ = std::move(versions);
     }
 
     py::tuple inputs_;
+    py::tuple input_versions_;
 };
 
 }  // namespace neotorch::operation

@@ -126,6 +126,7 @@ class FileBacked(Data):
         if not self.is_mutable():
             raise RuntimeError("Data is not mutable")
         self._write_value(index, value)
+        self._increment_version()
 
     def new_like(
         self,
