@@ -1,5 +1,18 @@
 # neotorch
 
+## Project Orientation
+
+Read `packages/neotorch/README.md` before making changes. It describes the
+project's architecture, data backends, operation dispatch, autograd model,
+supported public APIs, interoperability, and current limitations.
+
+When planning or reviewing a change, check whether it would make any part of
+the README inaccurate or incomplete. Propose corresponding README updates for
+changes to architecture, data backends, dtypes, operation dispatch, autograd,
+public capabilities, interoperability, development commands, or documented
+limitations. When implementing such a change, update the README in the same
+change unless the user explicitly excludes documentation work.
+
 ## Tensor Indexing Style
 
 Prefer `tensor[i, j]` style for coordinate indexing in source code and tests.
