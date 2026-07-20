@@ -269,6 +269,78 @@ def test_transition_reallocates_an_undersized_secondary_tier():
     assert [data.secondary[i] for i in range(2)] == [1.0, 2.0]
 
 
+def test_failed_eviction_preserves_state_and_can_be_retried():
+    attempts = 0
+
+    class FailFirstMove(ElementwiseMoveOperation):
+        def _copy(self, tensor, destination, output, element_count):
+            nonlocal attempts
+            attempts += 1
+            output[0] = tensor[0]
+            if attempts == 1:
+                raise OSError("boom")
+            super()._copy(tensor, destination, output, element_count)
+
+    primary = Generic([1.0, 2.0])
+    secondary = Generic([])
+    data = Evictable(primary, secondary)
+
+    with registered_move_operation(Generic, Generic, FailFirstMove):
+        with pytest.raises(OSError, match="boom"):
+            data.evict()
+
+        assert not data.is_evicted()
+        assert data.primary is primary
+        assert data.secondary is secondary
+        assert not primary.is_released()
+        assert not secondary.is_released()
+        assert primary.is_owned()
+        assert secondary.is_owned()
+
+        data.evict()
+
+    assert data.is_evicted()
+    assert values(make_tensor(data.secondary)) == [1.0, 2.0]
+    assert secondary.is_released()
+    assert not secondary.is_owned()
+
+
+def test_failed_promotion_preserves_state_and_can_be_retried():
+    attempts = 0
+
+    class FailFirstMove(ElementwiseMoveOperation):
+        def _copy(self, tensor, destination, output, element_count):
+            nonlocal attempts
+            attempts += 1
+            output[0] = tensor[0]
+            if attempts == 1:
+                raise OSError("boom")
+            super()._copy(tensor, destination, output, element_count)
+
+    data = Evictable(Generic([1.0, 2.0]), Generic([]))
+    original_primary = data.primary
+    data.evict()
+    evicted_secondary = data.secondary
+
+    with registered_move_operation(Generic, Generic, FailFirstMove):
+        with pytest.raises(OSError, match="boom"):
+            data.promote()
+
+        assert data.is_evicted()
+        assert data.primary is original_primary
+        assert original_primary.is_released()
+        assert original_primary.is_owned()
+        assert data.secondary is evicted_secondary
+        assert not evicted_secondary.is_released()
+        assert evicted_secondary.is_owned()
+
+        data.promote()
+
+    assert not data.is_evicted()
+    assert [data[index] for index in range(2)] == [1.0, 2.0]
+    assert not original_primary.is_owned()
+
+
 def test_transitions_call_move_private_forward_not_autograd_forward():
     calls = []
 
@@ -309,7 +381,7 @@ def test_transitions_resolve_move_registry_when_each_transition_runs():
     assert calls == ["spy"]
 
 
-def test_immutable_primary_remains_physically_immutable_after_promotion():
+def test_immutable_hierarchy_remains_externally_read_only_after_promotion():
     prototype = make_cpu_data([1.0, 2.0])
     primary = prototype.new_like([1.0, 2.0], mutable=False)
     data = Evictable(primary, FileBacked(dtype=DataType.Float32))
@@ -321,6 +393,28 @@ def test_immutable_primary_remains_physically_immutable_after_promotion():
     assert not data.primary.is_mutable()
     with pytest.raises(RuntimeError, match="not mutable"):
         data.primary[0] = 3.0
+
+
+def test_immutable_promotion_keeps_the_move_destination_without_copying():
+    promotion_destinations = []
+
+    class CaptureDestinationMove(ElementwiseMoveOperation):
+        def _forward(self, tensor, destination):
+            result = super()._forward(tensor, destination)
+            promotion_destinations.append(destination)
+            return result
+
+    data = Evictable(
+        Generic([1.0, 2.0], mutable=False),
+        Generic([]),
+    )
+    with registered_move_operation(Generic, Generic, CaptureDestinationMove):
+        data.evict()
+        data.promote()
+
+    assert not data.is_mutable()
+    assert data.primary is promotion_destinations[-1]
+    assert not data.primary.is_mutable()
 
 
 def test_eviction_preserves_version_and_writes_increment_it():
@@ -360,18 +454,19 @@ def test_new_like_preserves_hierarchy_and_supports_dtype_change():
     assert isinstance(result, Evictable)
     assert type(result.primary) is CPU
     assert type(result.secondary) is FileBacked
+    assert result.secondary.size() == 0
     assert result.type() is DataType.Float32
     assert [result[i] for i in range(2)] == pytest.approx([1.5, 2.5])
 
 
-def test_empty_like_allocates_both_hierarchy_tiers():
+def test_empty_like_allocates_primary_and_leaves_secondary_lazy():
     data = make_cpu_evictable([1, 2], DataType.Int32)
 
     result = data.empty_like(4, mutable=False, dtype=DataType.Float32)
 
     assert result.size() == 4
     assert result.primary.size() == 4
-    assert result.secondary.size() == 4
+    assert result.secondary.size() == 0
     assert result.type() is DataType.Float32
     assert not result.is_mutable()
     assert not result.primary.is_mutable()
@@ -448,7 +543,12 @@ def test_allocating_operation_preserves_hierarchy():
     assert isinstance(result.data, Evictable)
     assert type(result.data.primary) is CPU
     assert type(result.data.secondary) is FileBacked
+    assert result.data.secondary.size() == 0
     assert values(result) == [3.0, 6.0]
+
+    result.data.evict()
+
+    assert result.data.secondary.size() == 2
 
 
 def test_binary_operation_requires_matching_hierarchies():

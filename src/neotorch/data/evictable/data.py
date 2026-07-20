@@ -147,7 +147,8 @@ class Evictable(Data):
 
         Returns:
             Externally read-only secondary data object. It may be replaced
-            after a promotion and subsequent eviction.
+            after a promotion and subsequent eviction. Newly created operation
+            results keep this tier empty until their first eviction.
 
         Examples:
             >>> hierarchy.secondary is secondary
@@ -222,7 +223,7 @@ class Evictable(Data):
             dtype=result_dtype,
         )
         secondary = self._secondary.empty_like(
-            len(materialized),
+            0,
             mutable=True,
             dtype=result_dtype,
         )
@@ -237,7 +238,7 @@ class Evictable(Data):
     ) -> Evictable:
         result_dtype = self._dtype if dtype is None else dtype
         primary = self._primary.empty_like(size, mutable=mutable, dtype=result_dtype)
-        secondary = self._secondary.empty_like(size, mutable=True, dtype=result_dtype)
+        secondary = self._secondary.empty_like(0, mutable=True, dtype=result_dtype)
         return Evictable(primary, secondary)
 
     def _wrap_primary(self, primary: Data) -> Evictable:
@@ -246,7 +247,7 @@ class Evictable(Data):
         if type(primary) is not type(self._primary):
             raise TypeError("operation result does not use the primary data class")
         secondary = self._secondary.empty_like(
-            primary.size(),
+            0,
             mutable=True,
             dtype=primary.type(),
         )
@@ -258,22 +259,28 @@ class Evictable(Data):
 
         return Tensor(data, 0, Layout(Shape(self._size), Stride(1)))
 
-    def _fresh_destination(
+    def _prepare_destination(
         self, prototype: Data, prototype_token: int
-    ) -> tuple[Data, int]:
+    ) -> tuple[Data, int, bool]:
         if not prototype.is_released() and prototype.size() >= self._size:
-            return prototype, prototype_token
+            return prototype, prototype_token, False
         destination = prototype.empty_like(
             self._size,
             mutable=True,
             dtype=self._dtype,
         )
         destination_token = destination._claim_ownership()
-        if not prototype.is_released():
-            with _owner_access(prototype, prototype_token):
-                prototype.release()
-        prototype._relinquish_ownership(prototype_token)
-        return destination, destination_token
+        return destination, destination_token, True
+
+    @staticmethod
+    def _dispose_tier(data: Data, token: int) -> None:
+        try:
+            if not data.is_released():
+                with _owner_access(data, token):
+                    data.release()
+        finally:
+            if data.is_owned():
+                data._relinquish_ownership(token)
 
     def evict(self) -> None:
         """Move promoted values into secondary storage without autograd.
@@ -298,19 +305,30 @@ class Evictable(Data):
             return
         from ..move import dispatch_move
 
-        destination, destination_token = self._fresh_destination(
+        destination, destination_token, replaces_secondary = self._prepare_destination(
             self._secondary, self._secondary_token
         )
         operation = dispatch_move(type(self._primary), type(destination))
-        with ExitStack() as stack:
-            stack.enter_context(_owner_access(self._primary, self._primary_token))
-            stack.enter_context(_owner_access(destination, destination_token))
-            moved = operation()._forward(self._flat_tensor(self._primary), destination)
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(_owner_access(self._primary, self._primary_token))
+                stack.enter_context(_owner_access(destination, destination_token))
+                moved = operation()._forward(
+                    self._flat_tensor(self._primary), destination
+                )
+        except Exception:
+            if replaces_secondary:
+                self._dispose_tier(destination, destination_token)
+            raise
         if moved.data is not destination:
             raise RuntimeError("move operation did not return its destination data")
+        previous_secondary = self._secondary
+        previous_secondary_token = self._secondary_token
         self._secondary = moved.data
         self._secondary_token = destination_token
         self._evicted = True
+        if replaces_secondary:
+            self._dispose_tier(previous_secondary, previous_secondary_token)
 
     def promote(self) -> None:
         """Move evicted values back into fresh primary-class storage.
@@ -335,35 +353,32 @@ class Evictable(Data):
             return
         from ..move import dispatch_move
 
-        destination, destination_token = self._fresh_destination(
+        destination, destination_token, replaces_primary = self._prepare_destination(
             self._primary, self._primary_token
         )
         operation = dispatch_move(type(self._secondary), type(destination))
-        replaced_primary: tuple[Data, int] | None = None
-        with ExitStack() as stack:
-            stack.enter_context(_owner_access(self._secondary, self._secondary_token))
-            stack.enter_context(_owner_access(destination, destination_token))
-            moved = operation()._forward(
-                self._flat_tensor(self._secondary), destination
-            )
-            if moved.data is not destination:
-                raise RuntimeError("move operation did not return its destination data")
-            primary = moved.data
-            primary_token = destination_token
-            if not self._mutable:
-                immutable = primary.new_like(
-                    (primary[index] for index in range(self._size)),
-                    mutable=False,
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(
+                    _owner_access(self._secondary, self._secondary_token)
                 )
-                primary.release()
-                replaced_primary = (primary, primary_token)
-                primary = immutable
-                primary_token = primary._claim_ownership()
-        if replaced_primary is not None:
-            replaced_primary[0]._relinquish_ownership(replaced_primary[1])
-        self._primary = primary
-        self._primary_token = primary_token
+                stack.enter_context(_owner_access(destination, destination_token))
+                moved = operation()._forward(
+                    self._flat_tensor(self._secondary), destination
+                )
+        except Exception:
+            if replaces_primary:
+                self._dispose_tier(destination, destination_token)
+            raise
+        if moved.data is not destination:
+            raise RuntimeError("move operation did not return its destination data")
+        previous_primary = self._primary
+        previous_primary_token = self._primary_token
+        self._primary = moved.data
+        self._primary_token = destination_token
         self._evicted = False
+        if replaces_primary:
+            self._dispose_tier(previous_primary, previous_primary_token)
 
     def scatter(
         self,

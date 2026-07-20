@@ -44,7 +44,7 @@ so callers currently construct the data and layout explicitly.
 
 ## Data Backends
 
-Neotorch currently provides three data classes:
+Neotorch currently provides four data classes:
 
 - `Generic(values, mutable=True, dtype=DataType.Floating)` stores Python
   objects. It supports differentiable `Floating` values and non-differentiable
@@ -55,14 +55,47 @@ Neotorch currently provides three data classes:
 - `FileBacked(filename=None, mutable=True, dtype=DataType.Floating)` stores raw
   numeric values in a temporary binary file. It is intended for storage and
   movement rather than direct tensor computation.
+- `Evictable(primary, secondary)` composes two data instances into a memory
+  hierarchy. Computation uses promoted primary storage; `evict()` moves values
+  to secondary storage and blocks access until `promote()` restores them. Its
+  constructor takes exclusive ownership of both supplied data objects.
 
 The available dtype tags are `Any`, `Floating`, `Float32`, and `Int32`. Only
 `Floating` and `Float32` tensors participate in autograd.
 
 Data may be mutable or immutable. Mutating shared storage increments a version
 counter visible through `tensor.version`. Calling `release()` permanently
-releases a data object's storage; the older eviction and promotion interface no
-longer exists.
+releases a data object's storage. Eviction and promotion belong specifically to
+the composite `Evictable` backend rather than the base `Data` or `Tensor` APIs.
+Data owned by a composite backend remains readable through retained aliases
+while that tier is live, but rejects direct mutation, scatter, release, and
+move operations. A tier may be released and replaced during a hierarchy
+transition, after which an alias to the old tier is no longer readable. The
+owning backend retains privileged access so mutation through the composite
+interface continues to follow its normal mutability and version rules.
+
+`is_mutable()` reports whether public interfaces may currently write the data,
+not only whether its backend storage was constructed mutable. Consequently, an
+owned child reports `False` while its mutable owning composite may report
+`True`. Backend implementations define their intrinsic storage capability
+through the private `_is_mutable()` hook; ownership is applied centrally by
+`Data`.
+
+```python
+primary = neotorch.Generic([1.0])
+data = neotorch.Evictable(primary, neotorch.Generic([0.0]))
+
+assert data.is_mutable()
+assert primary.is_owned()
+assert not primary.is_mutable()
+
+data[0] = 2.0
+
+try:
+    primary[0] = 3.0
+except RuntimeError:
+    pass
+```
 
 ## Operations
 
@@ -78,6 +111,15 @@ The public functional API includes:
 `Generic` provides Python reference implementations. `CPU` provides native C++
 kernels that use cached expanded layout keys and release the GIL in hot loops.
 `FileBacked` does not dispatch computational operations.
+
+An Evictable tensor dispatches through a public `EvictableOperation` adapter.
+Each adapter owns one fresh operation from the primary data class, lowers its
+inputs to temporary primary-backed tensors, and invokes the primary operation's
+`_forward` and `backward` methods directly. The adapter is the visible autograd
+node and wraps primary results and gradients back into the same hierarchy. CPU
+and Generic implementations therefore do not need composition-specific code.
+New operation results allocate only their promoted primary storage. Their
+secondary tier remains empty until the first eviction provisions it.
 
 Neotorch layout descriptions preserve hierarchical modes and therefore do not
 have standard flat einops semantics. String forms include:
@@ -127,13 +169,30 @@ a standard layer library are not implemented yet.
 
 CPU tensors support DLPack export through `__dlpack__` and
 `__dlpack_device__`. Hierarchical shapes and strides are flattened for the
-DLPack representation. Generic and FileBacked data do not support DLPack, and
-copy or cross-device exports are not implemented.
+DLPack representation. Generic, FileBacked, and Evictable data do not support
+DLPack, and copy or cross-device exports are not implemented.
 
 `move(tensor, destination)` dispatches on the exact source and destination data
 classes. CPU-to-FileBacked and FileBacked-to-CPU moves use native bulk copies;
 unregistered pairs use an elementwise fallback. A successful move releases the
 source data, and autograd moves gradients back into fresh source-class storage.
+
+Evictable resolves the move registry for each transition and calls move
+`_forward` directly so residency changes do not add autograd nodes. Element
+access, forward operations, and scatter are unavailable while values are
+evicted. Backward may still run while an operation result is evicted because
+the result storage is not read; saved inputs and the supplied gradient must be
+promoted.
+
+Residency transitions publish replacement tiers only after a move succeeds. If
+a move implementation raises, the prior residency state and ownership remain
+valid and the transition may be retried.
+
+Ownership guards apply to data-class interfaces. Explicit external-memory
+escape hatches such as `CPU.pointer()` and direct writes to a `FileBacked` path
+remain the caller's responsibility and cannot participate in version tracking.
+The same applies to direct mutation of a mutable container originally supplied
+to `Generic`, because the container remains an alias of Generic storage.
 
 ## Current Boundaries
 
@@ -143,6 +202,8 @@ source data, and autograd moves gradients back into fresh source-class storage.
   and generally the same backing data class.
 - DLPack support is export-only and currently CPU-only.
 - `FileBacked` supports storage and movement, not direct computation.
+- Evictable tensors must be promoted before access or computation, and binary
+  Evictable operations require matching primary and secondary backend classes.
 - The module API is foundational and does not yet constitute a neural-network
   training stack.
 
