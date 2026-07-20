@@ -1,21 +1,21 @@
 from collections.abc import Iterable
 from typing import Any
 
-import neotorch
 import pytest
-from neotorch import CPU, DataType, Generic, Layout, Shape, Stride, Tensor
+import strideweave as sw
+from strideweave import CPU, DType, Generic, Layout, Shape, Stride, Tensor
 
 np = pytest.importorskip("numpy")
 
 
-def make_cpu_data(
-    values: Iterable[float | int], dtype: DataType = DataType.Float32
+def make_cpu_carrier(
+    values: Iterable[float | int], dtype: DType = DType.Float32
 ) -> CPU:
     materialized = list(values)
-    data = CPU(len(materialized), dtype=dtype)
+    carrier = CPU(len(materialized), dtype=dtype)
     for index, value in enumerate(materialized):
-        data[index] = value
-    return data
+        carrier[index] = value
+    return carrier
 
 
 def assert_dlpack_array_matches_tensor(array: Any, tensor: Tensor) -> None:
@@ -26,12 +26,12 @@ def assert_dlpack_array_matches_tensor(array: Any, tensor: Tensor) -> None:
 
 
 def test_cpu_dlpack_device_reports_cpu():
-    data = make_cpu_data([1.0, 2.0])
-    tensor = Tensor(data, 0, Layout(Shape(2), Stride(1)))
+    carrier = make_cpu_carrier([1.0, 2.0])
+    tensor = Tensor(carrier, 0, Layout(Shape(2), Stride(1)))
 
     assert tensor.__dlpack_device__() == (1, 0)
-    assert data.dlpack_info() == {
-        "pointer": data.pointer(),
+    assert carrier.dlpack_info() == {
+        "pointer": carrier.pointer(),
         "device_type": 1,
         "device_id": 0,
     }
@@ -39,7 +39,7 @@ def test_cpu_dlpack_device_reports_cpu():
 
 def test_cpu_float32_dlpack_exports_flat_layout_with_strides():
     tensor = Tensor(
-        make_cpu_data([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+        make_cpu_carrier([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
         0,
         Layout(Shape([2, 3]), Stride([1, 2])),
     )
@@ -57,7 +57,7 @@ def test_cpu_float32_dlpack_exports_flat_layout_with_strides():
 
 def test_cpu_dlpack_flattens_hierarchical_layout():
     tensor = Tensor(
-        make_cpu_data([float(index) for index in range(24)]),
+        make_cpu_carrier([float(index) for index in range(24)]),
         0,
         Layout(Shape([2, [3, 4]]), Stride([1, [2, 6]])),
     )
@@ -72,7 +72,7 @@ def test_cpu_dlpack_flattens_hierarchical_layout():
 
 def test_cpu_dlpack_honors_tensor_offset():
     tensor = Tensor(
-        make_cpu_data([10.0, 20.0, 30.0, 40.0, 50.0]),
+        make_cpu_carrier([10.0, 20.0, 30.0, 40.0, 50.0]),
         2,
         Layout(Shape(3), Stride(1)),
     )
@@ -85,7 +85,7 @@ def test_cpu_dlpack_honors_tensor_offset():
 
 def test_cpu_int32_dlpack_exports_int32_storage():
     tensor = Tensor(
-        make_cpu_data([1, 2, 3, 4], DataType.Int32),
+        make_cpu_carrier([1, 2, 3, 4], DType.Int32),
         0,
         Layout(Shape([2, 2]), Stride([1, 2])),
     )
@@ -112,7 +112,7 @@ def test_generic_dlpack_export_is_not_supported():
 
 
 def test_cpu_dlpack_rejects_unsupported_copy_and_device_requests():
-    tensor = Tensor(make_cpu_data([1.0, 2.0]), 0, Layout(Shape(2), Stride(1)))
+    tensor = Tensor(make_cpu_carrier([1.0, 2.0]), 0, Layout(Shape(2), Stride(1)))
 
     with pytest.raises(BufferError, match="copy exports are not supported"):
         tensor.__dlpack__(copy=True)
@@ -121,8 +121,8 @@ def test_cpu_dlpack_rejects_unsupported_copy_and_device_requests():
 
 
 def test_top_level_tensor_exposes_dlpack_protocol():
-    tensor = Tensor(make_cpu_data([1.0]), 0, Layout(Shape(1), Stride(1)))
+    tensor = Tensor(make_cpu_carrier([1.0]), 0, Layout(Shape(1), Stride(1)))
 
-    assert neotorch.Tensor is Tensor
+    assert sw.Tensor is Tensor
     assert hasattr(tensor, "__dlpack__")
     assert hasattr(tensor, "__dlpack_device__")

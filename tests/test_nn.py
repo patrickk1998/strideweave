@@ -1,22 +1,22 @@
 import math
 import random
 
-import neotorch
-import neotorch.nn as nn
 import pytest
-from neotorch import CPU, DataType, Layout, Shape, Stride, Tensor
+import strideweave as sw
+import strideweave.nn as nn
+from strideweave import CPU, DType, Layout, Shape, Stride, Tensor
 
 
-def make_cpu_data(values, dtype=DataType.Float32):
+def make_cpu_carrier(values, dtype=DType.Float32):
     values = list(values)
-    data = CPU(len(values), dtype=dtype)
+    carrier = CPU(len(values), dtype=dtype)
     for i, value in enumerate(values):
-        data[i] = value
-    return data
+        carrier[i] = value
+    return carrier
 
 
-def make_cpu_tensor(values, layout, dtype=DataType.Float32):
-    return Tensor(make_cpu_data(values, dtype), 0, layout)
+def make_cpu_tensor(values, layout, dtype=DType.Float32):
+    return Tensor(make_cpu_carrier(values, dtype), 0, layout)
 
 
 def column_major(rows, cols):
@@ -25,7 +25,7 @@ def column_major(rows, cols):
 
 def tensor_values(tensor):
     return [
-        tensor.data.get_value(tensor.offset + tensor.layout.index(i))
+        tensor.carrier.get_value(tensor.offset + tensor.layout.index(i))
         for i in range(tensor.layout.size)
     ]
 
@@ -69,7 +69,7 @@ def test_bias_tile_layout_matches_matmul_output_layout():
 def test_reduce_description_yields_exact_scalar_layout():
     tensor = make_cpu_tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], column_major(2, 3))
 
-    total = neotorch.reduce(tensor, "a b -> 1")
+    total = sw.reduce(tensor, "a b -> 1")
 
     assert total.layout == Layout(Shape(1), Stride(1))
     assert total[0] == pytest.approx(21.0)
@@ -172,14 +172,14 @@ def test_activation_modules_delegate_to_functional_ops():
     layout = Layout(Shape(3), Stride(1))
     values = [-1.0, 0.0, 2.0]
     cases = [
-        (nn.ReLU(), neotorch.relu),
-        (nn.Sigmoid(), neotorch.sigmoid),
-        (nn.Tanh(), neotorch.tanh),
-        (nn.GELU(), neotorch.gelu),
-        (nn.SiLU(), neotorch.silu),
-        (nn.Softplus(), neotorch.softplus),
-        (nn.ELU(), neotorch.elu),
-        (nn.LeakyReLU(), neotorch.leaky_relu),
+        (nn.ReLU(), sw.relu),
+        (nn.Sigmoid(), sw.sigmoid),
+        (nn.Tanh(), sw.tanh),
+        (nn.GELU(), sw.gelu),
+        (nn.SiLU(), sw.silu),
+        (nn.Softplus(), sw.softplus),
+        (nn.ELU(), sw.elu),
+        (nn.LeakyReLU(), sw.leaky_relu),
     ]
 
     for module, function in cases:
@@ -193,7 +193,7 @@ def test_activation_modules_delegate_to_functional_ops():
 
 
 def test_activation_module_registers_as_submodule():
-    class Model(neotorch.Module):
+    class Model(sw.Module):
         def __init__(self):
             super().__init__()
             self.activation = nn.Tanh()
@@ -302,7 +302,7 @@ def test_sgd_rejects_non_positive_learning_rate():
 def test_mlp_training_loss_decreases():
     rng = random.Random(0)
 
-    class MLP(neotorch.Module):
+    class MLP(sw.Module):
         def __init__(self):
             super().__init__()
             self.first = nn.Linear(1, 8, rng=rng)

@@ -3,9 +3,9 @@ import string
 from importlib import import_module
 from typing import Any, cast
 
-import neotorch
 import pytest
-from neotorch import (
+import strideweave as sw
+from strideweave import (
     CPU,
     Generic,
     GenericMatmulOperation,
@@ -18,7 +18,7 @@ from neotorch import (
     Tensor,
     Tree,
 )
-from neotorch.einops import (
+from strideweave.einops import (
     Token,
     TokenKind,
     lex,
@@ -28,10 +28,10 @@ from neotorch.einops import (
     parse_reduce,
     rearrange,
 )
-from neotorch.einops import (
+from strideweave.einops import (
     einsum as einops_einsum,
 )
-from neotorch.einops import (
+from strideweave.einops import (
     reduce as einops_reduce,
 )
 
@@ -45,7 +45,7 @@ PUNCTUATION_TOKENS: list[tuple[TokenKind, str]] = [
     ("comma", ","),
     ("one", "1"),
 ]
-native_einops = cast(Any, import_module("neotorch._einops"))
+native_einops = cast(Any, import_module("strideweave._einops"))
 
 
 def token_values(tokens: list[Token]) -> list[tuple[str, str, int, int]]:
@@ -62,10 +62,10 @@ def require_grad(tensor: Tensor) -> Tensor:
 
 
 def make_cpu_tensor(values: list[float], layout: Layout) -> Tensor:
-    data = CPU(len(values))
+    carrier = CPU(len(values))
     for index, value in enumerate(values):
-        data[index] = value
-    return Tensor(data, 0, layout)
+        carrier[index] = value
+    return Tensor(carrier, 0, layout)
 
 
 def reference_lex(command: str) -> list[tuple[str, str, int, int]]:
@@ -463,7 +463,7 @@ def test_einops_rearrange_string_api_returns_rearranged_tensor_view():
 
     result = rearrange(tensor, "a b -> b a")
 
-    assert result.data is tensor.data
+    assert result.carrier is tensor.carrier
     assert result.layout == Layout(Shape([3, 2]), Stride([2, 1]))
     assert result[2, 1] == tensor[1, 2]
     assert isinstance(result.autograd_ctx, RearrangeOperation)
@@ -472,7 +472,7 @@ def test_einops_rearrange_string_api_returns_rearranged_tensor_view():
 def test_top_level_rearrange_accepts_einops_string_descriptions():
     tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
 
-    result = neotorch.rearrange(tensor, "a b -> b a")
+    result = sw.rearrange(tensor, "a b -> b a")
 
     assert result.layout == Layout(Shape([3, 2]), Stride([2, 1]))
     assert result[2, 1] == tensor[1, 2]
@@ -481,7 +481,7 @@ def test_top_level_rearrange_accepts_einops_string_descriptions():
 def test_top_level_rearrange_preserves_existing_tree_api():
     tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
 
-    result = neotorch.rearrange(tensor, Tree(Node.id(1), Node.id(0)))
+    result = sw.rearrange(tensor, Tree(Node.id(1), Node.id(0)))
 
     assert result.layout == Layout(Shape([3, 2]), Stride([2, 1]))
     assert result[2, 1] == tensor[1, 2]
@@ -491,7 +491,7 @@ def test_top_level_rearrange_rejects_string_description_with_explicit_selection(
     tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
 
     with pytest.raises(TypeError):
-        neotorch.rearrange(
+        sw.rearrange(
             tensor,
             cast(Any, "a b -> b a"),
             Tree(Node.Leaf, Node.Leaf),
@@ -509,7 +509,7 @@ def test_einops_rearrange_string_api_backpropagates_through_existing_operation()
     assert result.grad is None
     assert tensor_grad.layout == tensor.layout
     assert tensor_values(tensor_grad) == [10, 40, 20, 50, 30, 60]
-    assert type(tensor_grad.data) is type(tensor.data)
+    assert type(tensor_grad.carrier) is type(tensor.carrier)
 
 
 def test_einops_reduce_string_api_reduces_omitted_dimensions():
@@ -531,7 +531,7 @@ def test_top_level_reduce_accepts_einops_string_descriptions():
     layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
     tensor = Tensor(Generic(range(layout.shape.logical_size)), 0, layout)
 
-    result = neotorch.reduce(tensor, "a (c d) b -> a c")
+    result = sw.reduce(tensor, "a (c d) b -> a c")
 
     assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
     assert result[1, 2] == sum(tensor[1, [2, d], b] for d in range(4) for b in range(5))
@@ -542,7 +542,7 @@ def test_top_level_reduce_rejects_non_string_description():
     description: Any = object()
 
     with pytest.raises(TypeError):
-        neotorch.reduce(tensor, description)
+        sw.reduce(tensor, description)
     with pytest.raises(TypeError):
         einops_reduce(tensor, description)
 
@@ -569,7 +569,7 @@ def test_einops_reduce_string_api_backpropagates_through_existing_operations():
 
     assert result.grad is None
     assert tensor_grad.layout == tensor.layout
-    assert type(tensor_grad.data) is type(tensor.data)
+    assert type(tensor_grad.carrier) is type(tensor.carrier)
     for a in range(2):
         for c in range(3):
             for d in range(4):
@@ -583,7 +583,7 @@ def test_einops_reduce_string_api_works_with_cpu_tensors():
         [float(i) for i in range(layout.shape.logical_size)], layout
     )
 
-    result = neotorch.reduce(tensor, "a (c d) b -> a c")
+    result = sw.reduce(tensor, "a (c d) b -> a c")
 
     assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
     assert tensor_values(result) == pytest.approx(
@@ -593,7 +593,7 @@ def test_einops_reduce_string_api_works_with_cpu_tensors():
             for a in range(2)
         ]
     )
-    assert type(result.data) is CPU
+    assert type(result.carrier) is CPU
 
 
 def test_einops_einsum_string_api_matches_manual_dot_products():
@@ -624,7 +624,7 @@ def test_top_level_einsum_accepts_einops_string_descriptions():
         Layout(Shape([4, 3]), Stride([1, 4])),
     )
 
-    result = neotorch.einsum(lhs, rhs, "a b, c b -> a c")
+    result = sw.einsum(lhs, rhs, "a b, c b -> a c")
 
     assert result.layout == Layout(Shape([2, 4]), Stride([1, 2]))
     assert result[1, 2] == sum(lhs[1, b] * rhs[2, b] for b in range(3))
@@ -636,7 +636,7 @@ def test_top_level_einsum_rejects_non_string_description():
     description: Any = object()
 
     with pytest.raises(TypeError):
-        neotorch.einsum(lhs, rhs, description)
+        sw.einsum(lhs, rhs, description)
     with pytest.raises(TypeError):
         einops_einsum(lhs, rhs, description)
 
@@ -738,7 +738,7 @@ def test_einops_einsum_string_api_works_with_cpu_tensors():
         Layout(Shape([4, 3]), Stride([1, 4])),
     )
 
-    result = neotorch.einsum(lhs, rhs, "a b, c b -> a c")
+    result = sw.einsum(lhs, rhs, "a b, c b -> a c")
 
     assert result.layout == Layout(Shape([2, 4]), Stride([1, 2]))
     assert tensor_values(result) == pytest.approx(
@@ -748,7 +748,7 @@ def test_einops_einsum_string_api_works_with_cpu_tensors():
             for a in range(2)
         ]
     )
-    assert type(result.data) is CPU
+    assert type(result.carrier) is CPU
 
 
 def test_einops_einsum_backpropagates_through_existing_operations():

@@ -2,14 +2,14 @@ import inspect
 from collections.abc import Callable
 from typing import cast
 
-import neotorch
-import neotorch.einops
-import neotorch.friendly
-import neotorch.nn
+import strideweave as sw
+import strideweave.einops as einops
+import strideweave.friendly as friendly
+import strideweave.nn as nn
 
 NATIVE_TOP_LEVEL_EXPORTS = {
     "CPU",
-    "Data",
+    "Carrier",
     "Operation",
     "Tensor",
 }
@@ -76,26 +76,26 @@ def assert_class_doc_contract(value: type, name: str) -> None:
 
 
 def test_public_modules_have_docstrings():
-    assert_has_docstring(neotorch, "neotorch")
-    assert_has_docstring(neotorch.einops, "neotorch.einops")
-    assert_has_docstring(neotorch.nn, "neotorch.nn")
-    assert_has_docstring(neotorch.friendly, "neotorch.friendly")
+    assert_has_docstring(sw, "strideweave")
+    assert_has_docstring(einops, "strideweave.einops")
+    assert_has_docstring(nn, "strideweave.nn")
+    assert_has_docstring(friendly, "strideweave.friendly")
 
 
 def test_friendly_public_exports_have_docstrings():
-    friendly_public_exports = cast(list[str], getattr(neotorch.friendly, "__all__"))
+    friendly_public_exports = cast(list[str], getattr(friendly, "__all__"))
     for name in friendly_public_exports:
-        value = getattr(neotorch.friendly, name)
-        qualified_name = f"neotorch.friendly.{name}"
+        value = getattr(friendly, name)
+        qualified_name = f"sw.friendly.{name}"
         assert inspect.isfunction(value), f"{qualified_name} must be a function export"
         assert_function_doc_contract(value, qualified_name)
 
 
 def test_nn_public_exports_have_docstrings():
-    nn_public_exports = cast(list[str], getattr(neotorch.nn, "__all__"))
+    nn_public_exports = cast(list[str], getattr(nn, "__all__"))
     for name in nn_public_exports:
-        value = getattr(neotorch.nn, name)
-        qualified_name = f"neotorch.nn.{name}"
+        value = getattr(nn, name)
+        qualified_name = f"sw.nn.{name}"
         assert inspect.isclass(value), f"{qualified_name} must be a class export"
         assert_class_doc_contract(value, qualified_name)
         for method_name, method in inspect.getmembers(value, inspect.isfunction):
@@ -104,11 +104,11 @@ def test_nn_public_exports_have_docstrings():
             assert_function_doc_contract(method, f"{qualified_name}.{method_name}")
 
 
-def test_native_data_ownership_methods_document_their_semantics():
-    mutable_docstring = cast(str, inspect.getdoc(neotorch.Data.is_mutable))
-    owned_docstring = cast(str, inspect.getdoc(neotorch.Data.is_owned))
+def test_native_carrier_ownership_methods_document_their_semantics():
+    mutable_docstring = cast(str, inspect.getdoc(sw.Carrier.is_mutable))
+    owned_docstring = cast(str, inspect.getdoc(sw.Carrier.is_owned))
 
-    assert "public data interfaces" in mutable_docstring
+    assert "public carrier interfaces" in mutable_docstring
     assert "intrinsic mutability" in mutable_docstring
     assert "exclusively owns" in owned_docstring
     assert "public mutation" in owned_docstring
@@ -118,10 +118,10 @@ def test_native_data_ownership_methods_document_their_semantics():
 
 
 def test_einops_public_exports_have_docstrings():
-    einops_public_exports = cast(list[str], getattr(neotorch.einops, "__all__"))
+    einops_public_exports = cast(list[str], getattr(einops, "__all__"))
     for name in einops_public_exports:
-        value = getattr(neotorch.einops, name)
-        qualified_name = f"neotorch.einops.{name}"
+        value = getattr(einops, name)
+        qualified_name = f"sw.einops.{name}"
         assert_has_docstring(value, qualified_name)
         if inspect.isfunction(value):
             assert_function_doc_contract(value, qualified_name)
@@ -142,13 +142,13 @@ def test_einops_public_exports_have_docstrings():
 
 
 def test_documentable_top_level_exports_have_docstrings():
-    assert NATIVE_TOP_LEVEL_EXPORTS < set(neotorch.__all__)
+    assert NATIVE_TOP_LEVEL_EXPORTS < set(sw.__all__)
 
-    for name in neotorch.__all__:
+    for name in sw.__all__:
         if name in NATIVE_TOP_LEVEL_EXPORTS:
             continue
-        value = getattr(neotorch, name)
-        qualified_name = f"neotorch.{name}"
+        value = getattr(sw, name)
+        qualified_name = f"sw.{name}"
         assert_has_docstring(value, qualified_name)
         if inspect.isfunction(value):
             assert_function_doc_contract(value, qualified_name)

@@ -1,20 +1,20 @@
-# neotorch
+# StrideWeave
 
-Neotorch is a research tensor and autograd framework built around hierarchical,
-CuTe-style layouts. A tensor combines a data backend, a physical offset, and a
-layout; tensor operations are selected by the backing data class rather than by
-a separate device abstraction.
+StrideWeave is a research tensor and autograd framework built around hierarchical,
+CuTe-style layouts. A tensor combines a carrier, a physical offset, and a
+layout. A carrier owns or references storage and dispatches the operations it
+supports; StrideWeave deliberately has no separate device abstraction.
 
 The project is currently a tested prototype rather than a complete PyTorch
-replacement. It provides native CPU kernels, a Python reference backend,
+replacement. It provides native CPU kernels, a Python reference carrier,
 autograd, hierarchical layout transformations, a small module system, and
-ergonomic layers (`neotorch.nn` with a minimal layer library and optimizer,
-`neotorch.friendly` with tensor factories), but does not yet include
-accelerator backends.
+ergonomic layers (`strideweave.nn` with a minimal layer library and optimizer,
+`strideweave.friendly` with tensor factories), but does not yet include
+accelerator carriers.
 
 ## Core Model
 
-- `Tensor(data, offset, layout)` references storage owned by a `Data` object.
+- `Tensor(carrier, offset, layout)` references storage owned by a `Carrier`.
 - `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
   coordinates to physical storage indices.
 - `layout.size` is the logical element count, while `layout.cosize` is the
@@ -22,25 +22,25 @@ accelerator backends.
   They are equal for compact layouts but `cosize` is larger for strided or
   hierarchical ones, so back a tensor with `cosize` elements — e.g. a strided
   `Layout(Shape([2, 3]), Stride([1, 4]))` has `size` 6 but `cosize` 10, so it
-  needs `CPU(10)`. The `neotorch.friendly` and `neotorch.nn` layers allocate
+  needs `CPU(10)`. The `strideweave.friendly` and `strideweave.nn` layers allocate
   through `layout.cosize` for exactly this reason.
-- Operations dispatch through `tensor.data.dispatch_op(operation_name)`.
+- Operations dispatch through `tensor.carrier.dispatch_op(operation_name)`.
   Dispatch is uniformly instance-based; class-level `dispatch_op` calls are
   not part of the public contract.
 - Python and native operations inherit from the shared native `Operation` base.
-- Views may use different layouts and offsets while sharing the same data.
+- Views may use different layouts and offsets while sharing the same carrier.
 
-For example, this creates a two-mode column-major tensor backed by Python data:
+For example, this creates a two-mode column-major tensor backed by a Python carrier:
 
 ```python
-import neotorch
+import strideweave as sw
 
-layout = neotorch.Layout(
-    neotorch.Shape([2, 3]),
-    neotorch.Stride([1, 2]),
+layout = sw.Layout(
+    sw.Shape([2, 3]),
+    sw.Stride([1, 2]),
 )
-tensor = neotorch.Tensor(
-    neotorch.Generic([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+tensor = sw.Tensor(
+    sw.Generic([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
     0,
     layout,
 )
@@ -50,57 +50,59 @@ assert tensor[1, 2] == 6.0
 
 The core namespace deliberately exposes only these composable primitives.
 High-level factories such as `tensor`, `zeros`, and `ones` live in the
-separate `neotorch.friendly` submodule (see Ergonomic Layers below); callers
-working with the core API construct the data and layout explicitly.
+separate `strideweave.friendly` submodule (see Ergonomic Layers below); callers
+working with the core API construct the carrier and layout explicitly.
 
-## Data Backends
+## Carriers
 
-Neotorch currently provides four data classes:
+StrideWeave currently provides four carrier implementations:
 
-- `Generic(values, mutable=True, dtype=DataType.Floating)` stores Python
+- `Generic(values, mutable=True, dtype=DType.Floating)` stores Python
   objects. It supports differentiable `Floating` values and non-differentiable
   arbitrary `Any` values.
-- `CPU(size, pointer=None, mutable=True, dtype=DataType.Float32)` owns native
+- `CPU(size, pointer=None, mutable=True, dtype=DType.Float32)` owns native
   memory or references a caller-provided address. It supports `Float32` and
   `Int32`.
-- `FileBacked(filename=None, mutable=True, dtype=DataType.Floating)` stores raw
+- `FileBacked(filename=None, mutable=True, dtype=DType.Floating)` stores raw
   numeric values in a temporary binary file. It is intended for storage and
   movement rather than direct tensor computation.
-- `Evictable(primary, secondary)` composes two data instances into a memory
+- `Evictable(primary, secondary)` composes two carriers into a memory
   hierarchy. Computation uses promoted primary storage; `evict()` moves values
   to secondary storage and blocks access until `promote()` restores them. Its
-  constructor takes exclusive ownership of both supplied data objects.
+  constructor takes exclusive ownership of both supplied carriers.
 
 The available dtype tags are `Any`, `Floating`, `Float32`, and `Int32`. Only
 `Floating` and `Float32` tensors participate in autograd.
 
-Data may be mutable or immutable. Mutating shared storage increments a version
+Carriers may be mutable or immutable. Mutating shared storage increments a version
 counter visible through `tensor.version`. Calling `release()` permanently
-releases a data object's storage. Eviction and promotion belong specifically to
-the composite `Evictable` backend rather than the base `Data` or `Tensor` APIs.
-Data owned by a composite backend remains readable through retained aliases
+releases a carrier's storage. Eviction and promotion belong specifically to
+the composite `Evictable` carrier rather than the base `Carrier` or `Tensor` APIs.
+A carrier owned by a composite carrier remains readable through retained aliases
 while that tier is live, but rejects direct mutation, scatter, release, and
 move operations. A tier may be released and replaced during a hierarchy
 transition, after which an alias to the old tier is no longer readable. The
-owning backend retains privileged access so mutation through the composite
+owning carrier retains privileged access so mutation through the composite
 interface continues to follow its normal mutability and version rules.
 
-`is_mutable()` reports whether public interfaces may currently write the data,
-not only whether its backend storage was constructed mutable. Consequently, an
+`is_mutable()` reports whether public interfaces may currently write the carrier,
+not only whether its storage was constructed mutable. Consequently, an
 owned child reports `False` while its mutable owning composite may report
-`True`. Backend implementations define their intrinsic storage capability
+`True`. Carrier implementations define their intrinsic storage capability
 through the private `_is_mutable()` hook; ownership is applied centrally by
-`Data`.
+`Carrier`.
 
 ```python
-primary = neotorch.Generic([1.0])
-data = neotorch.Evictable(primary, neotorch.Generic([0.0]))
+import strideweave as sw
 
-assert data.is_mutable()
+primary = sw.Generic([1.0])
+carrier = sw.Evictable(primary, sw.Generic([0.0]))
+
+assert carrier.is_mutable()
 assert primary.is_owned()
 assert not primary.is_mutable()
 
-data[0] = 2.0
+carrier[0] = 2.0
 
 try:
     primary[0] = 3.0
@@ -113,8 +115,8 @@ except RuntimeError:
 The public functional API includes:
 
 - arithmetic: `add`, `sub`, `neg`, `mul`, `elementwise_mul`, `div`, `pow`, and
-  `exp` (`sub` is a backend operation, implemented natively for CPU data and in
-  Python for Generic data; `neg` is a composition of scalar `mul`);
+  `exp` (`sub` is implemented natively for CPU carriers and in Python for
+  Generic carriers; `neg` is a composition of scalar `mul`);
 - activations: `relu`, `sigmoid`, `tanh`, `gelu`, `silu`, `softplus`, `elu`,
   and `leaky_relu`;
 - layout operations: `view`, `permute`, and `rearrange`;
@@ -126,7 +128,7 @@ kernels that use cached expanded layout keys and release the GIL in hot loops.
 `FileBacked` does not dispatch computational operations.
 
 An Evictable tensor dispatches through a public `EvictableOperation` adapter.
-Each adapter owns one fresh operation from the primary data class, lowers its
+Each adapter owns one fresh operation from the primary carrier, lowers its
 inputs to temporary primary-backed tensors, and invokes the primary operation's
 `_forward` and `backward` methods directly. The adapter is the visible autograd
 node and wraps primary results and gradients back into the same hierarchy. CPU
@@ -134,13 +136,13 @@ and Generic implementations therefore do not need composition-specific code.
 New operation results allocate only their promoted primary storage. Their
 secondary tier remains empty until the first eviction provisions it.
 
-Neotorch layout descriptions preserve hierarchical modes and therefore do not
+StrideWeave layout descriptions preserve hierarchical modes and therefore do not
 have standard flat einops semantics. String forms include:
 
 ```python
-transposed = neotorch.rearrange(tensor, "a b -> b a")
-summed = neotorch.reduce(tensor, "a (b c) -> a b")
-contracted = neotorch.einsum(lhs, rhs, "a b, c b -> a c")
+transposed = sw.rearrange(tensor, "a b -> b a")
+summed = sw.reduce(tensor, "a (b c) -> a b")
+contracted = sw.einsum(lhs, rhs, "a b, c b -> a c")
 ```
 
 The native lexer and Python parsers compile these descriptions into layout
@@ -176,33 +178,33 @@ attributes registers them for `modules()`, `parameters()`, and
 override attribute-name segments.
 
 Buffers, state dictionaries, training/evaluation modes, and hooks are not
-implemented yet. A minimal layer library and optimizer live in `neotorch.nn`
+implemented yet. A minimal layer library and optimizer live in `strideweave.nn`
 (see Ergonomic Layers).
 
 ## Ergonomic Layers
 
-The core data classes stay composable primitives; user-facing ergonomics live
+The core carriers stay composable primitives; user-facing ergonomics live
 in two submodule-only packages that are built entirely from the public
 primitives and are not re-exported at the top level.
 
-### neotorch.nn
+### strideweave.nn
 
-`import neotorch.nn as nn` provides `Linear`, activation module wrappers
+`import strideweave.nn as nn` provides `Linear`, activation module wrappers
 (`ReLU`, `Sigmoid`, `Tanh`, `GELU`, `SiLU`, `Softplus`, `ELU`, `LeakyReLU`),
 `MSELoss`, and an `SGD` optimizer.
 
-Backend and layout requirements differ per component and follow from what
-each one actually does, rather than a blanket `neotorch.nn` restriction:
+Carrier and layout requirements differ per component and follow from what
+each one actually does, rather than a blanket `strideweave.nn` restriction:
 
 - The activation wrappers are thin `Module` adapters that delegate to the
   corresponding functional operation, so they carry no hyperparameters and
-  inherit its input support: they accept any backend and layout the underlying
+  inherit its input support: they accept any carrier and layout the underlying
   op accepts (e.g. a one-mode `Generic` tensor), not just CPU `Float32`.
 - `Linear` holds CPU `Float32` parameters and uses matmul plus the ones-column
   bias trick, so it requires CPU inputs in the flat column-major `[batch,
   features]` convention below.
-- `MSELoss` is composed from backend-dispatched operations (`sub`, `pow`,
-  reduction), so it works on any backend that supports them (CPU or Generic);
+- `MSELoss` is composed from carrier-dispatched operations (`sub`, `pow`,
+  reduction), so it works on any carrier that supports them (CPU or Generic);
   it does require the prediction and target to share a flat two-mode layout.
 - `SGD` writes elementwise through each parameter's layout, so it works on any
   mutable parameter with a compatible gradient — no CPU or two-mode
@@ -217,7 +219,7 @@ bias by contracting a constant ones column against it: `ones[batch, 1] @
 bias[out, 1]` produces a tile whose layout matches the matmul output and
 whose backward pass sums the bias gradient over the batch.
 
-`SGD.step()` mutates parameter storage in place and therefore bumps data
+`SGD.step()` mutates parameter storage in place and therefore bumps carrier
 versions: the required per-iteration ordering is forward, `backward()`, then
 `step()`, and graphs built before a step cannot be backwarded afterwards.
 Gradients accumulate until `SGD.zero_grad()` resets them to `None`.
@@ -225,9 +227,9 @@ Gradients accumulate until `SGD.zero_grad()` resets them to `None`.
 `MSELoss` returns an exact single-mode `Shape(1)` scalar, so
 `loss.backward()` needs no explicit gradient.
 
-### neotorch.friendly
+### strideweave.friendly
 
-`import neotorch.friendly as F` provides compact layout builders
+`import strideweave.friendly as F` provides compact layout builders
 (`column_major`, `row_major`), CPU tensor factories (`tensor` from nested
 lists, `zeros`, `ones`, `full`, `arange`, `rand`, `randn`), scalar reductions
 (`sum`, `mean`, both returning `Shape(1)` tensors that support implicit
@@ -241,13 +243,13 @@ helpers).
 
 CPU tensors support DLPack export through `__dlpack__` and
 `__dlpack_device__`. Hierarchical shapes and strides are flattened for the
-DLPack representation. Generic, FileBacked, and Evictable data do not support
+DLPack representation. Generic, FileBacked, and Evictable carriers do not support
 DLPack, and copy or cross-device exports are not implemented.
 
-`move(tensor, destination)` dispatches on the exact source and destination data
+`move(tensor, destination)` dispatches on the exact source and destination carrier
 classes. CPU-to-FileBacked and FileBacked-to-CPU moves use native bulk copies;
 unregistered pairs use an elementwise fallback. A successful move releases the
-source data, and autograd moves gradients back into fresh source-class storage.
+source carrier, and autograd moves gradients back into fresh source-class storage.
 
 Evictable resolves the move registry for each transition and calls move
 `_forward` directly so residency changes do not add autograd nodes. Element
@@ -260,7 +262,7 @@ Residency transitions publish replacement tiers only after a move succeeds. If
 a move implementation raises, the prior residency state and ownership remain
 valid and the transition may be retried.
 
-Ownership guards apply to data-class interfaces. Explicit external-memory
+Ownership guards apply to carrier interfaces. Explicit external-memory
 escape hatches such as `CPU.pointer()` and direct writes to a `FileBacked` path
 remain the caller's responsibility and cannot participate in version tracking.
 The same applies to direct mutation of a mutable container originally supplied
@@ -268,17 +270,17 @@ to `Generic`, because the container remains an alias of Generic storage.
 
 ## Current Boundaries
 
-- No CUDA, Metal, or other accelerator backend.
-- High-level tensor creation lives only in `neotorch.friendly` and is
-  CPU-backed; other data classes are constructed from primitives.
+- No CUDA, Metal, or other accelerator carriers.
+- High-level tensor creation lives only in `strideweave.friendly` and is
+  CPU-backed; other carriers are constructed from primitives.
 - No general broadcasting system; binary operations require compatible layouts
-  and generally the same backing data class (`neotorch.nn` composes around
+  and generally the same backing carrier (`strideweave.nn` composes around
   this with matmul-based bias broadcasting).
 - DLPack support is export-only and currently CPU-only.
 - `FileBacked` supports storage and movement, not direct computation.
 - Evictable tensors must be promoted before access or computation, and binary
-  Evictable operations require matching primary and secondary backend classes.
-- `neotorch.nn` covers only `Linear`, elementwise activations, `MSELoss`, and
+  Evictable operations require matching primary and secondary carrier classes.
+- `strideweave.nn` covers only `Linear`, elementwise activations, `MSELoss`, and
   `SGD`; there are no buffers, state dictionaries, training/evaluation modes,
   or hooks.
 
@@ -288,13 +290,13 @@ The package requires Python 3.12 or newer and builds its native modules with
 scikit-build-core and pybind11.
 
 ```bash
-uv pip install -e packages/neotorch
-uv run pytest packages/neotorch/tests
+uv pip install -e packages/strideweave
+uv run pytest packages/strideweave/tests
 uv run ruff format --check . --exclude notebooks/CuTe.py
-uv run ruff check packages/neotorch
-uv run pyright packages/neotorch
+uv run ruff check packages/strideweave
+uv run pyright packages/strideweave
 ```
 
-The test suite covers layouts, data backends, tensor indexing and mutation,
+The test suite covers layouts, carriers, tensor indexing and mutation,
 autograd, operations and activations, hierarchical command parsing, DLPack,
 movement, modules, and public docstrings.

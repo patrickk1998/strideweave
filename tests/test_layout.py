@@ -1,9 +1,9 @@
 from importlib import import_module
 from typing import Any, Protocol, cast
 
-import neotorch
 import pytest
-from neotorch import Layout, Node, Shape, Stride, Tree
+import strideweave as sw
+from strideweave import Layout, Node, Shape, Stride, Tree
 
 
 class NativeIndexModule(Protocol):
@@ -12,15 +12,15 @@ class NativeIndexModule(Protocol):
     def get_index(self, layout: Layout, key: Any) -> int: ...
 
 
-native_index = cast(NativeIndexModule, import_module("neotorch._index"))
+native_index = cast(NativeIndexModule, import_module("strideweave._index"))
 
 
 def test_public_api_imports():
-    assert neotorch.Layout is Layout
-    assert neotorch.Node is Node
-    assert neotorch.Shape is Shape
-    assert neotorch.Stride is Stride
-    assert neotorch.Tree is Tree
+    assert sw.Layout is Layout
+    assert sw.Node is Node
+    assert sw.Shape is Shape
+    assert sw.Stride is Stride
+    assert sw.Tree is Tree
 
 
 def test_tree_reshape():

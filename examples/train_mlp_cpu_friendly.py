@@ -1,12 +1,12 @@
-"""Train a tiny MLP on sin(x) using the neotorch.friendly helpers.
+"""Train a tiny MLP on sin(x) using the sw.friendly helpers.
 
 Same task as ``train_mlp_cpu.py`` — full-batch regression of ``y = sin(x)``
 on 64 points with a ``Linear(1, 16) -> Tanh -> Linear(16, 1)`` model — but
-data construction and value extraction go through ``neotorch.friendly``
+data construction and value extraction go through ``sw.friendly``
 instead of raw ``CPU`` buffers and hand-written layouts.
 
 Usage:
-    uv run python packages/neotorch/examples/train_mlp_cpu_friendly.py
+    uv run python packages/strideweave/examples/train_mlp_cpu_friendly.py
 """
 
 from __future__ import annotations
@@ -14,12 +14,12 @@ from __future__ import annotations
 import math
 import random
 
-import neotorch
-import neotorch.friendly as F
-import neotorch.nn as nn
+import strideweave as sw
+import strideweave.friendly as F
+import strideweave.nn as nn
 
 
-class MLP(neotorch.Module):
+class MLP(sw.Module):
     """Two-layer tanh MLP mapping ``[batch, 1] -> [batch, 1]``."""
 
     def __init__(self, hidden: int, rng: random.Random) -> None:
@@ -28,7 +28,7 @@ class MLP(neotorch.Module):
         self.activation = nn.Tanh()
         self.second = nn.Linear(hidden, 1, rng=rng)
 
-    def forward(self, tensor: neotorch.Tensor) -> neotorch.Tensor:
+    def forward(self, tensor: sw.Tensor) -> sw.Tensor:
         return self.second(self.activation(self.first(tensor)))
 
 

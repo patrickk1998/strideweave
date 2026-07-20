@@ -1,10 +1,10 @@
 import threading
 from typing import Any
 
-import neotorch
 import pytest
-from neotorch import Generic, Layout, Operation, Shape, Stride, Tensor
-from neotorch.operation import is_grad_enabled, set_grad_enabled
+import strideweave as sw
+from strideweave import Generic, Layout, Operation, Shape, Stride, Tensor
+from strideweave.operation import is_grad_enabled, set_grad_enabled
 
 
 class EchoOperation(Operation):
@@ -39,35 +39,35 @@ def make_tensor(values: list[Any]) -> Tensor:
 
 
 def test_operation_public_api_imports():
-    assert neotorch.Operation is Operation
-    assert neotorch.is_grad_enabled is is_grad_enabled
-    assert neotorch.set_grad_enabled is set_grad_enabled
-    assert neotorch.no_grad is not None
-    assert neotorch.relu is not None
-    assert neotorch.sigmoid is not None
-    assert neotorch.tanh is not None
-    assert neotorch.gelu is not None
-    assert neotorch.silu is not None
-    assert neotorch.softplus is not None
-    assert neotorch.elu is not None
-    assert neotorch.leaky_relu is not None
+    assert sw.Operation is Operation
+    assert sw.is_grad_enabled is is_grad_enabled
+    assert sw.set_grad_enabled is set_grad_enabled
+    assert sw.no_grad is not None
+    assert sw.relu is not None
+    assert sw.sigmoid is not None
+    assert sw.tanh is not None
+    assert sw.gelu is not None
+    assert sw.silu is not None
+    assert sw.softplus is not None
+    assert sw.elu is not None
+    assert sw.leaky_relu is not None
 
 
 def test_grad_is_enabled_by_default():
     assert is_grad_enabled()
-    assert neotorch.is_grad_enabled()
+    assert sw.is_grad_enabled()
 
 
 def test_top_level_set_grad_enabled_updates_current_thread_state():
-    previous = neotorch.is_grad_enabled()
+    previous = sw.is_grad_enabled()
     try:
-        neotorch.set_grad_enabled(False)
-        assert not neotorch.is_grad_enabled()
+        sw.set_grad_enabled(False)
+        assert not sw.is_grad_enabled()
 
-        neotorch.set_grad_enabled(True)
-        assert neotorch.is_grad_enabled()
+        sw.set_grad_enabled(True)
+        assert sw.is_grad_enabled()
     finally:
-        neotorch.set_grad_enabled(previous)
+        sw.set_grad_enabled(previous)
 
 
 def test_python_operation_forward_stores_tensor_inputs_and_context():
@@ -88,7 +88,7 @@ def test_no_grad_skips_input_storage_and_autograd_context():
     lhs = make_tensor([1, 2])
     rhs = make_tensor([3, 4])
 
-    with neotorch.no_grad():
+    with sw.no_grad():
         result = operation.forward(lhs, "alpha", rhs)
 
     assert result.autograd_ctx is None
@@ -100,9 +100,9 @@ def test_no_grad_skips_input_storage_and_autograd_context():
 def test_no_grad_nested_contexts_restore_previous_state():
     assert is_grad_enabled()
 
-    with neotorch.no_grad():
+    with sw.no_grad():
         assert not is_grad_enabled()
-        with neotorch.no_grad():
+        with sw.no_grad():
             assert not is_grad_enabled()
         assert not is_grad_enabled()
 
@@ -113,7 +113,7 @@ def test_no_grad_restores_existing_disabled_state():
     previous = is_grad_enabled()
     set_grad_enabled(False)
     try:
-        with neotorch.no_grad():
+        with sw.no_grad():
             assert not is_grad_enabled()
         assert not is_grad_enabled()
     finally:
@@ -126,7 +126,7 @@ def test_no_grad_state_is_thread_local():
     def read_grad_state() -> None:
         worker_grad_states.append(is_grad_enabled())
 
-    with neotorch.no_grad():
+    with sw.no_grad():
         assert not is_grad_enabled()
         worker = threading.Thread(target=read_grad_state)
         worker.start()
@@ -140,7 +140,7 @@ def test_grad_construction_resumes_after_no_grad_context():
     lhs = make_tensor([1, 2])
     rhs = make_tensor([3, 4])
 
-    with neotorch.no_grad():
+    with sw.no_grad():
         disabled_result = EchoOperation().forward(lhs, rhs)
     enabled_operation = EchoOperation()
     enabled_result = enabled_operation.forward(lhs, rhs)

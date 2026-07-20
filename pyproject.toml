@@ -1,7 +1,7 @@
 [project]
-name = "neotorch"
+name = "strideweave"
 version = "0.1.0"
-description = "Layout and tree utilities extracted from the CuTe prototype"
+description = "Hierarchical-layout tensor and autograd research framework"
 readme = "README.md"
 authors = [
     { name = "Patrick Krusiec", email = "patrick.krusiec@gmail.com" }
@@ -14,4 +14,4 @@ requires = ["scikit-build-core>=0.11", "pybind11>=2.13"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
-wheel.packages = ["src/neotorch"]
+wheel.packages = ["src/strideweave"]

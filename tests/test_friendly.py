@@ -1,8 +1,8 @@
 import random
 
-import neotorch.friendly as friendly
 import pytest
-from neotorch import CPU, DataType, Layout, Shape, Stride
+import strideweave.friendly as friendly
+from strideweave import CPU, DType, Layout, Shape, Stride
 
 
 def test_column_major_matches_hand_built_layouts():
@@ -27,7 +27,7 @@ def test_tensor_from_nested_lists_round_trips_coordinates():
     tensor = friendly.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
 
     assert tensor.layout == friendly.column_major(2, 3)
-    assert type(tensor.data) is CPU
+    assert type(tensor.carrier) is CPU
     for i in range(2):
         for j in range(3):
             assert tensor[i, j] == pytest.approx(1.0 + 3 * i + j)
@@ -67,9 +67,9 @@ def test_creation_helpers_fill_expected_values():
 
 
 def test_creation_helpers_support_int32():
-    tensor = friendly.ones(2, dtype=DataType.Int32)
+    tensor = friendly.ones(2, dtype=DType.Int32)
 
-    assert tensor.dtype() is DataType.Int32
+    assert tensor.dtype() is DType.Int32
     assert friendly.to_list(tensor) == [1, 1]
 
 

@@ -1,8 +1,8 @@
 from typing import Any
 
-import neotorch
 import pytest
-from neotorch import Generic, Layout, Module, Parameter, Shape, Stride, Tensor
+import strideweave as sw
+from strideweave import Generic, Layout, Module, Parameter, Shape, Stride, Tensor
 
 
 def make_tensor(value: Any) -> Tensor:
@@ -26,8 +26,8 @@ class EchoModule(Module):
 
 
 def test_module_public_api_imports():
-    assert neotorch.Module is Module
-    assert neotorch.Parameter is Parameter
+    assert sw.Module is Module
+    assert sw.Parameter is Parameter
 
 
 def test_parameter_is_tensor_and_can_wrap_existing_tensor():
@@ -36,20 +36,20 @@ def test_parameter_is_tensor_and_can_wrap_existing_tensor():
     parameter = Parameter(tensor)
 
     assert isinstance(parameter, Tensor)
-    assert parameter.data is tensor.data
+    assert parameter.carrier is tensor.carrier
     assert parameter.offset == tensor.offset
     assert parameter.layout == tensor.layout
     assert parameter[0] == "value"
 
 
 def test_parameter_supports_direct_tensor_constructor_arguments():
-    data = Generic(["value"])
+    carrier = Generic(["value"])
     layout = Layout(Shape(1), Stride(1))
 
-    parameter = Parameter(data, 0, layout)
+    parameter = Parameter(carrier, 0, layout)
 
     assert isinstance(parameter, Tensor)
-    assert parameter.data is data
+    assert parameter.carrier is carrier
     assert parameter.offset == 0
     assert parameter.layout == layout
     assert parameter[0] == "value"
@@ -59,7 +59,7 @@ def test_parameter_supports_optional_name_metadata():
     tensor = make_tensor("value")
 
     wrapped = Parameter(tensor, name="wrapped")
-    direct = Parameter(tensor.data, 0, tensor.layout, name="direct")
+    direct = Parameter(tensor.carrier, 0, tensor.layout, name="direct")
 
     assert wrapped.name == "wrapped"
     assert direct.name == "direct"
@@ -72,7 +72,7 @@ def test_parameter_rejects_ambiguous_constructor_arguments():
         Parameter(tensor, 0, tensor.layout)
 
     with pytest.raises(TypeError):
-        Parameter(tensor.data)
+        Parameter(tensor.carrier)
 
 
 def test_parameter_rejects_invalid_names():

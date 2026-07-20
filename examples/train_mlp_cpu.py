@@ -1,13 +1,13 @@
-"""Train a tiny MLP regressor on sin(x) using the CPU data backend.
+"""Train a tiny MLP regressor on sin(x) using the CPU carrier.
 
 Runs a full-batch regression fitting ``y = sin(x)`` on 64 points in
 ``[-pi, pi]`` with a ``Linear(1, 16) -> Tanh -> Linear(16, 1)`` model,
-``MSELoss``, and ``SGD``. Data tensors are deliberately built from raw
+``MSELoss``, and ``SGD``. Carrier tensors are deliberately built from raw
 primitives (``CPU`` buffers filled element by element plus hand-written
 ``Layout`` objects) to exercise the low-level interface.
 
 Usage:
-    uv run python packages/neotorch/examples/train_mlp_cpu.py
+    uv run python packages/strideweave/examples/train_mlp_cpu.py
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ from __future__ import annotations
 import math
 import random
 
-import neotorch
-import neotorch.nn as nn
-from neotorch import CPU, Layout, Shape, Stride, Tensor
+import strideweave as sw
+import strideweave.nn as nn
+from strideweave import CPU, Layout, Shape, Stride, Tensor
 
 
-class MLP(neotorch.Module):
+class MLP(sw.Module):
     """Two-layer tanh MLP mapping ``[batch, 1] -> [batch, 1]``."""
 
     def __init__(self, hidden: int, rng: random.Random) -> None:
