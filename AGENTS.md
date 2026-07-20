@@ -22,13 +22,31 @@ key support, such as checking that `tensor[[i, j]]` behaves like `tensor[i, j]`.
 
 ## Public API Docstrings
 
-Public Python API docstrings must document purpose and semantics, every input,
-the return value, and at least one concrete usage example.
+Public Python API docstrings must document purpose and semantics, every
+relevant input, an appropriate output description, and at least one concrete
+usage example. The exact contract depends on the export kind:
 
-`packages/neotorch/tests/test_docstrings.py` generically checks public exports
-listed in `neotorch.__all__` and `neotorch.einops.__all__`. Adding a Python
-function to either public export list should not require changing that test
-unless it needs a stricter contract.
+- Function exports document purpose, every input, the return value, and an
+  example (`Args:`, `Returns:`, `Examples:`).
+- Class exports in `neotorch.nn` document purpose, every constructor input
+  (including inherited ones such as `name`), and an example (`Args:`,
+  `Examples:`). A constructor documents construction rather than a return
+  value, so `Returns:` is intentionally not required on the class docstring;
+  public methods defined on the class are additionally checked under the full
+  function contract.
+- Other public class exports surfaced for historical import paths or `isinstance`
+  checks — the `neotorch.operation` operation classes (for example
+  `GenericAddOperation`, `GenericSubOperation`) and the native data/layout
+  classes — are implementation and dispatch classes rather than
+  constructor-driven user APIs. They are checked for docstring presence only
+  and carry a one-line summary; do not add constructor-style `Args:`/`Examples:`
+  sections to them.
+
+`packages/neotorch/tests/test_docstrings.py` enforces this generically over the
+public exports listed in `neotorch.__all__`, `neotorch.einops.__all__`,
+`neotorch.nn.__all__`, and `neotorch.friendly.__all__`. Adding a Python
+function or class to any of these public export lists should not require
+changing that test unless it needs a stricter contract.
 
 Modify the docstring test only when:
 

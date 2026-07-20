@@ -53,6 +53,9 @@ from .data.generic.ops import (
     GenericSoftplusOperation as GenericSoftplusOperation,
 )
 from .data.generic.ops import (
+    GenericSubOperation as GenericSubOperation,
+)
+from .data.generic.ops import (
     GenericTanhOperation as GenericTanhOperation,
 )
 from .data.move.ops import (
@@ -99,6 +102,7 @@ _OPERATION_CLASS_EXPORTS = [
     "GenericSiLUOperation",
     "GenericSigmoidOperation",
     "GenericSoftplusOperation",
+    "GenericSubOperation",
     "GenericTanhOperation",
     "GenericViewOperation",
     "MoveOperation",

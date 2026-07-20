@@ -29,6 +29,7 @@ __all__ = [
     "matmul",
     "move",
     "mul",
+    "neg",
     "no_grad",
     "permute",
     "pow",
@@ -39,6 +40,7 @@ __all__ = [
     "sigmoid",
     "silu",
     "softplus",
+    "sub",
     "tanh",
     "view",
 ]
@@ -162,6 +164,58 @@ def add(lhs: Any, rhs: Any) -> Any:
     """
 
     return _dispatch_binary("add", lhs, rhs).forward(lhs, rhs)
+
+
+def sub(lhs: Any, rhs: Any) -> Any:
+    """Subtract two tensors with matching layouts.
+
+    Subtraction dispatches to the backend's ``sub`` operation (implemented
+    natively for CPU data and in Python for Generic data). Its autograd
+    backward passes the incoming gradient to ``lhs`` and its negation to
+    ``rhs``.
+
+    Args:
+        lhs: Left tensor operand.
+        rhs: Right tensor operand with the same layout and backing data class.
+
+    Returns:
+        Tensor containing the elementwise difference.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> layout = Layout(Shape(2), Stride(1))
+        >>> x = Tensor(Generic([5, 7]), 0, layout)
+        >>> y = Tensor(Generic([3, 4]), 0, layout)
+        >>> neotorch.sub(x, y)[1]
+        3
+    """
+
+    return _dispatch_binary("sub", lhs, rhs).forward(lhs, rhs)
+
+
+def neg(tensor: Any) -> Any:
+    """Negate a tensor elementwise.
+
+    The negation is composed from existing primitives as ``mul(tensor, -1)``,
+    so it dispatches through the same backend operations and participates in
+    autograd like scalar multiplication.
+
+    Args:
+        tensor: Tensor operand to negate.
+
+    Returns:
+        Tensor containing elementwise negated values.
+
+    Examples:
+        >>> import neotorch
+        >>> from neotorch import Generic, Layout, Shape, Stride, Tensor
+        >>> x = Tensor(Generic([2, -3]), 0, Layout(Shape(2), Stride(1)))
+        >>> neotorch.neg(x)[1]
+        3
+    """
+
+    return mul(tensor, -1)
 
 
 def elementwise_mul(lhs: Any, rhs: Any) -> Any:

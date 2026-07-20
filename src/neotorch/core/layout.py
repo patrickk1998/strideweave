@@ -514,6 +514,27 @@ class Layout:
     def size(self) -> int:
         return self.shape.size
 
+    @property
+    def cosize(self) -> int:
+        """Physical storage size required to materialize this layout.
+
+        A layout maps ``size`` logical elements onto physical offsets through
+        its strides; ``cosize`` is one past the largest offset any logical
+        coordinate reaches, i.e. the smallest buffer that can back the layout.
+        For a compact (contiguous) layout it equals ``size``; strided or
+        hierarchical layouts may require more. Use this when allocating storage
+        for a tensor over a given layout.
+
+        Returns:
+            Number of physical slots the layout addresses.
+
+        Examples:
+            >>> from neotorch import Layout, Shape, Stride
+            >>> Layout(Shape([2, 3]), Stride([1, 2])).cosize
+            6
+        """
+        return self._cache.cosize
+
     @staticmethod
     def flatten_layout(layout: Layout) -> tuple[Layout, list[Node]]:
         flat = Layout(Shape(), Stride())

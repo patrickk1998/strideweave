@@ -187,6 +187,55 @@ public:
     }
 };
 
+class CpuSubOperation : public neotorch::operation::Operation {
+public:
+    py::object _forward(py::args inputs) override {
+        if (py::len(inputs) != 2) {
+            throw py::type_error("CPU subtract requires lhs and rhs tensors");
+        }
+        py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
+        py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
+        CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
+        CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
+        require_same_layout(lhs, rhs);
+
+        const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
+        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
+        {
+            py::gil_scoped_release release;
+            std::vector<Index> key(lhs_view.leaf_rank(), 0);
+            for (Index i = 0; i < lhs_view.logical_size; ++i) {
+                if (output_dtype == CpuDType::Float32) {
+                    result.view.write_float_expanded(
+                        key,
+                        lhs_view.read_float_expanded(key) -
+                            rhs_view.read_float_expanded(key)
+                    );
+                } else {
+                    write_int_result(
+                        result.view,
+                        key,
+                        static_cast<long long>(lhs_view.read_int_expanded(key)) -
+                            static_cast<long long>(rhs_view.read_int_expanded(key))
+                    );
+                }
+                lhs_view.cache->increment_key(key.data(), key.size());
+            }
+        }
+        return make_tensor(std::move(result.data_object), std::move(result.layout_object));
+    }
+
+    py::object backward(py::object gradient) override {
+        py::tuple input_tensors = inputs();
+        py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
+        return py::make_tuple(
+            copy_gradient_for(lhs, gradient),
+            copy_negated_gradient_for(rhs, gradient)
+        );
+    }
+};
+
 class CpuScalarMulOperation : public neotorch::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
@@ -858,6 +907,7 @@ void bind_cpu(py::module_& module) {
         .def_static("dispatch_op", &CPU::dispatch_op, py::arg("operation_name"));
 
     bind_cpu_operation<CpuAddOperation>(module, "_CPUAddOperation");
+    bind_cpu_operation<CpuSubOperation>(module, "_CPUSubOperation");
     bind_cpu_operation<CpuScalarMulOperation>(module, "_CPUScalarMulOperation");
     bind_cpu_operation<CpuElementwiseMulOperation>(
         module, "_CPUElementwiseMulOperation"
@@ -891,6 +941,7 @@ void bind_cpu(py::module_& module) {
     register_native_cpu_operation<CpuSigmoidOperation>("sigmoid");
     register_native_cpu_operation<CpuSiLUOperation>("silu");
     register_native_cpu_operation<CpuSoftplusOperation>("softplus");
+    register_native_cpu_operation<CpuSubOperation>("sub");
     register_native_cpu_operation<CpuTanhOperation>("tanh");
     register_python_cpu_operation(
         "permute", "neotorch.data.shared_ops", "PermuteOperation"

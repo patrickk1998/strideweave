@@ -165,6 +165,7 @@ class Generic(Data):
             GenericSigmoidOperation,
             GenericSiLUOperation,
             GenericSoftplusOperation,
+            GenericSubOperation,
             GenericTanhOperation,
         )
 
@@ -186,6 +187,7 @@ class Generic(Data):
             "sigmoid": GenericSigmoidOperation,
             "silu": GenericSiLUOperation,
             "softplus": GenericSoftplusOperation,
+            "sub": GenericSubOperation,
             "tanh": GenericTanhOperation,
             "view": GenericViewOperation,
         }

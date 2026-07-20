@@ -193,6 +193,30 @@ class GenericAddOperation(Operation):
         return _copy_gradient_for(lhs, gradient), _copy_gradient_for(rhs, gradient)
 
 
+class GenericSubOperation(Operation):
+    """Generic elementwise tensor subtraction operation with autograd support."""
+
+    def _forward(self, lhs: Any, rhs: Any) -> Any:
+        lhs = _require_live_tensor(lhs, "lhs")
+        rhs = _require_live_tensor(rhs, "rhs")
+        _require_same_layout(lhs, rhs)
+
+        dtype = _generic_binary_dtype(lhs, rhs)
+        values = [lhs[i] - rhs[i] for i in range(lhs.size())]
+        return _detached_tensor_like(lhs, values, dtype)
+
+    def backward(self, gradient: Any) -> tuple[Any, Any]:
+        lhs, rhs = self.inputs()
+        gradient = _require_live_tensor(gradient, "gradient")
+        _require_same_layout(rhs, gradient)
+
+        rhs_values = [-gradient[i] for i in range(gradient.size())]
+        return (
+            _copy_gradient_for(lhs, gradient),
+            _detached_tensor_like(rhs, rhs_values),
+        )
+
+
 class GenericScalarMulOperation(Operation):
     """Generic tensor-by-scalar multiplication operation."""
 

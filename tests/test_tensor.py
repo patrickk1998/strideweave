@@ -17,6 +17,7 @@ from neotorch import (
     GenericPowOperation,
     GenericReduceSumOperation,
     GenericScalarMulOperation,
+    GenericSubOperation,
     GenericViewOperation,
     Layout,
     Node,
@@ -406,6 +407,7 @@ def test_tensor_setitem_rejects_immutable_backing_data():
 
 def test_tensor_add_public_api_imports():
     assert neotorch.GenericAddOperation is GenericAddOperation
+    assert neotorch.GenericSubOperation is GenericSubOperation
     assert neotorch.GenericElementwiseMulOperation is GenericElementwiseMulOperation
     assert neotorch.GenericDivOperation is GenericDivOperation
     assert neotorch.GenericExpOperation is GenericExpOperation
@@ -451,6 +453,40 @@ def test_tensor_add_function_matches_operator():
 
     assert tensor_values(result) == [11, 22, 33, 44]
     assert isinstance(result.autograd_ctx, GenericAddOperation)
+
+
+def test_tensor_sub_function_matches_operator_and_backpropagates():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(Generic([10, 20, 30, 40]), 0, layout)
+    rhs = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+
+    result = lhs - rhs
+
+    assert tensor_values(result) == [9, 18, 27, 36]
+    assert tensor_values(neotorch.sub(lhs, rhs)) == [9, 18, 27, 36]
+    assert isinstance(result.autograd_ctx, GenericSubOperation)
+    assert result.autograd_ctx.inputs() == (lhs, rhs)
+
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+    result.backward(gradient)
+
+    assert lhs.grad is not None and tensor_values(lhs.grad) == [1, 1, 1, 1]
+    assert rhs.grad is not None and tensor_values(rhs.grad) == [-1, -1, -1, -1]
+
+
+def test_tensor_neg_function_matches_operator_and_backpropagates():
+    layout = Layout(Shape(2), Stride(1))
+    tensor = Tensor(Generic([2, -3]), 0, layout)
+
+    result = -tensor
+
+    assert tensor_values(result) == [-2, 3]
+    assert tensor_values(neotorch.neg(tensor)) == [-2, 3]
+    assert isinstance(result.autograd_ctx, GenericScalarMulOperation)
+
+    result.backward(Tensor(Generic([1, 1]), 0, layout))
+
+    assert tensor.grad is not None and tensor_values(tensor.grad) == [-1, -1]
 
 
 def test_tensor_any_dtype_disables_autograd_interfaces():
