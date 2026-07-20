@@ -3,6 +3,7 @@
 from .base import Data
 from .cpu import CPU
 from .dtype import DataType
+from .evictable import Evictable, EvictableOperation
 from .file_backed import FileBacked
 from .generic import Generic
 
@@ -10,6 +11,8 @@ __all__ = [
     "CPU",
     "Data",
     "DataType",
+    "Evictable",
+    "EvictableOperation",
     "FileBacked",
     "Generic",
 ]

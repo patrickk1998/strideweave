@@ -7,6 +7,7 @@ operation classes live under ``neotorch.data``. This module keeps the historic
 
 from __future__ import annotations
 
+from .data.evictable import EvictableOperation as EvictableOperation
 from .data.generic.ops import (
     GenericAddOperation as GenericAddOperation,
 )
@@ -83,6 +84,7 @@ from .functional import __all__ as _functional_all
 _OPERATION_CLASS_EXPORTS = [
     "CpuToFileBackedMoveOperation",
     "ElementwiseMoveOperation",
+    "EvictableOperation",
     "FileBackedToCpuMoveOperation",
     "GenericAddOperation",
     "GenericDivOperation",

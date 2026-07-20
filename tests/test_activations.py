@@ -4,7 +4,17 @@ from typing import Any
 import pytest
 import torch
 import torch.nn.functional as F
-from neotorch import CPU, DataType, Generic, Layout, Shape, Stride, Tensor
+from neotorch import (
+    CPU,
+    DataType,
+    Evictable,
+    FileBacked,
+    Generic,
+    Layout,
+    Shape,
+    Stride,
+    Tensor,
+)
 
 ACTIVATION_LAYOUTS = (
     pytest.param(Layout(Shape([8, 16]), Stride([1, 8])), id="current_8x16"),
@@ -13,7 +23,7 @@ ACTIVATION_LAYOUTS = (
 )
 ACTIVATION_VALUE_SEED = 20260531
 ACTIVATION_GRADIENT_SEED = 20260532
-BACKENDS = ("generic", "cpu")
+BACKENDS = ("generic", "cpu", "evictable_generic", "evictable_cpu")
 ACTIVATION_OPERATION_NAMES = (
     "relu",
     "sigmoid",
@@ -41,6 +51,16 @@ def make_activation_tensor(
         data: Any = Generic([0.0] * layout._cache.cosize)
     elif backend == "cpu":
         data = CPU(layout._cache.cosize, dtype=DataType.Float32)
+    elif backend == "evictable_generic":
+        data = Evictable(
+            Generic([0.0] * layout._cache.cosize),
+            Generic([0.0] * layout._cache.cosize),
+        )
+    elif backend == "evictable_cpu":
+        data = Evictable(
+            CPU(layout._cache.cosize, dtype=DataType.Float32),
+            FileBacked(dtype=DataType.Float32),
+        )
     else:
         raise ValueError(f"unknown activation test backend: {backend}")
 
@@ -87,7 +107,7 @@ def run_activation_case(
     result.backward(gradient)
     torch_result.backward(torch_gradient)
 
-    expected_dtype = DataType.Floating if backend == "generic" else DataType.Float32
+    expected_dtype = DataType.Floating if "generic" in backend else DataType.Float32
     assert result.dtype() is expected_dtype
     assert_tensor_close(result, torch_result)
     neotorch_grad = tensor.grad
