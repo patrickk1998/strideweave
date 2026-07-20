@@ -803,6 +803,20 @@ PYBIND11_MODULE(_tensor, module) {
             py::is_operator()
         )
         .def(
+            "__sub__",
+            [](py::object self, py::object other) {
+                return py::module_::import("neotorch.operation").attr("sub")(self, other);
+            },
+            py::is_operator()
+        )
+        .def(
+            "__neg__",
+            [](py::object self) {
+                return py::module_::import("neotorch.operation").attr("neg")(self);
+            },
+            py::is_operator()
+        )
+        .def(
             "__mul__",
             [](py::object self, py::object other) {
                 return py::module_::import("neotorch.operation").attr("mul")(self, other);

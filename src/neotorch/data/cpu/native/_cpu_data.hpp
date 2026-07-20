@@ -666,6 +666,24 @@ inline py::object copy_gradient_for(py::handle target, py::handle gradient) {
     return make_tensor(std::move(output.data_object), std::move(output.layout_object));
 }
 
+inline py::object copy_negated_gradient_for(py::handle target, py::handle gradient) {
+    require_same_layout(target, gradient);
+    CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
+    py::object output_layout = tensor_layout(target);
+    CpuTensorAllocation output = allocate_cpu_tensor(output_layout, CpuDType::Float32);
+    {
+        py::gil_scoped_release release;
+        std::vector<Index> key(output.view.leaf_rank(), 0);
+        for (Index i = 0; i < output.view.logical_size; ++i) {
+            output.view.write_float_expanded(
+                key, -gradient_view.read_float_expanded(key)
+            );
+            output.view.cache->increment_key(key.data(), key.size());
+        }
+    }
+    return make_tensor(std::move(output.data_object), std::move(output.layout_object));
+}
+
 inline CpuDType promote_cpu_binary_dtype(py::handle lhs, py::handle rhs) {
     CPU& lhs_data = cpu_data_from_tensor(lhs, "lhs");
     CPU& rhs_data = cpu_data_from_tensor(rhs, "rhs");

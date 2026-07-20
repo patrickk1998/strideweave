@@ -100,6 +100,7 @@ def test_generic_data_dispatch_op_returns_supported_operations():
         "sigmoid": neotorch.GenericSigmoidOperation,
         "silu": neotorch.GenericSiLUOperation,
         "softplus": neotorch.GenericSoftplusOperation,
+        "sub": neotorch.GenericSubOperation,
         "tanh": neotorch.GenericTanhOperation,
         "view": neotorch.GenericViewOperation,
     }

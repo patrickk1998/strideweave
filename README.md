@@ -7,14 +7,23 @@ a separate device abstraction.
 
 The project is currently a tested prototype rather than a complete PyTorch
 replacement. It provides native CPU kernels, a Python reference backend,
-autograd, hierarchical layout transformations, and a small module system, but
-does not yet include optimizers, a layer library, or accelerator backends.
+autograd, hierarchical layout transformations, a small module system, and
+ergonomic layers (`neotorch.nn` with a minimal layer library and optimizer,
+`neotorch.friendly` with tensor factories), but does not yet include
+accelerator backends.
 
 ## Core Model
 
 - `Tensor(data, offset, layout)` references storage owned by a `Data` object.
 - `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
   coordinates to physical storage indices.
+- `layout.size` is the logical element count, while `layout.cosize` is the
+  physical storage size the layout addresses (one past its largest offset).
+  They are equal for compact layouts but `cosize` is larger for strided or
+  hierarchical ones, so back a tensor with `cosize` elements — e.g. a strided
+  `Layout(Shape([2, 3]), Stride([1, 4]))` has `size` 6 but `cosize` 10, so it
+  needs `CPU(10)`. The `neotorch.friendly` and `neotorch.nn` layers allocate
+  through `layout.cosize` for exactly this reason.
 - Operations dispatch through `tensor.data.dispatch_op(operation_name)`.
   Dispatch is uniformly instance-based; class-level `dispatch_op` calls are
   not part of the public contract.
@@ -39,8 +48,10 @@ tensor = neotorch.Tensor(
 assert tensor[1, 2] == 6.0
 ```
 
-There are not yet high-level factories such as `tensor`, `zeros`, or `ones`,
-so callers currently construct the data and layout explicitly.
+The core namespace deliberately exposes only these composable primitives.
+High-level factories such as `tensor`, `zeros`, and `ones` live in the
+separate `neotorch.friendly` submodule (see Ergonomic Layers below); callers
+working with the core API construct the data and layout explicitly.
 
 ## Data Backends
 
@@ -101,7 +112,9 @@ except RuntimeError:
 
 The public functional API includes:
 
-- arithmetic: `add`, `mul`, `elementwise_mul`, `div`, `pow`, and `exp`;
+- arithmetic: `add`, `sub`, `neg`, `mul`, `elementwise_mul`, `div`, `pow`, and
+  `exp` (`sub` is a backend operation, implemented natively for CPU data and in
+  Python for Generic data; `neg` is a composition of scalar `mul`);
 - activations: `relu`, `sigmoid`, `tanh`, `gelu`, `silu`, `softplus`, `elu`,
   and `leaky_relu`;
 - layout operations: `view`, `permute`, and `rearrange`;
@@ -162,8 +175,67 @@ attributes registers them for `modules()`, `parameters()`, and
 `get_named_parameters()` traversal. Optional module and parameter names can
 override attribute-name segments.
 
-Buffers, state dictionaries, training/evaluation modes, hooks, optimizers, and
-a standard layer library are not implemented yet.
+Buffers, state dictionaries, training/evaluation modes, and hooks are not
+implemented yet. A minimal layer library and optimizer live in `neotorch.nn`
+(see Ergonomic Layers).
+
+## Ergonomic Layers
+
+The core data classes stay composable primitives; user-facing ergonomics live
+in two submodule-only packages that are built entirely from the public
+primitives and are not re-exported at the top level.
+
+### neotorch.nn
+
+`import neotorch.nn as nn` provides `Linear`, activation module wrappers
+(`ReLU`, `Sigmoid`, `Tanh`, `GELU`, `SiLU`, `Softplus`, `ELU`, `LeakyReLU`),
+`MSELoss`, and an `SGD` optimizer.
+
+Backend and layout requirements differ per component and follow from what
+each one actually does, rather than a blanket `neotorch.nn` restriction:
+
+- The activation wrappers are thin `Module` adapters that delegate to the
+  corresponding functional operation, so they carry no hyperparameters and
+  inherit its input support: they accept any backend and layout the underlying
+  op accepts (e.g. a one-mode `Generic` tensor), not just CPU `Float32`.
+- `Linear` holds CPU `Float32` parameters and uses matmul plus the ones-column
+  bias trick, so it requires CPU inputs in the flat column-major `[batch,
+  features]` convention below.
+- `MSELoss` is composed from backend-dispatched operations (`sub`, `pow`,
+  reduction), so it works on any backend that supports them (CPU or Generic);
+  it does require the prediction and target to share a flat two-mode layout.
+- `SGD` writes elementwise through each parameter's layout, so it works on any
+  mutable parameter with a compatible gradient — no CPU or two-mode
+  requirement.
+
+Conventions: `Linear` inputs are flat column-major `[batch, features]` tensors
+(`Layout(Shape([rows, cols]), Stride([1, rows]))`) and its weights are
+`[out_features, in_features]`; because matmul contracts the second mode of
+both operands, `x @ weight` yields `[batch, out_features]` directly. There is
+no broadcasting primitive, so `Linear` broadcasts its `[out_features, 1]`
+bias by contracting a constant ones column against it: `ones[batch, 1] @
+bias[out, 1]` produces a tile whose layout matches the matmul output and
+whose backward pass sums the bias gradient over the batch.
+
+`SGD.step()` mutates parameter storage in place and therefore bumps data
+versions: the required per-iteration ordering is forward, `backward()`, then
+`step()`, and graphs built before a step cannot be backwarded afterwards.
+Gradients accumulate until `SGD.zero_grad()` resets them to `None`.
+
+`MSELoss` returns an exact single-mode `Shape(1)` scalar, so
+`loss.backward()` needs no explicit gradient.
+
+### neotorch.friendly
+
+`import neotorch.friendly as F` provides compact layout builders
+(`column_major`, `row_major`), CPU tensor factories (`tensor` from nested
+lists, `zeros`, `ones`, `full`, `arange`, `rand`, `randn`), scalar reductions
+(`sum`, `mean`, both returning `Shape(1)` tensors that support implicit
+`backward()`), and value extraction (`item`, `to_list`).
+
+End-to-end training examples live in `examples/train_mlp_cpu.py` (raw
+primitives) and `examples/train_mlp_cpu_friendly.py` (same model using the
+helpers).
 
 ## Interoperability And Movement
 
@@ -197,15 +269,18 @@ to `Generic`, because the container remains an alias of Generic storage.
 ## Current Boundaries
 
 - No CUDA, Metal, or other accelerator backend.
-- No high-level tensor creation functions.
+- High-level tensor creation lives only in `neotorch.friendly` and is
+  CPU-backed; other data classes are constructed from primitives.
 - No general broadcasting system; binary operations require compatible layouts
-  and generally the same backing data class.
+  and generally the same backing data class (`neotorch.nn` composes around
+  this with matmul-based bias broadcasting).
 - DLPack support is export-only and currently CPU-only.
 - `FileBacked` supports storage and movement, not direct computation.
 - Evictable tensors must be promoted before access or computation, and binary
   Evictable operations require matching primary and secondary backend classes.
-- The module API is foundational and does not yet constitute a neural-network
-  training stack.
+- `neotorch.nn` covers only `Linear`, elementwise activations, `MSELoss`, and
+  `SGD`; there are no buffers, state dictionaries, training/evaluation modes,
+  or hooks.
 
 ## Development
 

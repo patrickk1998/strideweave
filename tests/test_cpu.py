@@ -253,6 +253,51 @@ def test_cpu_add_uses_native_operation_and_no_grad_state():
     assert disabled_result.autograd_ctx is None
 
 
+def test_cpu_sub_uses_native_operation_and_backpropagates():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = make_cpu_tensor([10.0, 20.0, 30.0, 40.0], layout)
+    rhs = make_cpu_tensor([1.0, 2.0, 3.0, 4.0], layout)
+    gradient = make_cpu_tensor([1.0, 2.0, 3.0, 4.0], layout)
+
+    result = lhs - rhs
+
+    assert result.layout == layout
+    assert result.dtype() is DataType.Float32
+    assert result.device() is CPU
+    assert tensor_values(result) == pytest.approx([9.0, 18.0, 27.0, 36.0])
+    autograd_ctx = result.autograd_ctx
+    assert autograd_ctx is not None
+    assert type(autograd_ctx).__name__ == "_CPUSubOperation"
+    assert autograd_ctx.inputs() == (lhs, rhs)
+
+    result.backward(gradient)
+    lhs_grad = require_grad(lhs)
+    rhs_grad = require_grad(rhs)
+
+    # d(lhs) = gradient; d(rhs) = -gradient.
+    assert tensor_values(lhs_grad) == pytest.approx([1.0, 2.0, 3.0, 4.0])
+    assert tensor_values(rhs_grad) == pytest.approx([-1.0, -2.0, -3.0, -4.0])
+    assert type(lhs_grad.data) is CPU
+    assert type(rhs_grad.data) is CPU
+
+    with neotorch.no_grad():
+        disabled_result = lhs - rhs
+
+    assert disabled_result.autograd_ctx is None
+
+
+def test_cpu_int32_sub_keeps_int32_without_autograd():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = make_cpu_tensor([10, 20, 30, 40], layout, DataType.Int32)
+    rhs = make_cpu_tensor([1, 2, 3, 4], layout, DataType.Int32)
+
+    result = lhs - rhs
+
+    assert result.dtype() is DataType.Int32
+    assert tensor_values(result) == [9, 18, 27, 36]
+    assert result.autograd_ctx is None
+
+
 def test_cpu_int32_add_and_elementwise_mul_keep_int32_without_autograd():
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     lhs = make_cpu_tensor([1, 2, 3, 4], layout, DataType.Int32)
