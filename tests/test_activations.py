@@ -76,7 +76,7 @@ def run_activation_case(
     )
     tensor = make_activation_tensor(values, backend, layout)
     gradient = make_activation_tensor(gradient_values, backend, layout)
-    operation = type(tensor.data).dispatch_op(operation_name)
+    operation = tensor.data.dispatch_op(operation_name)
 
     torch_input = torch.tensor(values, dtype=torch.float32, requires_grad=True)
     torch_gradient = torch.tensor(gradient_values, dtype=torch.float32)
@@ -168,4 +168,4 @@ def test_activations_propagate_released_data_errors(operation_name: str):
     data.release()
 
     with pytest.raises(RuntimeError, match="released"):
-        type(tensor.data).dispatch_op(operation_name).forward(tensor)
+        tensor.data.dispatch_op(operation_name).forward(tensor)

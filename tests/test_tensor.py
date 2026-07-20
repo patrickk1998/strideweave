@@ -48,6 +48,11 @@ class UnsupportedData(Data):
     ) -> "UnsupportedData":
         return UnsupportedData(list(values))
 
+    def empty_like(
+        self, size: int, *, mutable: bool = True, dtype: DataType | None = None
+    ) -> "UnsupportedData":
+        return UnsupportedData([None] * size)
+
     def scatter(
         self,
         to_scatter: Any,

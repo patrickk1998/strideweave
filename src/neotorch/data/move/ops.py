@@ -50,6 +50,11 @@ class MoveOperation(Operation):
         tensor = _require_live_tensor(tensor, "tensor")
         if tensor.data.is_released():
             raise RuntimeError("tensor data is released")
+        if tensor.data.is_owned() and not tensor.data._has_owner_access():
+            raise RuntimeError(
+                "tensor data is owned by another data object and cannot be moved "
+                "directly"
+            )
         if not isinstance(destination, Data):
             raise TypeError("destination must be a Data instance")
         if destination is tensor.data:

@@ -137,9 +137,20 @@ def test_file_backed_release_removes_file_and_blocks_access():
 
 
 def test_file_backed_does_not_support_dispatched_operations():
+    data = FileBacked()
     for operation_name in ["add", "matmul", "relu", "view", "rearrange"]:
         with pytest.raises(NotImplementedError):
-            FileBacked.dispatch_op(operation_name)
+            data.dispatch_op(operation_name)
+
+
+def test_file_backed_empty_like_allocates_storage_without_values():
+    data = FileBacked(dtype=DataType.Int32)
+
+    result = data.empty_like(4, mutable=False)
+
+    assert result.size() == 4
+    assert result.type() is DataType.Int32
+    assert not result.is_mutable()
 
 
 def test_file_backed_does_not_support_scatter():

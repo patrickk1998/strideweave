@@ -59,6 +59,19 @@ def test_public_modules_have_docstrings():
     assert_has_docstring(neotorch.einops, "neotorch.einops")
 
 
+def test_native_data_ownership_methods_document_their_semantics():
+    mutable_docstring = cast(str, inspect.getdoc(neotorch.Data.is_mutable))
+    owned_docstring = cast(str, inspect.getdoc(neotorch.Data.is_owned))
+
+    assert "public data interfaces" in mutable_docstring
+    assert "intrinsic mutability" in mutable_docstring
+    assert "exclusively owns" in owned_docstring
+    assert "public mutation" in owned_docstring
+    for docstring in (mutable_docstring, owned_docstring):
+        assert "Returns:" in docstring
+        assert "Examples:" in docstring
+
+
 def test_einops_public_exports_have_docstrings():
     einops_public_exports = cast(list[str], getattr(neotorch.einops, "__all__"))
     for name in einops_public_exports:

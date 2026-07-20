@@ -46,7 +46,7 @@ __all__ = [
 
 def _dispatch_unary(operation_name: str, tensor: Any) -> Any:
     tensor = _as_tensor(tensor, "tensor")
-    return type(tensor.data).dispatch_op(operation_name)
+    return tensor.data.dispatch_op(operation_name)
 
 
 def _dispatch_binary(operation_name: str, lhs: Any, rhs: Any) -> Any:
@@ -54,7 +54,7 @@ def _dispatch_binary(operation_name: str, lhs: Any, rhs: Any) -> Any:
     rhs = _as_tensor(rhs, "rhs")
     if type(lhs.data) is not type(rhs.data):
         raise TypeError("Tensor backing data classes must match")
-    return type(lhs.data).dispatch_op(operation_name)
+    return lhs.data.dispatch_op(operation_name)
 
 
 def _reduce_second_mode(tensor: Any) -> Any:

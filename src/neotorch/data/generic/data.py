@@ -89,7 +89,7 @@ class Generic(Data):
     def get_value(self, index: int) -> Any:
         return self._require_values()[index]
 
-    def is_mutable(self) -> bool:
+    def _is_mutable(self) -> bool:
         return self._mutable
 
     def set_value(self, index: int, value: Any) -> None:
@@ -111,6 +111,22 @@ class Generic(Data):
             values, mutable=mutable, dtype=self._dtype if dtype is None else dtype
         )
 
+    def empty_like(
+        self,
+        size: int,
+        *,
+        mutable: bool = True,
+        dtype: DataType | None = None,
+    ) -> Generic:
+        normalized_size = operator_index(size)
+        if normalized_size < 0:
+            raise ValueError("Generic allocation size must be non-negative")
+        return Generic(
+            [None] * normalized_size,
+            mutable=mutable,
+            dtype=self._dtype if dtype is None else dtype,
+        )
+
     def scatter(
         self,
         to_scatter: Any,
@@ -121,6 +137,8 @@ class Generic(Data):
         from ...layout import Layout
         from ...tensor import Tensor
 
+        if not self.is_mutable():
+            raise RuntimeError("Data is not mutable")
         if not isinstance(to_scatter, Tensor):
             raise TypeError("to_scatter must be a Tensor")
         if not isinstance(scatter_onto, Tensor):
@@ -142,8 +160,7 @@ class Generic(Data):
             )
             self[data_index] = to_scatter[logical_index]
 
-    @staticmethod
-    def dispatch_op(operation_name: str) -> Any:
+    def dispatch_op(self, operation_name: str) -> Any:
         from ..shared_ops import (
             GenericViewOperation,
             PermuteOperation,

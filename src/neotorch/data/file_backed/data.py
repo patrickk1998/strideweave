@@ -111,7 +111,7 @@ class FileBacked(Data):
     def type(self) -> DataType:
         return self._dtype
 
-    def is_mutable(self) -> bool:
+    def _is_mutable(self) -> bool:
         return self._mutable
 
     def get_value(self, index: int) -> Any:
@@ -148,6 +148,22 @@ class FileBacked(Data):
             if value is None:
                 continue
             result._write_value(index, value)
+        return result
+
+    def empty_like(
+        self,
+        size: int,
+        *,
+        mutable: bool = True,
+        dtype: DataType | None = None,
+    ) -> FileBacked:
+        normalized_size = operator_index(size)
+        if normalized_size < 0:
+            raise ValueError("FileBacked allocation size must be non-negative")
+        result = FileBacked(
+            mutable=mutable, dtype=self._dtype if dtype is None else dtype
+        )
+        result._allocate(normalized_size)
         return result
 
     def scatter(

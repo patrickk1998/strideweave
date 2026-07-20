@@ -27,6 +27,14 @@ public:
         PYBIND11_OVERRIDE_PURE(py::object, Data, new_like, values, is_mutable);
     }
 
+    py::object empty_like(
+        Index size, bool is_mutable, py::object dtype
+    ) const override {
+        PYBIND11_OVERRIDE_PURE(
+            py::object, Data, empty_like, size, is_mutable, dtype
+        );
+    }
+
     void scatter(
         py::object to_scatter,
         py::object scatter_onto,
@@ -38,15 +46,19 @@ public:
         );
     }
 
-    bool is_mutable() const override {
-        PYBIND11_OVERRIDE(bool, Data, is_mutable);
-    }
-
     py::dict dlpack_info() const override {
         PYBIND11_OVERRIDE(py::dict, Data, dlpack_info);
     }
 
+    py::object dispatch_op(const std::string& operation_name) const override {
+        PYBIND11_OVERRIDE(py::object, Data, dispatch_op, operation_name);
+    }
+
 protected:
+    bool _is_mutable() const override {
+        PYBIND11_OVERRIDE_NAME(bool, Data, "_is_mutable", _is_mutable);
+    }
+
     void set_value(Index index, py::object value) override {
         PYBIND11_OVERRIDE(void, Data, set_value, index, value);
     }
@@ -69,6 +81,17 @@ public:
     }
 
     py::object new_like(py::iterable values, bool) const override {
+        return py::cast(VectorDataForTest(values));
+    }
+
+    py::object empty_like(Index size, bool, py::object) const override {
+        if (size < 0) {
+            throw py::value_error("Data allocation size must be non-negative");
+        }
+        py::list values(size);
+        for (Index i = 0; i < size; ++i) {
+            values[i] = py::none();
+        }
         return py::cast(VectorDataForTest(values));
     }
 
@@ -98,6 +121,14 @@ PYBIND11_MODULE(_data, module) {
             py::arg("mutable") = true
         )
         .def(
+            "empty_like",
+            &Data::empty_like,
+            py::arg("size"),
+            py::kw_only(),
+            py::arg("mutable") = true,
+            py::arg("dtype") = py::none()
+        )
+        .def(
             "scatter",
             &Data::scatter,
             py::arg("to_scatter"),
@@ -105,7 +136,52 @@ PYBIND11_MODULE(_data, module) {
             py::arg("mapping"),
             py::arg("mapping_offset") = 0
         )
-        .def("is_mutable", &Data::is_mutable)
+        .def(
+            "is_mutable",
+            &Data::is_mutable,
+            "Return whether public data interfaces may currently modify storage.\n\n"
+            "This combines the backend's intrinsic mutability with ownership. "
+            "Data constructed as immutable always returns false. Mutable data "
+            "also returns false while it is exclusively owned by another data "
+            "object, except during the owning object's private access scope.\n\n"
+            "Returns:\n"
+            "    True when public mutation is currently permitted; otherwise "
+            "False.\n\n"
+            "Examples:\n"
+            "    >>> import neotorch\n"
+            "    >>> data = neotorch.Generic([1.0], mutable=False)\n"
+            "    >>> data.is_mutable()\n"
+            "    False"
+        )
+        .def(
+            "is_owned",
+            &Data::is_owned,
+            "Return whether another data object exclusively owns this storage.\n\n"
+            "Owned data remains readable while live, but public mutation, "
+            "scatter, release, version increments, and direct moves are "
+            "rejected. The owner retains private access for those operations.\n\n"
+            "Returns:\n"
+            "    True when this data has an exclusive owner; otherwise False.\n\n"
+            "Examples:\n"
+            "    >>> import neotorch\n"
+            "    >>> primary = neotorch.Generic([1.0])\n"
+            "    >>> hierarchy = neotorch.Evictable(\n"
+            "    ...     primary, neotorch.Generic([0.0])\n"
+            "    ... )\n"
+            "    >>> primary.is_owned()\n"
+            "    True"
+        )
+        .def("_has_owner_access", &Data::has_owner_access)
+        .def("_claim_ownership", &Data::claim_ownership)
+        .def(
+            "_relinquish_ownership",
+            &Data::relinquish_ownership,
+            py::arg("token")
+        )
+        .def(
+            "_begin_owner_access", &Data::begin_owner_access, py::arg("token")
+        )
+        .def("_end_owner_access", &Data::end_owner_access, py::arg("token"))
         .def("dlpack_info", &Data::dlpack_info)
         .def_property_readonly("version", &Data::version)
         .def("_increment_version", &Data::increment_version)
@@ -119,7 +195,7 @@ PYBIND11_MODULE(_data, module) {
             "instance. Move's backward pass relies on this to materialize\n"
             "gradients in a released source data class."
         )
-        .def_static("dispatch_op", &Data::dispatch_op, py::arg("operation_name"))
+        .def("dispatch_op", &Data::dispatch_op, py::arg("operation_name"))
         .def("__getitem__", &Data::get_item, py::arg("index"))
         .def("__setitem__", &Data::set_item, py::arg("index"), py::arg("value"));
 

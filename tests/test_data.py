@@ -40,6 +40,11 @@ class PythonData(Data):
     def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> "PythonData":
         return type(self)(list(values))
 
+    def empty_like(
+        self, size: int, *, mutable: bool = True, dtype: DataType | None = None
+    ) -> "PythonData":
+        return type(self)([None] * size)
+
     def scatter(
         self,
         to_scatter: Any,
@@ -51,7 +56,7 @@ class PythonData(Data):
 
 
 class PythonMutableData(PythonData):
-    def is_mutable(self) -> bool:
+    def _is_mutable(self) -> bool:
         return True
 
     def set_value(self, index: int, value: Any) -> None:
@@ -70,11 +75,13 @@ def test_data_public_api_imports():
 
 
 def test_data_default_dispatch_op_raises_not_implemented():
+    data = PythonData([])
     with pytest.raises(NotImplementedError):
-        Data.dispatch_op("add")
+        data.dispatch_op("add")
 
 
 def test_generic_data_dispatch_op_returns_supported_operations():
+    data = Generic([])
     cases = {
         "add": neotorch.GenericAddOperation,
         "div": neotorch.GenericDivOperation,
@@ -98,12 +105,28 @@ def test_generic_data_dispatch_op_returns_supported_operations():
     }
 
     for operation_name, operation_type in cases.items():
-        assert isinstance(Generic.dispatch_op(operation_name), operation_type)
+        assert isinstance(data.dispatch_op(operation_name), operation_type)
 
 
 def test_generic_data_dispatch_op_rejects_unknown_operation():
     with pytest.raises(NotImplementedError):
-        Generic.dispatch_op("unknown")
+        Generic([]).dispatch_op("unknown")
+
+
+@pytest.mark.parametrize("data_class", [Data, Generic, CPU])
+def test_data_operation_dispatch_is_instance_only(data_class):
+    with pytest.raises(TypeError):
+        data_class.dispatch_op("relu")  # type: ignore[misc]
+
+
+def test_generic_empty_like_allocates_requested_storage_and_dtype():
+    result = Generic([], dtype=DataType.Any).empty_like(
+        3, mutable=False, dtype=DataType.Floating
+    )
+
+    assert result.size() == 3
+    assert result.type() is DataType.Floating
+    assert not result.is_mutable()
 
 
 def test_python_data_subclass_implements_data_contract():

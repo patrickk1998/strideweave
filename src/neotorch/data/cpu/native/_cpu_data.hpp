@@ -152,14 +152,28 @@ public:
         return result;
     }
 
+    py::object empty_like(
+        Index size, bool is_mutable, py::object dtype
+    ) const override {
+        if (size < 0) {
+            throw py::value_error("CPU allocation size must be non-negative");
+        }
+        py::object cpu_type = py::module_::import("neotorch._data").attr("CPU");
+        CpuDType result_dtype = dtype.is_none() ? dtype_ : parse_cpu_dtype(dtype);
+        return cpu_type(
+            py::int_(size),
+            py::none(),
+            py::arg("mutable") = is_mutable,
+            py::arg("dtype") = cpu_dtype_object(result_dtype)
+        );
+    }
+
     void scatter(
         py::object to_scatter,
         py::object scatter_onto,
         py::object mapping,
         Index mapping_offset
     ) override;
-
-    bool is_mutable() const override { return is_mutable_; }
 
     std::uintptr_t pointer() const {
         return reinterpret_cast<std::uintptr_t>(data_);
@@ -215,9 +229,11 @@ public:
         );
     }
 
-    static py::object dispatch_op(const std::string& operation_name);
+    py::object dispatch_op(const std::string& operation_name) const override;
 
 protected:
+    bool _is_mutable() const override { return is_mutable_; }
+
     void set_value(Index index, py::object value) override {
         set_value_public(index, value);
     }

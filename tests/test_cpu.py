@@ -178,6 +178,7 @@ def test_cpu_int32_tensor_disables_autograd_interfaces():
 
 
 def test_cpu_dispatch_op_returns_supported_operations():
+    data = CPU(1)
     native_cases = {
         "add": "_CPUAddOperation",
         "div": "_CPUDivOperation",
@@ -198,16 +199,26 @@ def test_cpu_dispatch_op_returns_supported_operations():
     }
 
     for operation_name, operation_type_name in native_cases.items():
-        operation = CPU.dispatch_op(operation_name)
+        operation = data.dispatch_op(operation_name)
         assert type(operation).__name__ == operation_type_name
         assert isinstance(operation, Operation)
 
-    assert isinstance(CPU.dispatch_op("permute"), PermuteOperation)
-    assert isinstance(CPU.dispatch_op("rearrange"), RearrangeOperation)
-    assert isinstance(CPU.dispatch_op("view"), GenericViewOperation)
+    assert isinstance(data.dispatch_op("permute"), PermuteOperation)
+    assert isinstance(data.dispatch_op("rearrange"), RearrangeOperation)
+    assert isinstance(data.dispatch_op("view"), GenericViewOperation)
 
     with pytest.raises(NotImplementedError):
-        CPU.dispatch_op("unknown")
+        data.dispatch_op("unknown")
+
+
+def test_cpu_empty_like_allocates_requested_storage_and_dtype():
+    result = CPU(0, dtype=DataType.Int32).empty_like(
+        3, mutable=False, dtype=DataType.Float32
+    )
+
+    assert result.size() == 3
+    assert result.type() is DataType.Float32
+    assert not result.is_mutable()
 
 
 def test_cpu_tensor_constructor_reports_float32_device():

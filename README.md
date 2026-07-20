@@ -15,7 +15,9 @@ does not yet include optimizers, a layer library, or accelerator backends.
 - `Tensor(data, offset, layout)` references storage owned by a `Data` object.
 - `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
   coordinates to physical storage indices.
-- Operations dispatch through `type(tensor.data).dispatch_op(operation_name)`.
+- Operations dispatch through `tensor.data.dispatch_op(operation_name)`.
+  Dispatch is uniformly instance-based; class-level `dispatch_op` calls are
+  not part of the public contract.
 - Python and native operations inherit from the shared native `Operation` base.
 - Views may use different layouts and offsets while sharing the same data.
 
