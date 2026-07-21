@@ -98,7 +98,8 @@ jobs:
       - name: Run tests with AddressSanitizer and UndefinedBehaviorSanitizer
         run: |
           asan_runtime="$(gcc -print-file-name=libasan.so)"
-          LD_PRELOAD="$asan_runtime" \
+          cxx_runtime="$(g++ -print-file-name=libstdc++.so.6)"
+          LD_PRELOAD="$asan_runtime:$cxx_runtime" \
             PYTHONMALLOC="malloc" \
             PYTHONUNBUFFERED="1" \
             ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:halt_on_error=1:symbolize=1" \
