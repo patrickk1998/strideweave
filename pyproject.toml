@@ -3,11 +3,26 @@ name = "strideweave"
 version = "0.1.0"
 description = "Hierarchical-layout tensor and autograd research framework"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "Patrick Krusiec", email = "patrick.krusiec@gmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = []
+
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/patrickk1998/strideweave"
+Issues = "https://github.com/patrickk1998/strideweave/issues"
+Repository = "https://github.com/patrickk1998/strideweave.git"
 
 [dependency-groups]
 dev = [
@@ -34,3 +49,6 @@ extend-select = ["I"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["strideweave"]
+
+[tool.uv]
+required-version = ">=0.8.5"

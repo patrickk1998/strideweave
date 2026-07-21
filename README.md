@@ -1,5 +1,7 @@
 # StrideWeave
 
+[![CI](https://github.com/patrickk1998/strideweave/actions/workflows/ci.yml/badge.svg)](https://github.com/patrickk1998/strideweave/actions/workflows/ci.yml)
+
 StrideWeave is a research tensor and autograd framework built around hierarchical,
 CuTe-style layouts. A tensor combines a carrier, a physical offset, and a
 layout. A carrier owns or references storage and dispatches the operations it
@@ -295,8 +297,13 @@ uv run pytest tests
 uv run ruff format --check .
 uv run ruff check .
 uv run pyright
+uv build
 ```
 
 The test suite covers layouts, carriers, tensor indexing and mutation,
 autograd, operations and activations, hierarchical command parsing, DLPack,
 movement, modules, and public docstrings.
+
+## License
+
+StrideWeave is licensed under the Apache License, Version 2.0. See `LICENSE`.
