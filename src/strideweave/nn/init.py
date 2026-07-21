@@ -37,7 +37,7 @@ def fill_(parameter: Parameter, value: float) -> None:
         3.0
     """
 
-    for i in range(parameter.layout.size):
+    for i in range(parameter.size()):
         parameter.carrier[parameter.offset + parameter.layout.index(i)] = value
 
 
@@ -70,7 +70,7 @@ def kaiming_uniform_(parameter: Parameter, fan_in: int, *, rng: random.Random) -
     if fan_in <= 0:
         raise ValueError("fan_in must be positive")
     bound = 1.0 / math.sqrt(fan_in)
-    for i in range(parameter.layout.size):
+    for i in range(parameter.size()):
         parameter.carrier[parameter.offset + parameter.layout.index(i)] = rng.uniform(
             -bound, bound
         )

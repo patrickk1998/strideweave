@@ -41,7 +41,7 @@ def test_tree_id_leaf_rejects_invalid_ids():
 
     with pytest.raises(TypeError):
         Node.id(invalid_id)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Node leaf id must be non-negative"):
         Node.id(-1)
 
 
@@ -78,7 +78,7 @@ def test_stride_variadic_creation_matches_list_creation():
 def test_stride_allows_zero_for_singleton_layouts():
     assert Stride(0) == Stride([0])
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Stride value must not be negative"):
         Stride(-1)
 
 
@@ -189,10 +189,10 @@ def test_layout_cache_increments_hierarchical_modes_in_expanded_key():
 def test_layout_get_index_out_of_domain_key_raises_value_error():
     layout = Layout(Shape([3, 4]), Stride([2, 10]))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Key is not in domain of shape"):
         Layout.get_index(layout, [3, 0])
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Key is not in domain of shape"):
         Layout.get_index(layout, 12)
 
 
@@ -229,9 +229,9 @@ def test_native_get_index_matches_python_value_error_cases():
     ]
 
     for layout, key in cases:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Key is not in domain of shape"):
             Layout.get_index(layout, key)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Key is not in domain of shape"):
             native_index.get_index(layout, key)
 
 
@@ -327,11 +327,11 @@ def test_layout_rearrange_allows_omitting_singleton_leaf_ids():
 def test_layout_rearrange_rejects_invalid_id_coverage():
     layout = Layout(Shape([2, 3]), Stride([1, 2]))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="ids must not be duplicated"):
         Layout.rearrange(layout, Tree(Node.id(0), Node.id(0)))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must include every extracted layout"):
         Layout.rearrange(layout, Tree(Node.id(0)))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="rearrange id is out of range"):
         Layout.rearrange(layout, Tree(Node.id(2), Node.id(0), Node.id(1)))
 
 
@@ -435,13 +435,13 @@ def test_layout_permute_rejects_invalid_orders():
     layout = Layout(Shape([2, 3]), Stride([1, 2]))
     non_integer_dim: Any = "0"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must reorder every layout mode"):
         Layout.permute(layout, 0, 0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must reorder every layout mode"):
         Layout.permute(layout, 0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must reorder every layout mode"):
         Layout.permute(layout, -1, 0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must reorder every layout mode"):
         Layout.permute(layout, 0, 2)
     with pytest.raises(TypeError):
         Layout.permute(layout, non_integer_dim, 1)

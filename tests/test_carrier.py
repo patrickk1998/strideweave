@@ -109,7 +109,11 @@ def test_generic_data_dispatch_op_returns_supported_operations():
     }
 
     for operation_name, operation_type in cases.items():
-        assert isinstance(carrier.dispatch_op(operation_name), operation_type)
+        first = carrier.dispatch_op(operation_name)
+        second = carrier.dispatch_op(operation_name)
+        assert type(first) is operation_type
+        assert type(second) is operation_type
+        assert first is not second
 
 
 def test_generic_data_dispatch_op_rejects_unknown_operation():
@@ -277,7 +281,7 @@ def test_generic_data_new_like_preserves_or_overrides_dtype():
 
 
 def test_generic_data_rejects_invalid_dtype():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Generic dtype must be"):
         Generic([1], dtype=DType.Int32)
 
     with pytest.raises(TypeError):
@@ -378,6 +382,16 @@ def test_generic_data_setitem_validates_index():
         carrier[non_int_index] = "non-int"
 
 
+def test_generic_public_write_paths_increment_version():
+    carrier = Generic([0, 0])
+
+    carrier[0] = 1
+    assert carrier.version == 1
+
+    carrier.set_value(1, 2)
+    assert carrier.version == 2
+
+
 def test_generic_data_scatter_maps_source_values_into_destination_storage():
     source = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
     destination_values = [0] * 50
@@ -391,6 +405,7 @@ def test_generic_data_scatter_maps_source_values_into_destination_storage():
     assert destination_values[17] == 20
     assert destination_values[22] == 30
     assert sum(destination_values) == 60
+    assert destination_carrier.version > 0
 
 
 def test_generic_data_scatter_validates_mapping_shape():
@@ -399,7 +414,7 @@ def test_generic_data_scatter_validates_mapping_shape():
     destination = Tensor(destination_carrier, 0, Layout(Shape([5, 10]), Stride([1, 5])))
     mapping = Layout(Shape(4), Stride(5))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="mapping shape must match"):
         destination_carrier.scatter(source, destination, mapping, 12)
 
 
@@ -430,3 +445,4 @@ def test_cpu_data_scatter_maps_source_values_into_destination_storage():
     assert destination_carrier[17] == pytest.approx(20.0)
     assert destination_carrier[22] == pytest.approx(30.0)
     assert destination_carrier[0] == pytest.approx(0.0)
+    assert destination_carrier.version > 0

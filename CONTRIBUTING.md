@@ -23,10 +23,17 @@ Run the complete local verification suite before opening a pull request:
 uv run pytest tests
 uv run ruff format --check .
 uv run ruff check .
+uv run python tools/lint_invariants.py
 uv run pyright
 uv build
+find src/strideweave -type f \( -name '*.cpp' -o -name '*.hpp' \) -exec uv run clang-format --dry-run --Werror {} +
+CMAKE_ARGS="-DSTRIDEWEAVE_STRICT_WARNINGS=ON" uv build
 git diff --check
 ```
+
+The repository invariant checker is a dependency-free AST pass over `src`, `tests`, and
+`examples`. CI also builds the native extensions with strict compiler warnings and runs
+a separate Linux AddressSanitizer/UndefinedBehaviorSanitizer test job.
 
 Changes to public behavior or architecture should update `README.md`. Public
 Python APIs must follow the docstring contract documented in `AGENTS.md`.

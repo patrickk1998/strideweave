@@ -8,9 +8,13 @@ namespace {
 
 thread_local bool grad_enabled = true;
 
-bool is_grad_enabled() { return grad_enabled; }
+bool is_grad_enabled() {
+    return grad_enabled;
+}
 
-void set_grad_enabled(bool enabled) { grad_enabled = enabled; }
+void set_grad_enabled(bool enabled) {
+    grad_enabled = enabled;
+}
 
 using strideweave::operation::Operation;
 
@@ -47,26 +51,14 @@ PYBIND11_MODULE(_operation, module) {
 
     py::class_<Operation, PyOperation>(module, "Operation")
         .def(py::init<>())
-        .def(
-            "forward",
-            [](Operation& operation, py::args inputs) {
-                return operation.forward(inputs);
-            }
-        )
-        .def(
-            "_forward",
-            [](Operation& operation, py::args inputs) {
-                return operation._forward(inputs);
-            }
-        )
+        .def("forward", [](Operation& operation,
+                           py::args inputs) { return operation.forward(inputs); })
+        .def("_forward", [](Operation& operation,
+                            py::args inputs) { return operation._forward(inputs); })
         .def("backward", &Operation::backward, py::arg("gradient"))
         .def_property_readonly("ctx", &Operation::ctx)
-        .def(
-            "store_inputs",
-            [](Operation& operation, py::args inputs) {
-                operation.store_inputs(inputs);
-            }
-        )
+        .def("store_inputs", [](Operation& operation,
+                                py::args inputs) { operation.store_inputs(inputs); })
         .def("inputs", &Operation::inputs)
         .def("input_versions", &Operation::input_versions)
         .def("validate_input_versions", &Operation::validate_input_versions);

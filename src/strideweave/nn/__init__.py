@@ -42,11 +42,11 @@ from .optim import SGD as SGD
 __all__ = [
     "ELU",
     "GELU",
+    "SGD",
     "LeakyReLU",
     "Linear",
     "MSELoss",
     "ReLU",
-    "SGD",
     "SiLU",
     "Sigmoid",
     "Softplus",

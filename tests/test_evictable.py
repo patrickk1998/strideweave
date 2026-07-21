@@ -110,12 +110,12 @@ def test_evictable_constructor_rejects_identical_and_released_tiers():
 
     released_primary = Generic([1.0])
     released_primary.release()
-    with pytest.raises(RuntimeError, match="primary.*released"):
+    with pytest.raises(RuntimeError, match=r"primary.*released"):
         Evictable(released_primary, Generic([0.0]))
 
     released_secondary = Generic([0.0])
     released_secondary.release()
-    with pytest.raises(RuntimeError, match="secondary.*released"):
+    with pytest.raises(RuntimeError, match=r"secondary.*released"):
         Evictable(Generic([1.0]), released_secondary)
 
 
@@ -213,6 +213,12 @@ def test_wrapper_mutation_remains_available_and_updates_its_version_once():
     assert carrier.version == 1
     assert primary.version == 1
     assert not primary.is_mutable()
+
+    carrier.set_value(0, 3.0)
+
+    assert carrier[0] == 3.0
+    assert carrier.version == 2
+    assert primary.version == 2
 
 
 def test_evict_and_promote_roundtrip_releases_and_recreates_tiers():

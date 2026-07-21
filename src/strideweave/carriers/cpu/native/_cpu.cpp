@@ -11,9 +11,9 @@
 #include <utility>
 #include <vector>
 
+#include "_carrier.hpp"
 #include "_cpu_carrier.hpp"
 #include "_cpu_operation.hpp"
-#include "_carrier.hpp"
 
 namespace py = pybind11;
 
@@ -27,12 +27,10 @@ std::unordered_map<std::string, CpuOperationFactory>& cpu_operation_registry() {
     return registry;
 }
 
-void register_cpu_operation(
-    std::string operation_name, CpuOperationFactory operation_factory
-) {
-    cpu_operation_registry().insert_or_assign(
-        std::move(operation_name), std::move(operation_factory)
-    );
+void register_cpu_operation(std::string operation_name,
+                            CpuOperationFactory operation_factory) {
+    cpu_operation_registry().insert_or_assign(std::move(operation_name),
+                                              std::move(operation_factory));
 }
 
 template <typename Operation>
@@ -42,14 +40,12 @@ void register_native_cpu_operation(const char* operation_name) {
     });
 }
 
-void register_python_cpu_operation(
-    const char* operation_name,
-    const char* operation_module_name,
-    const char* operation_type_name
-) {
-    register_cpu_operation(operation_name, [operation_module_name, operation_type_name] {
-        return py::module_::import(operation_module_name)
-            .attr(operation_type_name)();
+void register_python_cpu_operation(const char* operation_name,
+                                   const char* operation_module_name,
+                                   const char* operation_type_name) {
+    register_cpu_operation(operation_name, [operation_module_name,
+                                            operation_type_name] {
+        return py::module_::import(operation_module_name).attr(operation_type_name)();
     });
 }
 
@@ -111,9 +107,7 @@ struct CpuSoftplusScalar {
 
 struct CpuELUScalar {
     static constexpr const char* kForwardError = "CPU ELU requires a tensor";
-    static float value(float input) {
-        return input > 0.0f ? input : std::expm1(input);
-    }
+    static float value(float input) { return input > 0.0f ? input : std::expm1(input); }
     static float gradient_multiplier(float input) {
         return input > 0.0f ? 1.0f : std::exp(input);
     }
@@ -151,39 +145,35 @@ public:
         require_same_layout(lhs, rhs);
 
         const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(lhs_view.leaf_rank(), 0);
             for (Index i = 0; i < lhs_view.logical_size; ++i) {
                 if (output_dtype == CpuDType::Float32) {
                     result.view.write_float_expanded(
-                        key,
-                        lhs_view.read_float_expanded(key) +
-                            rhs_view.read_float_expanded(key)
-                    );
+                        key, lhs_view.read_float_expanded(key) +
+                                 rhs_view.read_float_expanded(key));
                 } else {
                     write_int_result(
-                        result.view,
-                        key,
+                        result.view, key,
                         static_cast<long long>(lhs_view.read_int_expanded(key)) +
-                            static_cast<long long>(rhs_view.read_int_expanded(key))
-                    );
+                            static_cast<long long>(rhs_view.read_int_expanded(key)));
                 }
                 lhs_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return make_tensor(std::move(result.carrier_object), std::move(result.layout_object));
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
-        return py::make_tuple(
-            copy_gradient_for(lhs, gradient),
-            copy_gradient_for(rhs, gradient)
-        );
+        return py::make_tuple(copy_gradient_for(lhs, gradient),
+                              copy_gradient_for(rhs, gradient));
     }
 };
 
@@ -200,39 +190,35 @@ public:
         require_same_layout(lhs, rhs);
 
         const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(lhs_view.leaf_rank(), 0);
             for (Index i = 0; i < lhs_view.logical_size; ++i) {
                 if (output_dtype == CpuDType::Float32) {
                     result.view.write_float_expanded(
-                        key,
-                        lhs_view.read_float_expanded(key) -
-                            rhs_view.read_float_expanded(key)
-                    );
+                        key, lhs_view.read_float_expanded(key) -
+                                 rhs_view.read_float_expanded(key));
                 } else {
                     write_int_result(
-                        result.view,
-                        key,
+                        result.view, key,
                         static_cast<long long>(lhs_view.read_int_expanded(key)) -
-                            static_cast<long long>(rhs_view.read_int_expanded(key))
-                    );
+                            static_cast<long long>(rhs_view.read_int_expanded(key)));
                 }
                 lhs_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return make_tensor(std::move(result.carrier_object), std::move(result.layout_object));
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
-        return py::make_tuple(
-            copy_gradient_for(lhs, gradient),
-            copy_negated_gradient_for(rhs, gradient)
-        );
+        return py::make_tuple(copy_gradient_for(lhs, gradient),
+                              copy_negated_gradient_for(rhs, gradient));
     }
 };
 
@@ -254,27 +240,26 @@ public:
                 ? CpuDType::Float32
                 : CpuDType::Int32;
 
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), output_dtype);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(tensor), output_dtype);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 if (output_dtype == CpuDType::Float32) {
                     result.view.write_float_expanded(
-                        key, tensor_view.read_float_expanded(key) * scalar_
-                    );
+                        key, tensor_view.read_float_expanded(key) * scalar_);
                 } else {
                     write_int_result(
-                        result.view,
-                        key,
+                        result.view, key,
                         static_cast<long long>(tensor_view.read_int_expanded(key)) *
-                            static_cast<long long>(int_scalar)
-                    );
+                            static_cast<long long>(int_scalar));
                 }
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return make_tensor(std::move(result.carrier_object), std::move(result.layout_object));
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
@@ -283,20 +268,19 @@ public:
         require_same_layout(tensor, gradient);
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(gradient_view.leaf_rank(), 0);
             for (Index i = 0; i < gradient_view.logical_size; ++i) {
                 result.view.write_float_expanded(
-                    key, gradient_view.read_float_expanded(key) * scalar_
-                );
+                    key, gradient_view.read_float_expanded(key) * scalar_);
                 gradient_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return py::make_tuple(
-            make_tensor(std::move(result.carrier_object), std::move(result.layout_object))
-        );
+        return py::make_tuple(make_tensor(std::move(result.carrier_object),
+                                          std::move(result.layout_object)));
     }
 
 private:
@@ -308,8 +292,7 @@ public:
     py::object _forward(py::args inputs) override {
         if (py::len(inputs) != 2) {
             throw py::type_error(
-                "CPU elementwise multiply requires lhs and rhs tensors"
-            );
+                "CPU elementwise multiply requires lhs and rhs tensors");
         }
         py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
@@ -318,29 +301,27 @@ public:
         require_same_layout(lhs, rhs);
 
         const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(lhs_view.leaf_rank(), 0);
             for (Index i = 0; i < lhs_view.logical_size; ++i) {
                 if (output_dtype == CpuDType::Float32) {
                     result.view.write_float_expanded(
-                        key,
-                        lhs_view.read_float_expanded(key) *
-                            rhs_view.read_float_expanded(key)
-                    );
+                        key, lhs_view.read_float_expanded(key) *
+                                 rhs_view.read_float_expanded(key));
                 } else {
                     write_int_result(
-                        result.view,
-                        key,
+                        result.view, key,
                         static_cast<long long>(lhs_view.read_int_expanded(key)) *
-                            static_cast<long long>(rhs_view.read_int_expanded(key))
-                    );
+                            static_cast<long long>(rhs_view.read_int_expanded(key)));
                 }
                 lhs_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return make_tensor(std::move(result.carrier_object), std::move(result.layout_object));
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
@@ -363,23 +344,17 @@ public:
             for (Index i = 0; i < lhs_view.logical_size; ++i) {
                 const float gradient_value = gradient_view.read_float_expanded(key);
                 lhs_result.view.write_float_expanded(
-                    key, gradient_value * rhs_view.read_float_expanded(key)
-                );
+                    key, gradient_value * rhs_view.read_float_expanded(key));
                 rhs_result.view.write_float_expanded(
-                    key, gradient_value * lhs_view.read_float_expanded(key)
-                );
+                    key, gradient_value * lhs_view.read_float_expanded(key));
                 lhs_view.cache->increment_key(key.data(), key.size());
             }
         }
 
-        return py::make_tuple(
-            make_tensor(
-                std::move(lhs_result.carrier_object), std::move(lhs_result.layout_object)
-            ),
-            make_tensor(
-                std::move(rhs_result.carrier_object), std::move(rhs_result.layout_object)
-            )
-        );
+        return py::make_tuple(make_tensor(std::move(lhs_result.carrier_object),
+                                          std::move(lhs_result.layout_object)),
+                              make_tensor(std::move(rhs_result.carrier_object),
+                                          std::move(rhs_result.layout_object)));
     }
 };
 
@@ -395,19 +370,20 @@ public:
         CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
         require_same_layout(lhs, rhs);
 
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(lhs), CpuDType::Float32);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(lhs), CpuDType::Float32);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(lhs_view.leaf_rank(), 0);
             for (Index i = 0; i < lhs_view.logical_size; ++i) {
-                result.view.write_float_expanded(
-                    key,
-                    lhs_view.read_float_expanded(key) / rhs_view.read_float_expanded(key)
-                );
+                result.view.write_float_expanded(key,
+                                                 lhs_view.read_float_expanded(key) /
+                                                     rhs_view.read_float_expanded(key));
                 lhs_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return make_tensor(std::move(result.carrier_object), std::move(result.layout_object));
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
@@ -432,21 +408,16 @@ public:
                 const float rhs_value = rhs_view.read_float_expanded(key);
                 const float gradient_value = gradient_view.read_float_expanded(key);
                 lhs_result.view.write_float_expanded(key, gradient_value / rhs_value);
-                rhs_result.view.write_float_expanded(
-                    key, -gradient_value * lhs_value / (rhs_value * rhs_value)
-                );
+                rhs_result.view.write_float_expanded(key, -gradient_value * lhs_value /
+                                                              (rhs_value * rhs_value));
                 lhs_view.cache->increment_key(key.data(), key.size());
             }
         }
 
-        return py::make_tuple(
-            make_tensor(
-                std::move(lhs_result.carrier_object), std::move(lhs_result.layout_object)
-            ),
-            make_tensor(
-                std::move(rhs_result.carrier_object), std::move(rhs_result.layout_object)
-            )
-        );
+        return py::make_tuple(make_tensor(std::move(lhs_result.carrier_object),
+                                          std::move(lhs_result.layout_object)),
+                              make_tensor(std::move(rhs_result.carrier_object),
+                                          std::move(rhs_result.layout_object)));
     }
 };
 
@@ -459,17 +430,15 @@ public:
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
 
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), tensor_view.carrier->cpu_dtype());
+        CpuTensorAllocation result = allocate_cpu_tensor(
+            tensor_layout(tensor), tensor_view.carrier->cpu_dtype());
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 if (tensor_view.carrier->cpu_dtype() == CpuDType::Float32) {
                     const float value = tensor_view.read_float_expanded(key);
-                    result.view.write_float_expanded(
-                        key, value > 0.0f ? value : 0.0f
-                    );
+                    result.view.write_float_expanded(key, value > 0.0f ? value : 0.0f);
                 } else {
                     const std::int32_t value = tensor_view.read_int_expanded(key);
                     result.view.write_int_expanded(key, value > 0 ? value : 0);
@@ -477,7 +446,8 @@ public:
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return make_tensor(std::move(result.carrier_object), std::move(result.layout_object));
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
@@ -487,21 +457,20 @@ public:
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 const float value = tensor_view.read_float_expanded(key);
                 result.view.write_float_expanded(
-                    key, value > 0.0f ? gradient_view.read_float_expanded(key) : 0.0f
-                );
+                    key, value > 0.0f ? gradient_view.read_float_expanded(key) : 0.0f);
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return py::make_tuple(
-            make_tensor(std::move(result.carrier_object), std::move(result.layout_object))
-        );
+        return py::make_tuple(make_tensor(std::move(result.carrier_object),
+                                          std::move(result.layout_object)));
     }
 };
 
@@ -518,31 +487,29 @@ public:
         const bool int_output = tensor_view.carrier->cpu_dtype() == CpuDType::Int32 &&
                                 exponent_preserves_int32(exponent_);
         const CpuDType output_dtype = int_output ? CpuDType::Int32 : CpuDType::Float32;
-        const int int_exponent = int_output ? static_cast<int>(std::round(exponent_)) : 0;
+        const int int_exponent =
+            int_output ? static_cast<int>(std::round(exponent_)) : 0;
 
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), output_dtype);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(tensor), output_dtype);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 if (output_dtype == CpuDType::Float32) {
                     result.view.write_float_expanded(
-                        key,
-                        std::pow(tensor_view.read_float_expanded(key), exponent_)
-                    );
+                        key, std::pow(tensor_view.read_float_expanded(key), exponent_));
                 } else {
                     write_int_result(
-                        result.view,
-                        key,
-                        checked_int32_pow(
-                            tensor_view.read_int_expanded(key), int_exponent
-                        )
-                    );
+                        result.view, key,
+                        checked_int32_pow(tensor_view.read_int_expanded(key),
+                                          int_exponent));
                 }
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return make_tensor(std::move(result.carrier_object), std::move(result.layout_object));
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
@@ -552,24 +519,21 @@ public:
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 result.view.write_float_expanded(
-                    key,
-                    gradient_view.read_float_expanded(key) * exponent_ *
-                        std::pow(
-                            tensor_view.read_float_expanded(key), exponent_ - 1.0f
-                        )
-                );
+                    key, gradient_view.read_float_expanded(key) * exponent_ *
+                             std::pow(tensor_view.read_float_expanded(key),
+                                      exponent_ - 1.0f));
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return py::make_tuple(
-            make_tensor(std::move(result.carrier_object), std::move(result.layout_object))
-        );
+        return py::make_tuple(make_tensor(std::move(result.carrier_object),
+                                          std::move(result.layout_object)));
     }
 
 private:
@@ -588,9 +552,8 @@ public:
 
         const Index n_size = mode_logical_size(tensor_layout(tensor), 0);
         const Index m_size = mode_logical_size(tensor_layout(tensor), 1);
-        output_layout_ = canonical_layout_from_modes(
-            {mode_shape(tensor_layout(tensor), 0)}
-        );
+        output_layout_ =
+            canonical_layout_from_modes({mode_shape(tensor_layout(tensor), 0)});
         ctx_["output_layout"] = output_layout_;
 
         CpuTensorAllocation result =
@@ -606,28 +569,26 @@ public:
                     float sum = 0.0f;
                     for (Index j = 0; j < m_size; ++j) {
                         sum += tensor_view.read_float_expanded(input_key);
-                        tensor_view.cache->increment_mode(
-                            input_key.data(), input_key.size(), 1
-                        );
+                        tensor_view.cache->increment_mode(input_key.data(),
+                                                          input_key.size(), 1);
                     }
                     result.view.write_float_expanded(output_key, sum);
                 } else {
                     long long sum = 0;
                     for (Index j = 0; j < m_size; ++j) {
-                        sum = checked_add(sum, tensor_view.read_int_expanded(input_key));
-                        tensor_view.cache->increment_mode(
-                            input_key.data(), input_key.size(), 1
-                        );
+                        sum =
+                            checked_add(sum, tensor_view.read_int_expanded(input_key));
+                        tensor_view.cache->increment_mode(input_key.data(),
+                                                          input_key.size(), 1);
                     }
                     write_int_result(result.view, output_key, sum);
                 }
                 tensor_view.cache->increment_mode(row_key.data(), row_key.size(), 0);
-                result.view.cache->increment_key(
-                    output_key.data(), output_key.size()
-                );
+                result.view.cache->increment_key(output_key.data(), output_key.size());
             }
         }
-        return make_tensor(std::move(result.carrier_object), std::move(result.layout_object));
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
@@ -638,30 +599,29 @@ public:
 
         const Index n_size = mode_logical_size(tensor_layout(tensor), 0);
         const Index m_size = mode_logical_size(tensor_layout(tensor), 1);
-        CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
         {
             py::gil_scoped_release release;
             std::vector<Index> row_key(result.view.leaf_rank(), 0);
             std::vector<Index> input_key(result.view.leaf_rank(), 0);
             std::vector<Index> gradient_key(gradient_view.leaf_rank(), 0);
             for (Index i = 0; i < n_size; ++i) {
-                const float gradient_value = gradient_view.read_float_expanded(gradient_key);
+                const float gradient_value =
+                    gradient_view.read_float_expanded(gradient_key);
                 input_key = row_key;
                 for (Index j = 0; j < m_size; ++j) {
                     result.view.write_float_expanded(input_key, gradient_value);
-                    result.view.cache->increment_mode(
-                        input_key.data(), input_key.size(), 1
-                    );
+                    result.view.cache->increment_mode(input_key.data(),
+                                                      input_key.size(), 1);
                 }
                 result.view.cache->increment_mode(row_key.data(), row_key.size(), 0);
-                gradient_view.cache->increment_key(
-                    gradient_key.data(), gradient_key.size()
-                );
+                gradient_view.cache->increment_key(gradient_key.data(),
+                                                   gradient_key.size());
             }
         }
-        return py::make_tuple(
-            make_tensor(std::move(result.carrier_object), std::move(result.layout_object))
-        );
+        return py::make_tuple(make_tensor(std::move(result.carrier_object),
+                                          std::move(result.layout_object)));
     }
 
 private:
@@ -690,8 +650,7 @@ public:
         }
 
         output_layout_ = canonical_layout_from_modes(
-            {mode_shape(tensor_layout(lhs), 0), mode_shape(tensor_layout(rhs), 0)}
-        );
+            {mode_shape(tensor_layout(lhs), 0), mode_shape(tensor_layout(rhs), 0)});
         ctx_["output_layout"] = output_layout_;
 
         const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
@@ -713,48 +672,37 @@ public:
                         for (Index k = 0; k < lhs_k_size; ++k) {
                             sum += lhs_view.read_float_expanded(lhs_key) *
                                    rhs_view.read_float_expanded(rhs_key);
-                            lhs_view.cache->increment_mode(
-                                lhs_key.data(), lhs_key.size(), 1
-                            );
-                            rhs_view.cache->increment_mode(
-                                rhs_key.data(), rhs_key.size(), 1
-                            );
+                            lhs_view.cache->increment_mode(lhs_key.data(),
+                                                           lhs_key.size(), 1);
+                            rhs_view.cache->increment_mode(rhs_key.data(),
+                                                           rhs_key.size(), 1);
                         }
                         result.view.write_float_expanded(output_key, sum);
                     } else {
                         long long sum = 0;
                         for (Index k = 0; k < lhs_k_size; ++k) {
                             sum = checked_add(
-                                sum,
-                                static_cast<long long>(
-                                    lhs_view.read_int_expanded(lhs_key)
-                                ) *
-                                    static_cast<long long>(
-                                        rhs_view.read_int_expanded(rhs_key)
-                                    )
-                            );
-                            lhs_view.cache->increment_mode(
-                                lhs_key.data(), lhs_key.size(), 1
-                            );
-                            rhs_view.cache->increment_mode(
-                                rhs_key.data(), rhs_key.size(), 1
-                            );
+                                sum, static_cast<long long>(
+                                         lhs_view.read_int_expanded(lhs_key)) *
+                                         static_cast<long long>(
+                                             rhs_view.read_int_expanded(rhs_key)));
+                            lhs_view.cache->increment_mode(lhs_key.data(),
+                                                           lhs_key.size(), 1);
+                            rhs_view.cache->increment_mode(rhs_key.data(),
+                                                           rhs_key.size(), 1);
                         }
                         write_int_result(result.view, output_key, sum);
                     }
-                    result.view.cache->increment_key(
-                        output_key.data(), output_key.size()
-                    );
-                    lhs_view.cache->increment_mode(
-                        lhs_i_base.data(), lhs_i_base.size(), 0
-                    );
+                    result.view.cache->increment_key(output_key.data(),
+                                                     output_key.size());
+                    lhs_view.cache->increment_mode(lhs_i_base.data(), lhs_i_base.size(),
+                                                   0);
                 }
-                rhs_view.cache->increment_mode(
-                    rhs_j_base.data(), rhs_j_base.size(), 0
-                );
+                rhs_view.cache->increment_mode(rhs_j_base.data(), rhs_j_base.size(), 0);
             }
         }
-        return make_tensor(std::move(result.carrier_object), std::move(result.layout_object));
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
@@ -792,27 +740,20 @@ public:
                     for (Index j = 0; j < m_size; ++j) {
                         sum += gradient_view.read_float_expanded(gradient_key) *
                                rhs_view.read_float_expanded(rhs_key);
-                        gradient_view.cache->increment_mode(
-                            gradient_key.data(), gradient_key.size(), 1
-                        );
-                        rhs_view.cache->increment_mode(
-                            rhs_key.data(), rhs_key.size(), 0
-                        );
+                        gradient_view.cache->increment_mode(gradient_key.data(),
+                                                            gradient_key.size(), 1);
+                        rhs_view.cache->increment_mode(rhs_key.data(), rhs_key.size(),
+                                                       0);
                     }
                     lhs_result.view.write_float_expanded(lhs_output_key, sum);
-                    lhs_result.view.cache->increment_mode(
-                        lhs_output_key.data(), lhs_output_key.size(), 0
-                    );
-                    gradient_view.cache->increment_mode(
-                        gradient_i_base.data(), gradient_i_base.size(), 0
-                    );
+                    lhs_result.view.cache->increment_mode(lhs_output_key.data(),
+                                                          lhs_output_key.size(), 0);
+                    gradient_view.cache->increment_mode(gradient_i_base.data(),
+                                                        gradient_i_base.size(), 0);
                 }
-                lhs_result.view.cache->increment_mode(
-                    lhs_k_base.data(), lhs_k_base.size(), 1
-                );
-                rhs_view.cache->increment_mode(
-                    rhs_k_base.data(), rhs_k_base.size(), 1
-                );
+                lhs_result.view.cache->increment_mode(lhs_k_base.data(),
+                                                      lhs_k_base.size(), 1);
+                rhs_view.cache->increment_mode(rhs_k_base.data(), rhs_k_base.size(), 1);
             }
 
             std::vector<Index> rhs_k_output_base(rhs_result.view.leaf_rank(), 0);
@@ -830,38 +771,28 @@ public:
                     for (Index i = 0; i < n_size; ++i) {
                         sum += gradient_view.read_float_expanded(gradient_key) *
                                lhs_view.read_float_expanded(lhs_key);
-                        gradient_view.cache->increment_mode(
-                            gradient_key.data(), gradient_key.size(), 0
-                        );
-                        lhs_view.cache->increment_mode(
-                            lhs_key.data(), lhs_key.size(), 0
-                        );
+                        gradient_view.cache->increment_mode(gradient_key.data(),
+                                                            gradient_key.size(), 0);
+                        lhs_view.cache->increment_mode(lhs_key.data(), lhs_key.size(),
+                                                       0);
                     }
                     rhs_result.view.write_float_expanded(rhs_output_key, sum);
-                    rhs_result.view.cache->increment_mode(
-                        rhs_output_key.data(), rhs_output_key.size(), 0
-                    );
-                    gradient_view.cache->increment_mode(
-                        gradient_j_base.data(), gradient_j_base.size(), 1
-                    );
+                    rhs_result.view.cache->increment_mode(rhs_output_key.data(),
+                                                          rhs_output_key.size(), 0);
+                    gradient_view.cache->increment_mode(gradient_j_base.data(),
+                                                        gradient_j_base.size(), 1);
                 }
-                rhs_result.view.cache->increment_mode(
-                    rhs_k_output_base.data(), rhs_k_output_base.size(), 1
-                );
-                lhs_view.cache->increment_mode(
-                    lhs_k_base_for_rhs.data(), lhs_k_base_for_rhs.size(), 1
-                );
+                rhs_result.view.cache->increment_mode(rhs_k_output_base.data(),
+                                                      rhs_k_output_base.size(), 1);
+                lhs_view.cache->increment_mode(lhs_k_base_for_rhs.data(),
+                                               lhs_k_base_for_rhs.size(), 1);
             }
         }
 
-        return py::make_tuple(
-            make_tensor(
-                std::move(lhs_result.carrier_object), std::move(lhs_result.layout_object)
-            ),
-            make_tensor(
-                std::move(rhs_result.carrier_object), std::move(rhs_result.layout_object)
-            )
-        );
+        return py::make_tuple(make_tensor(std::move(lhs_result.carrier_object),
+                                          std::move(lhs_result.layout_object)),
+                              make_tensor(std::move(rhs_result.carrier_object),
+                                          std::move(rhs_result.layout_object)));
     }
 
 private:
@@ -874,11 +805,9 @@ py::object CPU::dispatch_op(const std::string& operation_name) const {
     auto& registry = cpu_operation_registry();
     auto operation_factory = registry.find(operation_name);
     if (operation_factory == registry.end()) {
-        PyErr_Format(
-            PyExc_NotImplementedError,
-            "CPU carrier does not support operation '%s'",
-            operation_name.c_str()
-        );
+        PyErr_Format(PyExc_NotImplementedError,
+                     "CPU carrier does not support operation '%s'",
+                     operation_name.c_str());
         throw py::error_already_set();
     }
     return operation_factory->second();
@@ -886,30 +815,13 @@ py::object CPU::dispatch_op(const std::string& operation_name) const {
 
 void bind_cpu(py::module_& module) {
     py::class_<CPU, Carrier>(module, "CPU")
-        .def(
-            py::init<Index, py::object, bool, py::object>(),
-            py::arg("size"),
-            py::arg("pointer") = py::none(),
-            py::kw_only(),
-            py::arg("mutable") = true,
-            py::arg("dtype") = py::none()
-        )
-        .def(
-            "new_like",
-            &CPU::new_like_with_dtype,
-            py::arg("values"),
-            py::kw_only(),
-            py::arg("mutable") = true,
-            py::arg("dtype") = py::none()
-        )
-        .def(
-            "empty_like",
-            &CPU::empty_like,
-            py::arg("size"),
-            py::kw_only(),
-            py::arg("mutable") = true,
-            py::arg("dtype") = py::none()
-        )
+        .def(py::init<Index, py::object, bool, py::object>(), py::arg("size"),
+             py::arg("pointer") = py::none(), py::kw_only(), py::arg("mutable") = true,
+             py::arg("dtype") = py::none())
+        .def("new_like", &CPU::new_like_with_dtype, py::arg("values"), py::kw_only(),
+             py::arg("mutable") = true, py::arg("dtype") = py::none())
+        .def("empty_like", &CPU::empty_like, py::arg("size"), py::kw_only(),
+             py::arg("mutable") = true, py::arg("dtype") = py::none())
         .def("pointer", &CPU::pointer)
         .def("set_value", &CPU::set_value_public, py::arg("index"), py::arg("value"))
         .def("dispatch_op", &CPU::dispatch_op, py::arg("operation_name"));
@@ -917,9 +829,8 @@ void bind_cpu(py::module_& module) {
     bind_cpu_operation<CpuAddOperation>(module, "_CPUAddOperation");
     bind_cpu_operation<CpuSubOperation>(module, "_CPUSubOperation");
     bind_cpu_operation<CpuScalarMulOperation>(module, "_CPUScalarMulOperation");
-    bind_cpu_operation<CpuElementwiseMulOperation>(
-        module, "_CPUElementwiseMulOperation"
-    );
+    bind_cpu_operation<CpuElementwiseMulOperation>(module,
+                                                   "_CPUElementwiseMulOperation");
     bind_cpu_operation<CpuDivOperation>(module, "_CPUDivOperation");
     bind_cpu_operation<CpuExpOperation>(module, "_CPUExpOperation");
     bind_cpu_operation<CpuReLUOperation>(module, "_CPUReLUOperation");
@@ -951,15 +862,12 @@ void bind_cpu(py::module_& module) {
     register_native_cpu_operation<CpuSoftplusOperation>("softplus");
     register_native_cpu_operation<CpuSubOperation>("sub");
     register_native_cpu_operation<CpuTanhOperation>("tanh");
-    register_python_cpu_operation(
-        "permute", "strideweave.carriers.shared_ops", "PermuteOperation"
-    );
-    register_python_cpu_operation(
-        "rearrange", "strideweave.carriers.shared_ops", "RearrangeOperation"
-    );
-    register_python_cpu_operation(
-        "view", "strideweave.carriers.shared_ops", "GenericViewOperation"
-    );
+    register_python_cpu_operation("permute", "strideweave.carriers.shared_ops",
+                                  "PermuteOperation");
+    register_python_cpu_operation("rearrange", "strideweave.carriers.shared_ops",
+                                  "RearrangeOperation");
+    register_python_cpu_operation("view", "strideweave.carriers.shared_ops",
+                                  "GenericViewOperation");
 }
 
 }  // namespace strideweave::carrier

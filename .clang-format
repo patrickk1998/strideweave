@@ -1,0 +1,11 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+AccessModifierOffset: -4
+ContinuationIndentWidth: 4
+ColumnLimit: 88
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Preserve
+SortIncludes: CaseSensitive
+SpacesBeforeTrailingComments: 2
+AllowShortFunctionsOnASingleLine: Inline

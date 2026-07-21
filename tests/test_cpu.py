@@ -74,6 +74,7 @@ def test_cpu_data_contract_and_mutation():
 
     assert carrier.get_value(1) == pytest.approx(2.5)
     assert carrier[2] == pytest.approx(3.0)
+    assert carrier.version == 2
 
 
 def test_cpu_data_can_be_immutable():
@@ -92,9 +93,9 @@ def test_cpu_data_can_be_immutable():
 def test_cpu_data_validates_constructor_inputs():
     invalid_pointer: Any = "0"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="CPU size must be non-negative"):
         CPU(-1)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="CPU pointer must be a positive integer"):
         CPU(1, 0)
     with pytest.raises(TypeError):
         CPU(1, invalid_pointer)
@@ -137,7 +138,7 @@ def test_cpu_int32_data_validates_writes_and_dtype():
     with pytest.raises(OverflowError):
         carrier[0] = 2**31
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="CPU dtype must be"):
         CPU(1, dtype=DType.Floating)
 
 
@@ -200,9 +201,12 @@ def test_cpu_dispatch_op_returns_supported_operations():
     }
 
     for operation_name, operation_type_name in native_cases.items():
-        operation = carrier.dispatch_op(operation_name)
-        assert type(operation).__name__ == operation_type_name
-        assert isinstance(operation, Operation)
+        first = carrier.dispatch_op(operation_name)
+        second = carrier.dispatch_op(operation_name)
+        assert type(first).__name__ == operation_type_name
+        assert type(second) is type(first)
+        assert isinstance(first, Operation)
+        assert first is not second
 
     assert isinstance(carrier.dispatch_op("permute"), PermuteOperation)
     assert isinstance(carrier.dispatch_op("rearrange"), RearrangeOperation)
@@ -571,7 +575,10 @@ def test_cpu_exp_uses_native_operation_and_backpropagates():
     assert type(result.autograd_ctx).__name__ == "_CPUExpOperation"
     assert tensor_values(result) == pytest.approx(expected)
     assert tensor_values(tensor_grad) == pytest.approx(
-        [grad * value for grad, value in zip([1.0, 2.0, 3.0, 4.0], expected)]
+        [
+            grad * value
+            for grad, value in zip([1.0, 2.0, 3.0, 4.0], expected, strict=True)
+        ]
     )
     assert type(tensor_grad.carrier) is CPU
 

@@ -215,7 +215,7 @@ def test_einops_lexes_symbol_forms():
     ],
 )
 def test_einops_lex_rejects_invalid_commands(command: str):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"(Invalid|Expected|Unexpected|ASCII)"):
         lex(command)
 
 
@@ -288,7 +288,7 @@ def test_einops_parse_rearrange_left_singleton_compatibility_uses_layout_validat
         spec.output,
         spec.selection,
     ) == Layout(Shape(3), Stride(1))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must include every extracted layout"):
         Layout.rearrange(
             Layout(Shape([2, 3]), Stride([1, 2])),
             spec.output,
@@ -388,7 +388,9 @@ def test_einops_parse_einsum_supports_dot_product_singleton_output():
     ],
 )
 def test_einops_parse_layout_ref_rejects_invalid_syntax(tokens: list[Token]):
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError, match=r"(empty|Empty|parenthes|parenthesis|Commas|Arrows)"
+    ):
         parse_layout_ref(tokens)
 
 
@@ -410,7 +412,10 @@ def test_einops_parse_layout_ref_rejects_invalid_syntax(tokens: list[Token]):
     ],
 )
 def test_einops_parse_rearrange_rejects_invalid_syntax(command: str):
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match=r"(Duplicate|Unknown|empty|arrow|parenthes|parenthesis|Commas)",
+    ):
         parse_rearrange(command)
 
 
@@ -433,7 +438,10 @@ def test_einops_parse_rearrange_rejects_invalid_syntax(command: str):
     ],
 )
 def test_einops_parse_reduce_rejects_invalid_syntax(command: str):
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match=r"(Duplicate|Unknown|empty|arrow|parenthes|parenthesis|Commas|omit)",
+    ):
         parse_reduce(command)
 
 
@@ -455,7 +463,10 @@ def test_einops_parse_reduce_rejects_invalid_syntax(command: str):
     ],
 )
 def test_einops_parse_einsum_rejects_invalid_syntax(command: str):
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match=r"(comma|arrow|Duplicate|Unknown|include|shared|parenthes|Commas)",
+    ):
         parse_einsum(command)
 
 
@@ -725,7 +736,7 @@ def test_einops_einsum_rejects_mismatched_shared_dimension_sizes():
     lhs = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
     rhs = Tensor(Generic(range(8)), 0, Layout(Shape([4, 2]), Stride([1, 4])))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="shared dimension 'b' has mismatched"):
         einops_einsum(lhs, rhs, "a b, c b -> a c")
 
 
@@ -850,7 +861,7 @@ def test_native_rearrange_spec_cache_does_not_cache_failed_compilations():
             return cached_sentinel
         return uncached_sentinel
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="compile failed"):
         native_einops._cached_rearrange_spec("failing-cache-key", compiler)
 
     # The cache is private native state, so call count is the observable proxy:
@@ -880,7 +891,7 @@ def test_native_reduce_spec_cache_does_not_cache_failed_compilations():
             return cached_sentinel
         return uncached_sentinel
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="compile failed"):
         native_einops._cached_reduce_spec("failing-reduce-cache-key", compiler)
 
     # The cache is private native state, so call count is the observable proxy:
@@ -912,7 +923,7 @@ def test_native_einsum_spec_cache_does_not_cache_failed_compilations():
             return cached_sentinel
         return uncached_sentinel
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="compile failed"):
         native_einops._cached_einsum_spec("failing-einsum-cache-key", compiler)
 
     # The cache is private native state, so call count is the observable proxy:
@@ -932,19 +943,19 @@ def test_native_einsum_spec_cache_does_not_cache_failed_compilations():
 
 def test_einops_parse_rearrange_invalid_descriptions_still_raise_after_retries():
     for _ in range(2):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unknown dimension symbol 'invalid_b'"):
             parse_rearrange("invalid_a -> invalid_b")
 
 
 def test_einops_parse_reduce_invalid_descriptions_still_raise_after_retries():
     for _ in range(2):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unknown dimension symbol 'invalid_b'"):
             parse_reduce("invalid_a -> invalid_b")
 
 
 def test_einops_parse_einsum_invalid_descriptions_still_raise_after_retries():
     for _ in range(2):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="at least one shared dimension"):
             parse_einsum("invalid_a, invalid_b -> invalid_a invalid_b")
 
 
@@ -986,5 +997,5 @@ def test_einops_lex_rejects_deterministic_invalid_fuzz_cases():
             ]
         )
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r"(Invalid|Expected|Unexpected|ASCII)"):
             lex(command)

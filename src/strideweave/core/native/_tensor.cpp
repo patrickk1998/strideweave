@@ -71,8 +71,7 @@ constexpr std::uint64_t dlpack_flag_read_only = 1UL << 0UL;
 constexpr const char* dlpack_capsule_name = "dltensor";
 constexpr const char* used_dlpack_capsule_name = "used_dltensor";
 constexpr const char* versioned_dlpack_capsule_name = "dltensor_versioned";
-constexpr const char* used_versioned_dlpack_capsule_name =
-    "used_dltensor_versioned";
+constexpr const char* used_versioned_dlpack_capsule_name = "used_dltensor_versioned";
 
 struct DLPackDTypeInfo {
     DLDataType dtype;
@@ -145,8 +144,7 @@ bool contains_slice(py::handle key) {
 void validate_tensor_key(py::handle key) {
     if (!is_tensor_key(key)) {
         throw py::type_error(
-            "Tensor indices must be integers or tuples/lists of integers"
-        );
+            "Tensor indices must be integers or tuples/lists of integers");
     }
 }
 
@@ -227,8 +225,7 @@ void legacy_dlpack_capsule_deleter(PyObject* capsule) {
         return;
     }
     auto* managed = static_cast<DLManagedTensor*>(
-        PyCapsule_GetPointer(capsule, dlpack_capsule_name)
-    );
+        PyCapsule_GetPointer(capsule, dlpack_capsule_name));
     if (managed == nullptr) {
         PyErr_WriteUnraisable(capsule);
         return;
@@ -243,8 +240,7 @@ void versioned_dlpack_capsule_deleter(PyObject* capsule) {
         return;
     }
     auto* managed = static_cast<DLManagedTensorVersioned*>(
-        PyCapsule_GetPointer(capsule, versioned_dlpack_capsule_name)
-    );
+        PyCapsule_GetPointer(capsule, versioned_dlpack_capsule_name));
     if (managed == nullptr) {
         PyErr_WriteUnraisable(capsule);
         return;
@@ -282,27 +278,24 @@ std::uint64_t byte_offset_for(Index offset, std::uint64_t item_size) {
     return offset_u * item_size;
 }
 
-std::int32_t sequence_device_component(py::sequence device, py::ssize_t index) {
+std::int32_t sequence_device_component(py::sequence device, std::size_t index) {
     return py::cast<std::int32_t>(device[index]);
 }
 
 class Tensor {
 public:
     Tensor(py::object carrier, Index offset, py::object layout)
-        : carrier_(std::move(carrier)),
-          offset_(offset),
-          layout_(std::move(layout)),
-          autograd_ctx_(py::none()),
-          grad_(py::none()),
-          retain_grad_(false) {
+        : carrier_(std::move(carrier)), offset_(offset), layout_(std::move(layout)),
+          autograd_ctx_(py::none()), grad_(py::none()), retain_grad_(false) {
         if (offset_ < 0) {
             throw py::value_error("Tensor offset must be non-negative");
         }
 
         const Index carrier_size = py::cast<Index>(carrier_.attr("size")());
         const Index storage_size = strideweave::layout_index::cosize(layout_);
-        const bool storage_exceeds_carrier =
-            carrier_size < 0 || offset_ > carrier_size || storage_size > carrier_size - offset_;
+        const bool storage_exceeds_carrier = carrier_size < 0 ||
+                                             offset_ > carrier_size ||
+                                             storage_size > carrier_size - offset_;
         if (storage_exceeds_carrier) {
             throw py::value_error("Tensor storage exceeds carrier size");
         }
@@ -322,7 +315,8 @@ public:
 
     void set_autograd_ctx(py::object autograd_ctx) {
         if (!autograd_ctx.is_none()) {
-            require_differentiable("autograd_ctx is not available for non-differentiable tensors");
+            require_differentiable(
+                "autograd_ctx is not available for non-differentiable tensors");
         }
         autograd_ctx_ = std::move(autograd_ctx);
     }
@@ -334,13 +328,15 @@ public:
 
     void set_grad(py::object grad) {
         if (!grad.is_none()) {
-            require_differentiable("grad is not available for non-differentiable tensors");
+            require_differentiable(
+                "grad is not available for non-differentiable tensors");
         }
         grad_ = std::move(grad);
     }
 
     void retain_grad(bool retain) {
-        require_differentiable("retain_grad is not available for non-differentiable tensors");
+        require_differentiable(
+            "retain_grad is not available for non-differentiable tensors");
         retain_grad_ = retain;
     }
 
@@ -360,9 +356,7 @@ public:
         return py::cast<Index>(layout_.attr("shape").attr("logical_size"));
     }
 
-    bool is_mutable() const {
-        return py::cast<bool>(carrier_.attr("is_mutable")());
-    }
+    bool is_mutable() const { return py::cast<bool>(carrier_.attr("is_mutable")()); }
 
     py::object dtype() const { return carrier_.attr("dtype")(); }
 
@@ -374,19 +368,12 @@ public:
 
     py::tuple dlpack_device() const {
         DLPackStorageInfo storage = dlpack_storage_info();
-        return py::make_tuple(
-            static_cast<std::int32_t>(storage.device.device_type),
-            storage.device.device_id
-        );
+        return py::make_tuple(static_cast<std::int32_t>(storage.device.device_type),
+                              storage.device.device_id);
     }
 
-    py::object dlpack(
-        py::object self,
-        py::object stream,
-        py::object max_version,
-        py::object dl_device,
-        py::object copy
-    ) const {
+    py::object dlpack(py::object self, py::object stream, py::object max_version,
+                      py::object dl_device, py::object copy) const {
         (void)stream;
         if (!copy.is_none() && py::cast<bool>(copy)) {
             throw_buffer_error("DLPack copy exports are not supported");
@@ -397,16 +384,16 @@ public:
         DLPackDTypeInfo dtype_info = dlpack_dtype_info(dtype());
         const bool versioned = should_export_versioned_dlpack(max_version);
         if (versioned) {
-            return make_versioned_dlpack_capsule(
-                std::move(self), storage, dtype_info
-            );
+            return make_versioned_dlpack_capsule(std::move(self), storage, dtype_info);
         }
         return make_legacy_dlpack_capsule(std::move(self), storage, dtype_info);
     }
 
     void backward(py::object gradient) {
-        require_differentiable("backward is not available for non-differentiable tensors");
-        py::object effective_gradient = normalize_backward_gradient(std::move(gradient));
+        require_differentiable(
+            "backward is not available for non-differentiable tensors");
+        py::object effective_gradient =
+            normalize_backward_gradient(std::move(gradient));
         if (should_accumulate_grad()) {
             accumulate_grad(effective_gradient);
         }
@@ -435,7 +422,7 @@ public:
             py::sequence inputs =
                 py::reinterpret_borrow<py::sequence>(current.attr("inputs")());
             std::unordered_set<PyObject*> seen_inputs;
-            for (py::ssize_t i = 0; i < py::len(inputs); ++i) {
+            for (std::size_t i = 0; i < py::len(inputs); ++i) {
                 py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
                 if (!seen_inputs.insert(input.ptr()).second) {
                     continue;
@@ -478,11 +465,10 @@ public:
                     py::reinterpret_borrow<py::sequence>(input_gradients_object);
                 if (py::len(input_gradients) != py::len(inputs)) {
                     throw py::value_error(
-                        "Operation backward returned wrong number of gradients"
-                    );
+                        "Operation backward returned wrong number of gradients");
                 }
 
-                for (py::ssize_t i = 0; i < py::len(inputs); ++i) {
+                for (std::size_t i = 0; i < py::len(inputs); ++i) {
                     py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
                     py::object input_gradient =
                         py::reinterpret_borrow<py::object>(input_gradients[i]);
@@ -496,19 +482,17 @@ public:
                     input_tensor.validate_gradient(input_gradient);
                     auto found = pending_gradients.find(input.ptr());
                     if (found == pending_gradients.end()) {
-                        pending_gradients.emplace(
-                            input.ptr(), std::move(input_gradient)
-                        );
+                        pending_gradients.emplace(input.ptr(),
+                                                  std::move(input_gradient));
                     } else {
-                        found->second = input_tensor.combined_gradient(
-                            found->second, input_gradient
-                        );
+                        found->second = input_tensor.combined_gradient(found->second,
+                                                                       input_gradient);
                     }
                 }
             }
 
             std::unordered_set<PyObject*> seen_inputs;
-            for (py::ssize_t i = 0; i < py::len(inputs); ++i) {
+            for (std::size_t i = 0; i < py::len(inputs); ++i) {
                 py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
                 if (!seen_inputs.insert(input.ptr()).second) {
                     continue;
@@ -535,9 +519,7 @@ public:
                 }
                 py::object input_ctx = input.attr("autograd_ctx");
                 if (!input_ctx.is_none()) {
-                    ready.emplace_back(
-                        std::move(input_ctx), std::move(total_gradient)
-                    );
+                    ready.emplace_back(std::move(input_ctx), std::move(total_gradient));
                 }
             }
         }
@@ -569,9 +551,8 @@ private:
         };
     }
 
-    void validate_dlpack_device_request(
-        py::handle requested_device, DLDevice actual_device
-    ) const {
+    void validate_dlpack_device_request(py::handle requested_device,
+                                        DLDevice actual_device) const {
         if (requested_device.is_none()) {
             return;
         }
@@ -588,18 +569,14 @@ private:
         if (requested_type != static_cast<std::int32_t>(actual_device.device_type) ||
             requested_id != actual_device.device_id) {
             throw_buffer_error(
-                "DLPack cross-device exports are not supported for this tensor"
-            );
+                "DLPack cross-device exports are not supported for this tensor");
         }
     }
 
-    void populate_dlpack_tensor(
-        DLTensor& dl_tensor,
-        std::vector<std::int64_t>& shape,
-        std::vector<std::int64_t>& strides,
-        DLPackStorageInfo storage,
-        DLPackDTypeInfo dtype_info
-    ) const {
+    void populate_dlpack_tensor(DLTensor& dl_tensor, std::vector<std::int64_t>& shape,
+                                std::vector<std::int64_t>& strides,
+                                DLPackStorageInfo storage,
+                                DLPackDTypeInfo dtype_info) const {
         const strideweave::layout_index::LayoutCache& cache =
             strideweave::layout_index::cache_from_layout(layout_);
         shape = to_int64_vector(cache.leaf_shapes());
@@ -614,19 +591,11 @@ private:
         dl_tensor.byte_offset = byte_offset_for(offset_, dtype_info.item_size);
     }
 
-    py::object make_legacy_dlpack_capsule(
-        py::object self,
-        DLPackStorageInfo storage,
-        DLPackDTypeInfo dtype_info
-    ) const {
+    py::object make_legacy_dlpack_capsule(py::object self, DLPackStorageInfo storage,
+                                          DLPackDTypeInfo dtype_info) const {
         auto holder = std::make_unique<LegacyDLPackTensor>();
-        populate_dlpack_tensor(
-            holder->managed.dl_tensor,
-            holder->shape,
-            holder->strides,
-            storage,
-            dtype_info
-        );
+        populate_dlpack_tensor(holder->managed.dl_tensor, holder->shape,
+                               holder->strides, storage, dtype_info);
         holder->managed.manager_ctx = holder.get();
         holder->managed.deleter = legacy_dlpack_managed_deleter;
         holder->owner = self.ptr();
@@ -634,24 +603,14 @@ private:
 
         DLManagedTensor* managed = &holder->managed;
         holder.release();
-        return py::capsule(
-            managed, dlpack_capsule_name, legacy_dlpack_capsule_deleter
-        );
+        return py::capsule(managed, dlpack_capsule_name, legacy_dlpack_capsule_deleter);
     }
 
-    py::object make_versioned_dlpack_capsule(
-        py::object self,
-        DLPackStorageInfo storage,
-        DLPackDTypeInfo dtype_info
-    ) const {
+    py::object make_versioned_dlpack_capsule(py::object self, DLPackStorageInfo storage,
+                                             DLPackDTypeInfo dtype_info) const {
         auto holder = std::make_unique<VersionedDLPackTensor>();
-        populate_dlpack_tensor(
-            holder->managed.dl_tensor,
-            holder->shape,
-            holder->strides,
-            storage,
-            dtype_info
-        );
+        populate_dlpack_tensor(holder->managed.dl_tensor, holder->shape,
+                               holder->strides, storage, dtype_info);
         holder->managed.version = {1, 0};
         holder->managed.manager_ctx = holder.get();
         holder->managed.deleter = versioned_dlpack_managed_deleter;
@@ -661,11 +620,8 @@ private:
 
         DLManagedTensorVersioned* managed = &holder->managed;
         holder.release();
-        return py::capsule(
-            managed,
-            versioned_dlpack_capsule_name,
-            versioned_dlpack_capsule_deleter
-        );
+        return py::capsule(managed, versioned_dlpack_capsule_name,
+                           versioned_dlpack_capsule_deleter);
     }
 
     py::object normalize_backward_gradient(py::object gradient) const {
@@ -679,8 +635,7 @@ private:
     py::object implicit_scalar_gradient() const {
         if (!is_scalar()) {
             throw py::value_error(
-                "Tensor.backward requires a gradient for non-scalar tensors"
-            );
+                "Tensor.backward requires a gradient for non-scalar tensors");
         }
 
         py::list values;
@@ -690,8 +645,8 @@ private:
     }
 
     bool is_scalar() const {
-        return py::len(layout_) == 1 &&
-               py::cast<bool>(layout_.attr("is_leaf")) && size() == 1;
+        return py::len(layout_) == 1 && py::cast<bool>(layout_.attr("is_leaf")) &&
+               size() == 1;
     }
 
     void validate_gradient(py::handle gradient) const {
@@ -715,7 +670,8 @@ private:
 
         const Index tensor_size = size();
         for (Index i = 0; i < tensor_size; ++i) {
-            values[strideweave::layout_index::get_index(layout_, py::int_(i))] =
+            values[strideweave::layout_index::as_size(
+                strideweave::layout_index::get_index(layout_, py::int_(i)))] =
                 gradient.attr("__getitem__")(py::int_(i));
         }
 
@@ -728,8 +684,7 @@ private:
         for (Index i = 0; i < size(); ++i) {
             py::object key = py::int_(i);
             py::object combined_value = add_python_objects(
-                combined.attr("__getitem__")(key), addition.attr("__getitem__")(key)
-            );
+                combined.attr("__getitem__")(key), addition.attr("__getitem__")(key));
             combined.attr("__setitem__")(key, combined_value);
         }
         return combined;
@@ -744,8 +699,7 @@ private:
         for (Index i = 0; i < size(); ++i) {
             py::object key = py::int_(i);
             py::object accumulated_value = add_python_objects(
-                grad_.attr("__getitem__")(key), gradient.attr("__getitem__")(key)
-            );
+                grad_.attr("__getitem__")(key), gradient.attr("__getitem__")(key));
             grad_.attr("__setitem__")(key, accumulated_value);
         }
     }
@@ -768,12 +722,8 @@ PYBIND11_MODULE(_tensor, module) {
     module.doc() = "Native tensor type for StrideWeave";
 
     py::class_<Tensor>(module, "Tensor")
-        .def(
-            py::init<py::object, Index, py::object>(),
-            py::arg("carrier"),
-            py::arg("offset"),
-            py::arg("layout")
-        )
+        .def(py::init<py::object, Index, py::object>(), py::arg("carrier"),
+             py::arg("offset"), py::arg("layout"))
         .def_property_readonly("carrier", &Tensor::carrier)
         .def_property_readonly("offset", &Tensor::offset)
         .def_property_readonly("layout", &Tensor::layout)
@@ -785,76 +735,69 @@ PYBIND11_MODULE(_tensor, module) {
             "__getitem__",
             [](py::object self, py::object key) {
                 if (contains_slice(key)) {
-                    return py::module_::import("strideweave.operation").attr("view")(
-                        self, key
-                    );
+                    return py::module_::import("strideweave.operation")
+                        .attr("view")(self, key);
                 }
                 Tensor& tensor = py::cast<Tensor&>(self);
                 return tensor.get_item(key);
             },
-            py::arg("key")
-        )
+            py::arg("key"))
         .def("__setitem__", &Tensor::set_item, py::arg("key"), py::arg("value"))
         .def(
             "__add__",
             [](py::object self, py::object other) {
-                return py::module_::import("strideweave.operation").attr("add")(self, other);
+                return py::module_::import("strideweave.operation")
+                    .attr("add")(self, other);
             },
-            py::is_operator()
-        )
+            py::is_operator())
         .def(
             "__sub__",
             [](py::object self, py::object other) {
-                return py::module_::import("strideweave.operation").attr("sub")(self, other);
+                return py::module_::import("strideweave.operation")
+                    .attr("sub")(self, other);
             },
-            py::is_operator()
-        )
+            py::is_operator())
         .def(
             "__neg__",
             [](py::object self) {
                 return py::module_::import("strideweave.operation").attr("neg")(self);
             },
-            py::is_operator()
-        )
+            py::is_operator())
         .def(
             "__mul__",
             [](py::object self, py::object other) {
-                return py::module_::import("strideweave.operation").attr("mul")(self, other);
+                return py::module_::import("strideweave.operation")
+                    .attr("mul")(self, other);
             },
-            py::is_operator()
-        )
+            py::is_operator())
         .def(
             "__rmul__",
             [](py::object self, py::object other) {
-                return py::module_::import("strideweave.operation").attr("mul")(self, other);
+                return py::module_::import("strideweave.operation")
+                    .attr("mul")(self, other);
             },
-            py::is_operator()
-        )
+            py::is_operator())
         .def(
             "__truediv__",
             [](py::object self, py::object other) {
-                return py::module_::import("strideweave.operation").attr("div")(self, other);
+                return py::module_::import("strideweave.operation")
+                    .attr("div")(self, other);
             },
-            py::is_operator()
-        )
+            py::is_operator())
         .def(
             "__pow__",
             [](py::object self, py::object exponent) {
-                return py::module_::import("strideweave.operation").attr("pow")(
-                    self, exponent
-                );
+                return py::module_::import("strideweave.operation")
+                    .attr("pow")(self, exponent);
             },
-            py::is_operator()
-        )
+            py::is_operator())
         .def(
             "__matmul__",
             [](py::object self, py::object other) {
-                return py::module_::import("strideweave.operation").attr("matmul")(
-                    self, other
-                );
+                return py::module_::import("strideweave.operation")
+                    .attr("matmul")(self, other);
             },
-            py::is_operator()
-        )
+            py::is_operator())
         .def("size", &Tensor::size)
         .def("is_mutable", &Tensor::is_mutable)
         .def("dtype", &Tensor::dtype)
@@ -863,31 +806,17 @@ PYBIND11_MODULE(_tensor, module) {
         .def("__dlpack_device__", &Tensor::dlpack_device)
         .def(
             "__dlpack__",
-            [](py::object self,
-               py::object stream,
-               py::object max_version,
-               py::object dl_device,
-               py::object copy) {
+            [](py::object self, py::object stream, py::object max_version,
+               py::object dl_device, py::object copy) {
                 const Tensor& tensor = py::cast<const Tensor&>(self);
-                return tensor.dlpack(
-                    std::move(self),
-                    std::move(stream),
-                    std::move(max_version),
-                    std::move(dl_device),
-                    std::move(copy)
-                );
+                return tensor.dlpack(std::move(self), std::move(stream),
+                                     std::move(max_version), std::move(dl_device),
+                                     std::move(copy));
             },
-            py::arg("stream") = py::none(),
-            py::kw_only(),
-            py::arg("max_version") = py::none(),
-            py::arg("dl_device") = py::none(),
-            py::arg("copy") = py::none()
-        )
+            py::arg("stream") = py::none(), py::kw_only(),
+            py::arg("max_version") = py::none(), py::arg("dl_device") = py::none(),
+            py::arg("copy") = py::none())
         .def("backward", &Tensor::backward, py::arg("gradient") = py::none())
-        .def_static(
-            "backwards_traversal",
-            &Tensor::backwards_traversal,
-            py::arg("gradient"),
-            py::arg("operation")
-        );
+        .def_static("backwards_traversal", &Tensor::backwards_traversal,
+                    py::arg("gradient"), py::arg("operation"));
 }

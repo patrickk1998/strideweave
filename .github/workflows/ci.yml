@@ -39,8 +39,64 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      - name: Check repository invariants
+        run: uv run python tools/lint_invariants.py
+
+      - name: Check native formatting
+        run: >-
+          find src/strideweave -type f \( -name '*.cpp' -o -name '*.hpp' \)
+          -exec uv run clang-format --dry-run --Werror {} +
+
       - name: Type check
         run: uv run pyright
 
       - name: Build distributions
         run: uv build
+
+  native-strict-warnings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Build with strict native warnings
+        env:
+          CMAKE_ARGS: -DSTRIDEWEAVE_STRICT_WARNINGS=ON
+        run: uv build
+
+  native-sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CMAKE_ARGS: >-
+        -DSTRIDEWEAVE_STRICT_WARNINGS=ON
+        -DSTRIDEWEAVE_SANITIZERS=ON
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Build sanitizer-instrumented extensions
+        run: uv sync --frozen --group dev --reinstall-package strideweave
+
+      - name: Run tests with AddressSanitizer and UndefinedBehaviorSanitizer
+        run: |
+          asan_runtime="$(gcc -print-file-name=libasan.so)"
+          LD_PRELOAD="$asan_runtime" \
+            ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:halt_on_error=1" \
+            UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
+            uv run pytest tests

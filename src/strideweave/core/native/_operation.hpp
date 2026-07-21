@@ -41,19 +41,19 @@ inline bool is_differentiable_tensor(py::handle tensor) {
 
 inline bool is_grad_enabled() {
     return py::cast<bool>(
-        py::module_::import("strideweave._operation").attr("is_grad_enabled")()
-    );
+        py::module_::import("strideweave._operation").attr("is_grad_enabled")());
 }
 
 class Operation {
 public:
-    Operation() : ctx_(py::dict()), inputs_(py::tuple()), input_versions_(py::tuple()) {}
+    Operation()
+        : ctx_(py::dict()), inputs_(py::tuple()), input_versions_(py::tuple()) {}
 
     virtual ~Operation() = default;
 
     py::object forward(py::args inputs) {
-        const bool should_store_inputs = is_grad_enabled() &&
-                                         has_differentiable_tensor_input(inputs);
+        const bool should_store_inputs =
+            is_grad_enabled() && has_differentiable_tensor_input(inputs);
         if (should_store_inputs) {
             store_tensor_inputs(inputs);
         } else {
@@ -89,19 +89,16 @@ public:
     py::tuple input_versions() const { return input_versions_; }
 
     void validate_input_versions() const {
-        for (py::ssize_t i = 0; i < py::len(inputs_); ++i) {
+        for (std::size_t i = 0; i < py::len(inputs_); ++i) {
             py::object input = py::reinterpret_borrow<py::object>(inputs_[i]);
-            const Version current_version =
-                py::cast<Version>(input.attr("version"));
-            const Version expected_version =
-                py::cast<Version>(input_versions_[i]);
+            const Version current_version = py::cast<Version>(input.attr("version"));
+            const Version expected_version = py::cast<Version>(input_versions_[i]);
             if (current_version != expected_version) {
                 throw std::runtime_error(
                     "A tensor needed for gradient computation was modified "
                     "in-place: expected version " +
                     std::to_string(expected_version) + ", got version " +
-                    std::to_string(current_version)
-                );
+                    std::to_string(current_version));
             }
         }
     }

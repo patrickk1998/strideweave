@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from importlib import import_module
-from typing import Any, Callable, ClassVar, cast
+from typing import Any, ClassVar, cast
 
 from ..base import Carrier
 from ..cpu import CPU

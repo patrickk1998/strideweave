@@ -126,7 +126,7 @@ def full(*extents: int, value: float, dtype: DType = DType.Float32) -> Tensor:
     """
 
     result = _new_cpu_tensor(column_major(*extents), dtype)
-    _fill_logical(result, [value] * result.layout.size)
+    _fill_logical(result, [value] * result.size())
     return result
 
 
@@ -211,7 +211,7 @@ def rand(*extents: int, rng: random.Random | None = None) -> Tensor:
 
     rng = rng if rng is not None else random.Random()
     result = _new_cpu_tensor(column_major(*extents), DType.Float32)
-    _fill_logical(result, [rng.random() for _ in range(result.layout.size)])
+    _fill_logical(result, [rng.random() for _ in range(result.size())])
     return result
 
 
@@ -235,5 +235,5 @@ def randn(*extents: int, rng: random.Random | None = None) -> Tensor:
 
     rng = rng if rng is not None else random.Random()
     result = _new_cpu_tensor(column_major(*extents), DType.Float32)
-    _fill_logical(result, [rng.gauss(0.0, 1.0) for _ in range(result.layout.size)])
+    _fill_logical(result, [rng.gauss(0.0, 1.0) for _ in range(result.size())])
     return result

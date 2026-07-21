@@ -66,14 +66,12 @@ public:
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 result.view.write_float_expanded(
-                    key, Scalar::value(tensor_view.read_float_expanded(key))
-                );
+                    key, Scalar::value(tensor_view.read_float_expanded(key)));
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return make_tensor(
-            std::move(result.carrier_object), std::move(result.layout_object)
-        );
+        return make_tensor(std::move(result.carrier_object),
+                           std::move(result.layout_object));
     }
 
     py::object backward(py::object gradient) override {
@@ -90,18 +88,14 @@ public:
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
                 result.view.write_float_expanded(
-                    key,
-                    gradient_view.read_float_expanded(key) *
-                        Scalar::gradient_multiplier(
-                            tensor_view.read_float_expanded(key)
-                        )
-                );
+                    key, gradient_view.read_float_expanded(key) *
+                             Scalar::gradient_multiplier(
+                                 tensor_view.read_float_expanded(key)));
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
         }
-        return py::make_tuple(
-            make_tensor(std::move(result.carrier_object), std::move(result.layout_object))
-        );
+        return py::make_tuple(make_tensor(std::move(result.carrier_object),
+                                          std::move(result.layout_object)));
     }
 };
 

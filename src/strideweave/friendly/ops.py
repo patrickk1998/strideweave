@@ -68,7 +68,7 @@ def mean(tensor: Any) -> Any:
         2.0
     """
 
-    return mul(sum(tensor), 1.0 / tensor.layout.size)
+    return mul(sum(tensor), 1.0 / tensor.size())
 
 
 def item(tensor: Any) -> Any:
@@ -87,7 +87,7 @@ def item(tensor: Any) -> Any:
         3.0
     """
 
-    if tensor.layout.size != 1:
+    if tensor.size() != 1:
         raise ValueError("item requires a tensor with exactly one element")
     return tensor.carrier.get_value(tensor.offset + tensor.layout.index(0))
 

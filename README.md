@@ -296,9 +296,18 @@ uv sync --group dev
 uv run pytest tests
 uv run ruff format --check .
 uv run ruff check .
+uv run python tools/lint_invariants.py
 uv run pyright
 uv build
+find src/strideweave -type f \( -name '*.cpp' -o -name '*.hpp' \) -exec uv run clang-format --dry-run --Werror {} +
+CMAKE_ARGS="-DSTRIDEWEAVE_STRICT_WARNINGS=ON" uv build
 ```
+
+The repository invariant checker uses Python's built-in AST and reports
+StrideWeave-specific source contracts without importing the package. Native sanitizer
+coverage runs in Linux CI with `STRIDEWEAVE_SANITIZERS=ON`; it instruments the extension
+modules with AddressSanitizer and UndefinedBehaviorSanitizer before running the full
+Python test suite.
 
 The test suite covers layouts, carriers, tensor indexing and mutation,
 autograd, operations and activations, hierarchical command parsing, DLPack,

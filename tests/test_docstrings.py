@@ -1,11 +1,14 @@
+import ast
 import inspect
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 
 import strideweave as sw
 import strideweave.einops as einops
 import strideweave.friendly as friendly
 import strideweave.nn as nn
+import strideweave.operation as operation
 
 NATIVE_TOP_LEVEL_EXPORTS = {
     "CPU",
@@ -152,3 +155,32 @@ def test_documentable_top_level_exports_have_docstrings():
         assert_has_docstring(value, qualified_name)
         if inspect.isfunction(value):
             assert_function_doc_contract(value, qualified_name)
+
+
+def test_operation_runtime_exports_match_stub_declarations():
+    stub_path = Path(__file__).parents[1] / "src/strideweave/operation.pyi"
+    tree = ast.parse(stub_path.read_text(encoding="utf-8"), filename=str(stub_path))
+    all_assignment = next(
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in statement.targets
+        )
+    )
+    stub_exports = ast.literal_eval(all_assignment.value)
+    declared_names = {
+        statement.name
+        for statement in tree.body
+        if isinstance(statement, (ast.ClassDef, ast.FunctionDef))
+    }
+    declared_names.update(
+        alias.asname or alias.name
+        for statement in tree.body
+        if isinstance(statement, ast.ImportFrom)
+        for alias in statement.names
+    )
+
+    assert operation.__all__ == stub_exports
+    assert set(stub_exports) <= declared_names

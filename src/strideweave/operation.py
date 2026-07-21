@@ -5,81 +5,42 @@ operation classes live under ``strideweave.carriers``. This module keeps the his
 ``strideweave.operation`` public import path stable.
 """
 
+# This module intentionally re-exports the imported operation classes.
+# ruff: noqa: F401
+
 from __future__ import annotations
 
-from .carriers.evictable import EvictableOperation as EvictableOperation
+from .carriers.evictable import EvictableOperation
 from .carriers.generic.ops import (
-    GenericAddOperation as GenericAddOperation,
-)
-from .carriers.generic.ops import (
-    GenericDivOperation as GenericDivOperation,
-)
-from .carriers.generic.ops import (
-    GenericElementwiseMulOperation as GenericElementwiseMulOperation,
-)
-from .carriers.generic.ops import (
-    GenericELUOperation as GenericELUOperation,
-)
-from .carriers.generic.ops import (
-    GenericExpOperation as GenericExpOperation,
-)
-from .carriers.generic.ops import (
-    GenericGELUOperation as GenericGELUOperation,
-)
-from .carriers.generic.ops import (
-    GenericLeakyReLUOperation as GenericLeakyReLUOperation,
-)
-from .carriers.generic.ops import (
-    GenericMatmulOperation as GenericMatmulOperation,
-)
-from .carriers.generic.ops import (
-    GenericPowOperation as GenericPowOperation,
-)
-from .carriers.generic.ops import (
-    GenericReduceSumOperation as GenericReduceSumOperation,
-)
-from .carriers.generic.ops import (
-    GenericReLUOperation as GenericReLUOperation,
-)
-from .carriers.generic.ops import (
-    GenericScalarMulOperation as GenericScalarMulOperation,
-)
-from .carriers.generic.ops import (
-    GenericSigmoidOperation as GenericSigmoidOperation,
-)
-from .carriers.generic.ops import (
-    GenericSiLUOperation as GenericSiLUOperation,
-)
-from .carriers.generic.ops import (
-    GenericSoftplusOperation as GenericSoftplusOperation,
-)
-from .carriers.generic.ops import (
-    GenericSubOperation as GenericSubOperation,
-)
-from .carriers.generic.ops import (
-    GenericTanhOperation as GenericTanhOperation,
+    GenericAddOperation,
+    GenericDivOperation,
+    GenericElementwiseMulOperation,
+    GenericELUOperation,
+    GenericExpOperation,
+    GenericGELUOperation,
+    GenericLeakyReLUOperation,
+    GenericMatmulOperation,
+    GenericPowOperation,
+    GenericReduceSumOperation,
+    GenericReLUOperation,
+    GenericScalarMulOperation,
+    GenericSigmoidOperation,
+    GenericSiLUOperation,
+    GenericSoftplusOperation,
+    GenericSubOperation,
+    GenericTanhOperation,
 )
 from .carriers.move.ops import (
-    CpuToFileBackedMoveOperation as CpuToFileBackedMoveOperation,
+    CpuToFileBackedMoveOperation,
+    ElementwiseMoveOperation,
+    FileBackedToCpuMoveOperation,
+    MoveOperation,
 )
-from .carriers.move.ops import (
-    ElementwiseMoveOperation as ElementwiseMoveOperation,
-)
-from .carriers.move.ops import (
-    FileBackedToCpuMoveOperation as FileBackedToCpuMoveOperation,
-)
-from .carriers.move.ops import (
-    MoveOperation as MoveOperation,
-)
-from .carriers.operation_helpers import Operation as Operation
+from .carriers.operation_helpers import Operation
 from .carriers.shared_ops import (
-    GenericViewOperation as GenericViewOperation,
-)
-from .carriers.shared_ops import (
-    PermuteOperation as PermuteOperation,
-)
-from .carriers.shared_ops import (
-    RearrangeOperation as RearrangeOperation,
+    GenericViewOperation,
+    PermuteOperation,
+    RearrangeOperation,
 )
 from .functional import *  # noqa: F403
 from .functional import __all__ as _functional_all

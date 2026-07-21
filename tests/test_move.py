@@ -1,3 +1,5 @@
+import struct
+
 import pytest
 
 import strideweave as sw
@@ -198,7 +200,7 @@ def test_move_failed_copy_leaves_source_intact():
     generic = Generic([1.0, "not a number"])
     tensor = Tensor(generic, 0, layout)
 
-    with pytest.raises(Exception):
+    with pytest.raises(struct.error, match="required argument is not a float"):
         sw.move(tensor, FileBacked(dtype=DType.Floating))
 
     assert not generic.is_released()
@@ -315,10 +317,13 @@ def test_unregister_move_operation_removes_registration():
 
 
 def test_registered_move_operation_unregisters_when_block_raises():
-    with pytest.raises(RuntimeError, match="boom"):
+    def raise_inside_registration():
         with registered_move_operation(Generic, Generic, ElementwiseMoveOperation):
             assert dispatch_move(Generic, Generic) is ElementwiseMoveOperation
             raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        raise_inside_registration()
 
     with pytest.raises(KeyError, match="no move operation is registered"):
         unregister_move_operation(Generic, Generic)

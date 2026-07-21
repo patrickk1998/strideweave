@@ -27,7 +27,7 @@ def column_major(rows, cols):
 def tensor_values(tensor):
     return [
         tensor.carrier.get_value(tensor.offset + tensor.layout.index(i))
-        for i in range(tensor.layout.size)
+        for i in range(tensor.size())
     ]
 
 
@@ -249,7 +249,7 @@ def test_sgd_step_applies_learning_rate_and_skips_missing_grads():
     optimizer.step()
 
     assert tensor_values(layer.weight) == pytest.approx(
-        [w - 0.5 * g for w, g in zip(weight_before, weight_grad)]
+        [w - 0.5 * g for w, g in zip(weight_before, weight_grad, strict=True)]
     )
     assert tensor_values(layer.bias) == pytest.approx(bias_before)
 

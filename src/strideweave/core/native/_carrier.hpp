@@ -24,15 +24,10 @@ public:
     virtual py::object dtype() const = 0;
     virtual py::object get_value(Index index) const = 0;
     virtual py::object new_like(py::iterable values, bool is_mutable) const = 0;
-    virtual py::object empty_like(
-        Index size, bool is_mutable, py::object dtype
-    ) const = 0;
-    virtual void scatter(
-        py::object to_scatter,
-        py::object scatter_onto,
-        py::object mapping,
-        Index mapping_offset
-    ) = 0;
+    virtual py::object empty_like(Index size, bool is_mutable,
+                                  py::object dtype) const = 0;
+    virtual void scatter(py::object to_scatter, py::object scatter_onto,
+                         py::object mapping, Index mapping_offset) = 0;
     bool is_mutable() const {
         return _is_mutable() && (!is_owned() || has_owner_access());
     }
@@ -57,8 +52,7 @@ public:
         require_owner(token);
         if (owner_access_depth_ != 0) {
             throw std::runtime_error(
-                "Carrier ownership cannot be relinquished during owner access"
-            );
+                "Carrier ownership cannot be relinquished during owner access");
         }
         ownership_token_ = 0;
     }
@@ -68,8 +62,7 @@ public:
         const std::thread::id current_thread = std::this_thread::get_id();
         if (owner_access_depth_ != 0 && owner_access_thread_ != current_thread) {
             throw std::runtime_error(
-                "Carrier is already being accessed by its owner on another thread"
-            );
+                "Carrier is already being accessed by its owner on another thread");
         }
         owner_access_thread_ = current_thread;
         ++owner_access_depth_;
@@ -79,8 +72,7 @@ public:
         require_owner(token);
         if (!has_owner_access()) {
             throw std::runtime_error(
-                "Carrier owner access must end on the thread where it began"
-            );
+                "Carrier owner access must end on the thread where it began");
         }
         --owner_access_depth_;
         if (owner_access_depth_ == 0) {
@@ -89,18 +81,14 @@ public:
     }
 
     virtual py::dict dlpack_info() const {
-        PyErr_SetString(
-            PyExc_BufferError, "DLPack is not supported for this carrier"
-        );
+        PyErr_SetString(PyExc_BufferError, "DLPack is not supported for this carrier");
         throw py::error_already_set();
     }
 
     virtual py::object dispatch_op(const std::string& operation_name) const {
-        PyErr_Format(
-            PyExc_NotImplementedError,
-            "Carrier class does not support operation '%s'",
-            operation_name.c_str()
-        );
+        PyErr_Format(PyExc_NotImplementedError,
+                     "Carrier class does not support operation '%s'",
+                     operation_name.c_str());
         throw py::error_already_set();
     }
 
@@ -173,8 +161,7 @@ private:
     void require_external_or_owner_access() const {
         if (is_owned() && !has_owner_access()) {
             throw std::runtime_error(
-                "Carrier is owned by another carrier and cannot be modified directly"
-            );
+                "Carrier is owned by another carrier and cannot be modified directly");
         }
     }
 

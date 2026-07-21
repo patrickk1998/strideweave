@@ -5,7 +5,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
-from typing import Any
+from typing import Any, Self
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class Tree(tuple):
     size: int
     depth: int
 
-    def __new__(cls, *args: int | Node | _NodeLeaf | Tree) -> Tree:
+    def __new__(cls, *args: int | Node | _NodeLeaf | Tree) -> Self:
         normalized_iterable, depth, size = Tree.norm(args)
         obj = super().__new__(cls, normalized_iterable)
         object.__setattr__(obj, "size", size)
@@ -132,7 +132,7 @@ class Tree(tuple):
 class _ShapeLevel(tuple):
     logical_size: int
 
-    def __new__(cls, iterable: Iterable[int | _ShapeLevel] = ()) -> _ShapeLevel:
+    def __new__(cls, iterable: Iterable[int | _ShapeLevel] = ()) -> Self:
         logical_size = 1
         for el in iterable:
             if not isinstance(el, int) and not isinstance(el, _ShapeLevel):
@@ -270,7 +270,7 @@ class Shape:
 
 
 class _StrideLevel(tuple):
-    def __new__(cls, iterable: Iterable[int | _StrideLevel] = ()) -> _StrideLevel:
+    def __new__(cls, iterable: Iterable[int | _StrideLevel] = ()) -> Self:
         for el in iterable:
             if not isinstance(el, int) and not isinstance(el, _StrideLevel):
                 raise ValueError(
@@ -431,7 +431,7 @@ class Layout:
     def check_tree(shape: _ShapeLevel, stride: _StrideLevel) -> bool:
         if len(shape) != len(stride):
             return False
-        for sh, st in zip(shape, stride):
+        for sh, st in zip(shape, stride, strict=True):
             if isinstance(sh, int) and isinstance(st, int):
                 continue
             if isinstance(sh, _ShapeLevel) and isinstance(st, _StrideLevel):
@@ -473,7 +473,7 @@ class Layout:
             curr_key = key
 
         idx = 0
-        for sh, stride_value, k in zip(shape, stride, curr_key):
+        for sh, stride_value, k in zip(shape, stride, curr_key, strict=True):
             if isinstance(sh, int):
                 if k < 0 or k >= sh:
                     raise ValueError("Key is not in domain of shape")
@@ -615,7 +615,7 @@ class Layout:
         extracted = []
         if len(layout) != len(profile):
             raise ValueError("layout and tree profile do not match")
-        for node, marker in zip(layout, profile):
+        for node, marker in zip(layout, profile, strict=True):
             if _is_leaf_marker(marker):
                 extracted.append(node)
             if isinstance(marker, Tree):
@@ -807,7 +807,7 @@ class Layout:
         shape: _ShapeLevel, stride: _StrideLevel
     ) -> list[tuple[int, int]]:
         traversal = []
-        for sh, st in zip(shape, stride):
+        for sh, st in zip(shape, stride, strict=True):
             if isinstance(sh, int):
                 traversal.append((sh, st))
             else:
@@ -904,7 +904,7 @@ class Layout:
             tiler = B
 
         result = Layout(Shape(), Stride())
-        for A_el, tile in zip(A[0 : len(tiler)], tiler):
+        for A_el, tile in zip(A[0 : len(tiler)], tiler, strict=True):
             to_append = Layout.compose(A_el, tile)
             result = Layout.append(result, to_append)
         for A_el in A[len(tiler) :]:
@@ -967,14 +967,14 @@ class Layout:
     @staticmethod
     def divide_tiler(A: Layout, B: list[Layout]) -> Layout:
         tiler = []
-        for a, b in zip(A[0 : len(B)], B):
+        for a, b in zip(A[0 : len(B)], B, strict=True):
             tiler.append(Layout.make_layout(b, Layout.complement(b, a.size)))
         return Layout.compose(A, tiler)
 
     @staticmethod
     def zipped_divide(A: Layout, B: list[Layout]) -> Layout:
         tiler = []
-        for a, b in zip(A[0 : len(B)], B):
+        for a, b in zip(A[0 : len(B)], B, strict=True):
             tiler.append(Layout.make_layout(b, Layout.complement(b, a.size)))
         unzipped = Layout.compose(A, tiler)
         zipped = Layout.empty()

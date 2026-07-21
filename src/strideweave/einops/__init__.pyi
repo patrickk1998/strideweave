@@ -1,11 +1,11 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from ..core.layout import Tree
 from ..core.tensor import Tensor
 
-TokenKind = Literal[
+TokenKind: TypeAlias = Literal[
     "left_paren",
     "right_paren",
     "arrow",

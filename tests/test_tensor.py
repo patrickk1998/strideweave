@@ -199,8 +199,11 @@ def test_tensor_accepts_tuple_and_list_coordinate_keys():
     tensor = Tensor(carrier, 0, layout)
 
     assert tensor[1, 2] == carrier[layout.index([1, 2])]
-    assert tensor[[1, 2]] == carrier[layout.index([1, 2])]
-    assert tensor[[1, 2]] == tensor[1, 2]
+    assert (
+        tensor[[1, 2]]  # strideweave-lint: ignore=SW001
+        == carrier[layout.index([1, 2])]
+    )
+    assert tensor[[1, 2]] == tensor[1, 2]  # strideweave-lint: ignore=SW001
 
 
 def test_tensor_view_with_leaf_slice_shares_data_and_updates_layout_and_offset():
@@ -255,9 +258,9 @@ def test_tensor_view_requires_slice_for_getitem_dispatch():
 def test_tensor_view_rejects_missing_and_extra_modes():
     tensor = Tensor(Generic(range(64)), 0, Layout(Shape([5, 10]), Stride([1, 5])))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="exactly one key per top-level mode"):
         tensor[2:5]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="exactly one key per top-level mode"):
         tensor[:, :, :]
 
 
@@ -267,13 +270,13 @@ def test_tensor_view_rejects_invalid_slices_and_integer_keys():
     )
     flat_tensor = Tensor(Generic(range(64)), 0, Layout(Shape([5, 10]), Stride([1, 5])))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="whole slices are supported for non-leaf"):
         nested_tensor[:, 1:3]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="View slices do not support steps"):
         flat_tensor[:, ::2]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="View integer key is out of domain"):
         flat_tensor[5, :]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="View slices must be non-empty"):
         flat_tensor[:, 3:3]
 
 
@@ -281,7 +284,10 @@ def test_tensor_list_coordinate_key_matches_tuple_key_for_hierarchical_mode():
     layout = Layout(Shape([2, 3, [2, 2]]), Stride([1, 2, [6, 12]]))
     tensor = Tensor(Generic(range(24)), 0, layout)
 
-    assert tensor[[1, 2, [1, 1]]] == tensor[1, 2, [1, 1]]
+    assert (
+        tensor[[1, 2, [1, 1]]]  # strideweave-lint: ignore=SW001
+        == tensor[1, 2, [1, 1]]
+    )
 
 
 def test_tensor_out_of_domain_keys_raise_layout_errors():
@@ -289,9 +295,9 @@ def test_tensor_out_of_domain_keys_raise_layout_errors():
     layout = Layout(Shape([3, 4]), Stride([2, 10]))
     tensor = Tensor(carrier, 0, layout)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Key is not in domain of shape"):
         tensor[3, 0]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Key is not in domain of shape"):
         tensor[12]
 
 
@@ -354,12 +360,12 @@ def test_tensor_setitem_accepts_tuple_and_list_coordinate_keys():
     tensor = Tensor(carrier, 0, layout)
 
     tensor[1, 2] = "tuple"
-    tensor[[2, 3]] = "list"
-    tensor[[1, 2]] = "list-overwrite"
+    tensor[[2, 3]] = "list"  # strideweave-lint: ignore=SW001
+    tensor[[1, 2]] = "list-overwrite"  # strideweave-lint: ignore=SW001
 
     assert values[layout.index([1, 2])] == "list-overwrite"
     assert tensor[1, 2] == "list-overwrite"
-    assert tensor[[1, 2]] == tensor[1, 2]
+    assert tensor[[1, 2]] == tensor[1, 2]  # strideweave-lint: ignore=SW001
     assert values[layout.index([2, 3])] == "list"
 
 
@@ -368,10 +374,13 @@ def test_tensor_setitem_list_coordinate_key_matches_tuple_key_for_hierarchical_m
     layout = Layout(Shape([2, 3, [2, 2]]), Stride([1, 2, [6, 12]]))
     tensor = Tensor(Generic(values), 0, layout)
 
-    tensor[[1, 2, [1, 1]]] = "updated"
+    tensor[[1, 2, [1, 1]]] = "updated"  # strideweave-lint: ignore=SW001
 
     assert tensor[1, 2, [1, 1]] == "updated"
-    assert tensor[[1, 2, [1, 1]]] == tensor[1, 2, [1, 1]]
+    assert (
+        tensor[[1, 2, [1, 1]]]  # strideweave-lint: ignore=SW001
+        == tensor[1, 2, [1, 1]]
+    )
     assert values[layout.index([1, 2, [1, 1]])] == "updated"
 
 
@@ -380,9 +389,9 @@ def test_tensor_setitem_out_of_domain_keys_raise_layout_errors():
     layout = Layout(Shape([3, 4]), Stride([2, 10]))
     tensor = Tensor(carrier, 0, layout)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Key is not in domain of shape"):
         tensor[3, 0] = "updated"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Key is not in domain of shape"):
         tensor[12] = "updated"
 
 
@@ -575,7 +584,7 @@ def test_tensor_add_rejects_mismatched_layouts():
     lhs = Tensor(Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([1, 2])))
     rhs = Tensor(Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([2, 1])))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Tensor layouts must match"):
         _ = lhs + rhs
 
 
@@ -689,7 +698,7 @@ def test_tensor_exp_forward_and_backward():
     assert tensor_values(result) == pytest.approx(expected)
     assert isinstance(result.autograd_ctx, GenericExpOperation)
     assert tensor_values(require_grad(tensor)) == pytest.approx(
-        [grad * value for grad, value in zip([1, 2, 3, 4], expected)]
+        [grad * value for grad, value in zip([1, 2, 3, 4], expected, strict=True)]
     )
 
 
@@ -715,7 +724,7 @@ def test_tensor_elementwise_operations_reject_invalid_inputs():
         Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([2, 1]))
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Tensor layouts must match"):
         _ = tensor * mismatched_layout
     with pytest.raises(TypeError):
         _ = tensor / 2
@@ -760,7 +769,7 @@ def test_tensor_reduce_backward_copies_gradient_over_second_mode():
 def test_tensor_reduce_rejects_non_two_mode_tensor():
     one_mode = Tensor(Generic([1, 2]), 0, Layout(Shape(2), Stride(1)))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="tensor must have a two-mode layout"):
         sw.reduce(one_mode)
 
 
@@ -823,10 +832,10 @@ def test_tensor_matmul_rejects_invalid_shapes_and_carrier():
     one_mode = Tensor(Generic([1, 2]), 0, Layout(Shape(2), Stride(1)))
     cpu_tensor = Tensor(CPU(4), 0, a.layout)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Matmul inner dimensions must match"):
         _ = a @ bad_k
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="rhs must have a two-mode layout"):
         _ = a @ one_mode
 
     with pytest.raises(TypeError):
@@ -909,11 +918,13 @@ def test_tensor_rearrange_rejects_invalid_inputs():
 
     with pytest.raises(TypeError):
         sw.rearrange(tensor, invalid_output)
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError, match="Rearrange command must contain one '->' arrow"
+    ):
         sw.rearrange(tensor, "output")
     with pytest.raises(TypeError):
         sw.rearrange(tensor, Tree(Node.id(0), Node.id(1)), invalid_selection)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must include every extracted layout"):
         sw.rearrange(tensor, Tree(Node.id(0)))
 
 
@@ -984,13 +995,13 @@ def test_tensor_permute_rejects_invalid_orders():
     tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
     non_integer_dim: Any = "0"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must reorder every layout mode"):
         sw.permute(tensor, 0, 0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must reorder every layout mode"):
         sw.permute(tensor, 0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must reorder every layout mode"):
         sw.permute(tensor, -1, 0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must reorder every layout mode"):
         sw.permute(tensor, 0, 2)
     with pytest.raises(TypeError):
         sw.permute(tensor, non_integer_dim, 1)
@@ -1079,11 +1090,11 @@ def test_tensor_backward_without_gradient_rejects_non_scalar_tensor():
     logical_size_two_tensor = Tensor(Generic([1, 2]), 0, logical_size_two_layout)
 
     with pytest.raises(
-        ValueError, match="Tensor.backward requires a gradient for non-scalar tensors"
+        ValueError, match=r"Tensor.backward requires a gradient for non-scalar tensors"
     ):
         logical_size_one_tensor.backward()
     with pytest.raises(
-        ValueError, match="Tensor.backward requires a gradient for non-scalar tensors"
+        ValueError, match=r"Tensor.backward requires a gradient for non-scalar tensors"
     ):
         logical_size_two_tensor.backward()
 
@@ -1277,7 +1288,7 @@ def test_tensor_view_backward_scatters_gradient_into_source_layout():
     tensor_grad = require_grad(tensor)
 
     expected = [0] * tensor.size()
-    for value, j in zip([10, 20, 30], range(2, 5)):
+    for value, j in zip([10, 20, 30], range(2, 5), strict=True):
         expected[layout.index([2, j])] = value
     assert view.grad is None
     assert tensor_values(tensor_grad) == expected
@@ -1325,7 +1336,7 @@ def test_tensor_backward_rejects_invalid_gradient():
     with pytest.raises(TypeError):
         tensor.backward(invalid_gradient)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="gradient layout must match tensor layout"):
         tensor.backward(wrong_layout_gradient)
 
 
@@ -1333,7 +1344,7 @@ def test_tensor_rejects_negative_offset():
     carrier = Generic(range(4))
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Tensor offset must be non-negative"):
         Tensor(carrier, -1, layout)
 
 
@@ -1341,14 +1352,14 @@ def test_tensor_rejects_storage_that_exceeds_data_size():
     carrier = Generic(range(4))
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Tensor storage exceeds carrier size"):
         Tensor(carrier, 1, layout)
 
 
 def test_tensor_storage_validation_uses_cosize_not_logical_size():
     layout = Layout(Shape([2, 2]), Stride([1, 10]))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Tensor storage exceeds carrier size"):
         Tensor(Generic(range(11)), 0, layout)
 
     tensor = Tensor(Generic(range(12)), 0, layout)
@@ -1390,7 +1401,7 @@ def test_tensor_rejects_negative_index_keys():
     with pytest.raises(ValueError, match="not in domain"):
         tensor[-1]
     with pytest.raises(ValueError, match="not in domain"):
-        tensor[[0, -1]]
+        tensor[[0, -1]]  # strideweave-lint: ignore=SW001
     with pytest.raises(ValueError, match="not in domain"):
         tensor[-1, 0] = 9.0
 

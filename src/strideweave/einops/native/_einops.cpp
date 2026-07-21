@@ -12,7 +12,9 @@ bool is_ascii_alpha(char value) {
     return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z');
 }
 
-bool is_ascii_digit(char value) { return value >= '0' && value <= '9'; }
+bool is_ascii_digit(char value) {
+    return value >= '0' && value <= '9';
+}
 
 bool is_symbol_tail(char value) {
     return is_ascii_alpha(value) || is_ascii_digit(value) || value == '_';
@@ -27,22 +29,14 @@ void ensure_ascii(char value, std::size_t position) {
     if (static_cast<unsigned char>(value) >= 128) {
         throw py::value_error(
             "Layout command must contain only ASCII characters at offset " +
-            std::to_string(position)
-        );
+            std::to_string(position));
     }
 }
 
-void append_token(
-    py::list& tokens,
-    const py::object& token_type,
-    const char* kind,
-    const std::string& value,
-    std::size_t start,
-    std::size_t end
-) {
-    tokens.append(token_type(
-        py::str(kind), py::str(value), py::int_(start), py::int_(end)
-    ));
+void append_token(py::list& tokens, const py::object& token_type, const char* kind,
+                  const std::string& value, std::size_t start, std::size_t end) {
+    tokens.append(
+        token_type(py::str(kind), py::str(value), py::int_(start), py::int_(end)));
 }
 
 py::list lex(py::str command, py::object token_type) {
@@ -81,23 +75,18 @@ py::list lex(py::str command, py::object token_type) {
                 position += 2;
                 continue;
             }
-            throw py::value_error(
-                "Expected '->' arrow token at offset " + std::to_string(start)
-            );
+            throw py::value_error("Expected '->' arrow token at offset " +
+                                  std::to_string(start));
         }
         if (value == '>') {
-            throw py::value_error(
-                "Unexpected '>' at offset " + std::to_string(start)
-            );
+            throw py::value_error("Unexpected '>' at offset " + std::to_string(start));
         }
         if (value == '1') {
             if (position + 1 < input.size()) {
                 ensure_ascii(input[position + 1], position + 1);
                 if (is_symbol_tail(input[position + 1])) {
-                    throw py::value_error(
-                        "Invalid singleton token at offset " +
-                        std::to_string(start)
-                    );
+                    throw py::value_error("Invalid singleton token at offset " +
+                                          std::to_string(start));
                 }
             }
             append_token(tokens, token_type, "one", "1", start, start + 1);
@@ -105,9 +94,8 @@ py::list lex(py::str command, py::object token_type) {
             continue;
         }
         if (is_ascii_digit(value)) {
-            throw py::value_error(
-                "Invalid dimension symbol at offset " + std::to_string(start)
-            );
+            throw py::value_error("Invalid dimension symbol at offset " +
+                                  std::to_string(start));
         }
         if (is_ascii_alpha(value)) {
             ++position;
@@ -118,20 +106,13 @@ py::list lex(py::str command, py::object token_type) {
                 }
                 ++position;
             }
-            append_token(
-                tokens,
-                token_type,
-                "symbol",
-                input.substr(start, position - start),
-                start,
-                position
-            );
+            append_token(tokens, token_type, "symbol",
+                         input.substr(start, position - start), start, position);
             continue;
         }
 
-        throw py::value_error(
-            "Unexpected character at offset " + std::to_string(start)
-        );
+        throw py::value_error("Unexpected character at offset " +
+                              std::to_string(start));
     }
 
     return tokens;
@@ -152,11 +133,8 @@ std::unordered_map<std::string, py::object>& einsum_spec_cache() {
     return *cache;
 }
 
-py::object cached_spec(
-    py::str command,
-    py::function compiler,
-    std::unordered_map<std::string, py::object>& cache
-) {
+py::object cached_spec(py::str command, py::function compiler,
+                       std::unordered_map<std::string, py::object>& cache) {
     const std::string key = py::cast<std::string>(command);
     const auto found = cache.find(key);
     if (found != cache.end()) {
@@ -185,22 +163,10 @@ py::object cached_einsum_spec(py::str command, py::function compiler) {
 PYBIND11_MODULE(_einops, module) {
     module.doc() = "Native lexer for StrideWeave hierarchical layout commands";
     module.def("lex", &lex, py::arg("command"), py::arg("token_type"));
-    module.def(
-        "_cached_rearrange_spec",
-        &cached_rearrange_spec,
-        py::arg("command"),
-        py::arg("compiler")
-    );
-    module.def(
-        "_cached_reduce_spec",
-        &cached_reduce_spec,
-        py::arg("command"),
-        py::arg("compiler")
-    );
-    module.def(
-        "_cached_einsum_spec",
-        &cached_einsum_spec,
-        py::arg("command"),
-        py::arg("compiler")
-    );
+    module.def("_cached_rearrange_spec", &cached_rearrange_spec, py::arg("command"),
+               py::arg("compiler"));
+    module.def("_cached_reduce_spec", &cached_reduce_spec, py::arg("command"),
+               py::arg("compiler"));
+    module.def("_cached_einsum_spec", &cached_einsum_spec, py::arg("command"),
+               py::arg("compiler"));
 }

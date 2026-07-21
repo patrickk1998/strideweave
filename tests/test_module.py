@@ -79,10 +79,10 @@ def test_parameter_rejects_ambiguous_constructor_arguments():
 def test_parameter_rejects_invalid_names():
     tensor = make_tensor("value")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="name must be non-empty"):
         Parameter(tensor, name="")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"name must not contain '\.'"):
         Parameter(tensor, name="bad.name")
 
     with pytest.raises(TypeError):
@@ -286,20 +286,20 @@ def test_assigning_module_name_does_not_register_it():
 
 
 def test_module_rejects_invalid_names():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="name must be non-empty"):
         Module(name="")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"name must not contain '\.'"):
         Module(name="bad.name")
 
     with pytest.raises(TypeError):
         Module(name=123)  # type: ignore[arg-type]
 
     module = Module()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="name must be non-empty"):
         module.name = ""
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"name must not contain '\.'"):
         module.name = "bad.name"
 
     with pytest.raises(TypeError):

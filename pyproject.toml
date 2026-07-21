@@ -26,6 +26,7 @@ Repository = "https://github.com/patrickk1998/strideweave.git"
 
 [dependency-groups]
 dev = [
+    "clang-format==22.1.8",
     "numpy>=2.0",
     "pyright>=1.1.407",
     "pytest>=9.0.2",
@@ -45,10 +46,27 @@ target-version = "py312"
 line-length = 88
 
 [tool.ruff.lint]
-extend-select = ["I"]
+extend-select = [
+    "B017",
+    "B905",
+    "I",
+    "PLC0414",
+    "PT011",
+    "PT012",
+    "PYI011",
+    "PYI026",
+    "PYI034",
+    "PYI035",
+    "RUF022",
+    "RUF043",
+    "UP035",
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["strideweave"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
 
 [tool.uv]
 required-version = ">=0.8.5"

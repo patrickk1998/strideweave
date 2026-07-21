@@ -92,9 +92,8 @@ public:
                 owned_int_data_ =
                     std::make_unique<std::int32_t[]>(static_cast<std::size_t>(size_));
                 data_ = reinterpret_cast<std::byte*>(owned_int_data_.get());
-                std::fill_n(
-                    data_as<std::int32_t>(), static_cast<std::size_t>(size_), 0
-                );
+                std::fill_n(data_as<std::int32_t>(), static_cast<std::size_t>(size_),
+                            0);
             }
             return;
         }
@@ -107,9 +106,8 @@ public:
         if (pointer_value <= 0) {
             throw py::value_error("CPU pointer must be a positive integer address");
         }
-        data_ = reinterpret_cast<std::byte*>(
-            static_cast<std::uintptr_t>(pointer_value)
-        );
+        data_ =
+            reinterpret_cast<std::byte*>(static_cast<std::uintptr_t>(pointer_value));
     }
 
     Index size() const override { return size_; }
@@ -129,55 +127,41 @@ public:
         return new_like_with_dtype(values, is_mutable, py::none());
     }
 
-    py::object new_like_with_dtype(
-        py::iterable values, bool is_mutable, py::object dtype
-    ) const {
+    py::object new_like_with_dtype(py::iterable values, bool is_mutable,
+                                   py::object dtype) const {
         py::list materialized_values(values);
         py::object cpu_type = py::module_::import("strideweave._carrier").attr("CPU");
         CpuDType result_dtype = dtype.is_none() ? dtype_ : parse_cpu_dtype(dtype);
-        py::object result = cpu_type(
-            py::int_(py::len(materialized_values)),
-            py::none(),
-            py::arg("mutable") = is_mutable,
-            py::arg("dtype") = cpu_dtype_object(result_dtype)
-        );
+        py::object result = cpu_type(py::int_(py::len(materialized_values)), py::none(),
+                                     py::arg("mutable") = is_mutable,
+                                     py::arg("dtype") = cpu_dtype_object(result_dtype));
         CPU& result_carrier = py::cast<CPU&>(result);
-        for (py::ssize_t i = 0; i < py::len(materialized_values); ++i) {
+        for (std::size_t i = 0; i < py::len(materialized_values); ++i) {
             if (materialized_values[i].is_none()) {
-                result_carrier.write_zero(static_cast<Index>(i));
+                result_carrier.write_zero(layout_index::size_as_index(i));
                 continue;
             }
-            result_carrier.set_value_at(static_cast<Index>(i), materialized_values[i]);
+            result_carrier.set_value_at(layout_index::size_as_index(i),
+                                        materialized_values[i]);
         }
         return result;
     }
 
-    py::object empty_like(
-        Index size, bool is_mutable, py::object dtype
-    ) const override {
+    py::object empty_like(Index size, bool is_mutable,
+                          py::object dtype) const override {
         if (size < 0) {
             throw py::value_error("CPU allocation size must be non-negative");
         }
         py::object cpu_type = py::module_::import("strideweave._carrier").attr("CPU");
         CpuDType result_dtype = dtype.is_none() ? dtype_ : parse_cpu_dtype(dtype);
-        return cpu_type(
-            py::int_(size),
-            py::none(),
-            py::arg("mutable") = is_mutable,
-            py::arg("dtype") = cpu_dtype_object(result_dtype)
-        );
+        return cpu_type(py::int_(size), py::none(), py::arg("mutable") = is_mutable,
+                        py::arg("dtype") = cpu_dtype_object(result_dtype));
     }
 
-    void scatter(
-        py::object to_scatter,
-        py::object scatter_onto,
-        py::object mapping,
-        Index mapping_offset
-    ) override;
+    void scatter(py::object to_scatter, py::object scatter_onto, py::object mapping,
+                 Index mapping_offset) override;
 
-    std::uintptr_t pointer() const {
-        return reinterpret_cast<std::uintptr_t>(data_);
-    }
+    std::uintptr_t pointer() const { return reinterpret_cast<std::uintptr_t>(data_); }
 
     py::dict dlpack_info() const override {
         py::dict info;
@@ -195,38 +179,29 @@ public:
         increment_version();
     }
 
-    template <typename T>
-    T* data_as() {
-        return reinterpret_cast<T*>(data_);
-    }
+    template <typename T> T* data_as() { return reinterpret_cast<T*>(data_); }
 
-    template <typename T>
-    const T* data_as() const {
+    template <typename T> const T* data_as() const {
         return reinterpret_cast<const T*>(data_);
     }
 
-    template <typename T>
-    T& element(Index index) {
+    template <typename T> T& element(Index index) {
         validate_index(index);
         return unchecked_element<T>(index);
     }
 
-    template <typename T>
-    const T& element(Index index) const {
+    template <typename T> const T& element(Index index) const {
         validate_index(index);
         return unchecked_element<T>(index);
     }
 
-    template <typename T>
-    T& unchecked_element(Index index) {
+    template <typename T> T& unchecked_element(Index index) {
         return *reinterpret_cast<T*>(data_ + index * static_cast<Index>(sizeof(T)));
     }
 
-    template <typename T>
-    const T& unchecked_element(Index index) const {
-        return *reinterpret_cast<const T*>(
-            data_ + index * static_cast<Index>(sizeof(T))
-        );
+    template <typename T> const T& unchecked_element(Index index) const {
+        return *reinterpret_cast<const T*>(data_ +
+                                           index * static_cast<Index>(sizeof(T)));
     }
 
     py::object dispatch_op(const std::string& operation_name) const override;
@@ -386,7 +361,9 @@ inline Index tensor_offset(py::handle tensor) {
     return py::cast<Index>(tensor.attr("offset"));
 }
 
-inline py::object tensor_layout(py::handle tensor) { return tensor.attr("layout"); }
+inline py::object tensor_layout(py::handle tensor) {
+    return tensor.attr("layout");
+}
 
 struct CpuTensorView {
     CPU* carrier;
@@ -446,9 +423,8 @@ struct CpuTensorView {
         return read_int_expanded(key.data(), key.size());
     }
 
-    void write_int_expanded(
-        const Index* key, std::size_t size, std::int32_t value
-    ) const {
+    void write_int_expanded(const Index* key, std::size_t size,
+                            std::int32_t value) const {
         const Index layout_index = cache->index_expanded(key, size);
         carrier->unchecked_element<std::int32_t>(offset + layout_index) = value;
     }
@@ -471,20 +447,13 @@ inline CpuTensorView cpu_tensor_view(py::handle tensor, const char* name) {
     py::object cache_owner = layout.attr("_cache");
     auto& cache = py::cast<strideweave::layout_index::LayoutCache&>(cache_owner);
     return CpuTensorView{
-        &carrier,
-        tensor_offset(tensor),
-        std::move(cache_owner),
-        &cache,
-        cache.logical_size(),
+        &carrier, tensor_offset(tensor), std::move(cache_owner),
+        &cache,   cache.logical_size(),
     };
 }
 
-inline void CPU::scatter(
-    py::object to_scatter,
-    py::object scatter_onto,
-    py::object mapping,
-    Index mapping_offset
-) {
+inline void CPU::scatter(py::object to_scatter, py::object scatter_onto,
+                         py::object mapping, Index mapping_offset) {
     if (mapping_offset < 0) {
         throw py::value_error("mapping_offset must be non-negative");
     }
@@ -513,8 +482,7 @@ inline void CPU::scatter(
     const Index destination_offset = tensor_offset(scatter_onto);
     const Index mapped_storage_size = mapping_cache.cosize();
     const bool storage_exceeds_carrier =
-        destination_offset > size_ ||
-        mapping_offset > size_ - destination_offset ||
+        destination_offset > size_ || mapping_offset > size_ - destination_offset ||
         mapped_storage_size > size_ - destination_offset - mapping_offset;
     if (storage_exceeds_carrier) {
         throw py::value_error("scatter mapping exceeds destination carrier size");
@@ -522,11 +490,10 @@ inline void CPU::scatter(
 
     {
         py::gil_scoped_release release;
-        std::vector<Index> key(mapping_cache.leaf_rank(), 0);
+        std::vector<Index> key(layout_index::as_size(mapping_cache.leaf_rank()), 0);
         for (Index i = 0; i < mapping_cache.logical_size(); ++i) {
-            const Index source_index = source.cache->index_expanded(
-                key.data(), key.size()
-            );
+            const Index source_index =
+                source.cache->index_expanded(key.data(), key.size());
             const Index destination_index =
                 destination_offset + mapping_offset +
                 mapping_cache.index_expanded(key.data(), key.size());
@@ -535,9 +502,8 @@ inline void CPU::scatter(
                     source.read_float_storage(source.offset + source_index);
             } else {
                 unchecked_element<std::int32_t>(destination_index) =
-                    source.carrier->unchecked_element<std::int32_t>(
-                        source.offset + source_index
-                    );
+                    source.carrier->unchecked_element<std::int32_t>(source.offset +
+                                                                    source_index);
             }
             mapping_cache.increment_key(key.data(), key.size());
         }
@@ -576,9 +542,8 @@ inline void require_two_mode_tensor(py::handle tensor, const char* name) {
     }
 }
 
-inline std::pair<py::object, Index> canonical_stride_level(
-    py::handle shape_level, Index stride
-) {
+inline std::pair<py::object, Index> canonical_stride_level(py::handle shape_level,
+                                                           Index stride) {
     if (strideweave::layout_index::is_int(shape_level)) {
         return {py::int_(stride), stride * py::cast<Index>(shape_level)};
     }
@@ -594,9 +559,7 @@ inline std::pair<py::object, Index> canonical_stride_level(
     return {std::move(stride_level), next_stride};
 }
 
-inline py::object canonical_layout_from_modes(
-    std::initializer_list<py::object> modes
-) {
+inline py::object canonical_layout_from_modes(std::initializer_list<py::object> modes) {
     py::object layout_module = py::module_::import("strideweave.layout");
     py::object shape_type = layout_module.attr("Shape");
     py::object stride_type = layout_module.attr("Stride");
@@ -619,9 +582,8 @@ inline py::object canonical_layout_from_modes(
 
 inline py::object make_cpu_carrier(Index size, CpuDType dtype = CpuDType::Float32) {
     py::object cpu_type = py::module_::import("strideweave._carrier").attr("CPU");
-    return cpu_type(
-        py::int_(size), py::none(), py::arg("dtype") = cpu_dtype_object(dtype)
-    );
+    return cpu_type(py::int_(size), py::none(),
+                    py::arg("dtype") = cpu_dtype_object(dtype));
 }
 
 inline py::object make_tensor(py::object carrier, py::object layout) {
@@ -634,9 +596,8 @@ struct CpuTensorAllocation {
     CpuTensorView view;
 };
 
-inline CpuTensorAllocation allocate_cpu_tensor(
-    py::object layout, CpuDType dtype = CpuDType::Float32
-) {
+inline CpuTensorAllocation allocate_cpu_tensor(py::object layout,
+                                               CpuDType dtype = CpuDType::Float32) {
     py::object cache_owner = layout.attr("_cache");
     auto& cache = py::cast<strideweave::layout_index::LayoutCache&>(cache_owner);
     py::object carrier = make_cpu_carrier(cache.cosize(), dtype);
@@ -657,13 +618,13 @@ inline py::object copy_gradient_for(py::handle target, py::handle gradient) {
         py::gil_scoped_release release;
         std::vector<Index> key(output.view.leaf_rank(), 0);
         for (Index i = 0; i < output.view.logical_size; ++i) {
-            output.view.write_float_expanded(
-                key, gradient_view.read_float_expanded(key)
-            );
+            output.view.write_float_expanded(key,
+                                             gradient_view.read_float_expanded(key));
             output.view.cache->increment_key(key.data(), key.size());
         }
     }
-    return make_tensor(std::move(output.carrier_object), std::move(output.layout_object));
+    return make_tensor(std::move(output.carrier_object),
+                       std::move(output.layout_object));
 }
 
 inline py::object copy_negated_gradient_for(py::handle target, py::handle gradient) {
@@ -675,13 +636,13 @@ inline py::object copy_negated_gradient_for(py::handle target, py::handle gradie
         py::gil_scoped_release release;
         std::vector<Index> key(output.view.leaf_rank(), 0);
         for (Index i = 0; i < output.view.logical_size; ++i) {
-            output.view.write_float_expanded(
-                key, -gradient_view.read_float_expanded(key)
-            );
+            output.view.write_float_expanded(key,
+                                             -gradient_view.read_float_expanded(key));
             output.view.cache->increment_key(key.data(), key.size());
         }
     }
-    return make_tensor(std::move(output.carrier_object), std::move(output.layout_object));
+    return make_tensor(std::move(output.carrier_object),
+                       std::move(output.layout_object));
 }
 
 inline CpuDType promote_cpu_binary_dtype(py::handle lhs, py::handle rhs) {
@@ -694,9 +655,8 @@ inline CpuDType promote_cpu_binary_dtype(py::handle lhs, py::handle rhs) {
     return CpuDType::Int32;
 }
 
-inline void write_int_result(
-    CpuTensorView& view, const std::vector<Index>& key, long long value
-) {
+inline void write_int_result(CpuTensorView& view, const std::vector<Index>& key,
+                             long long value) {
     view.write_int_expanded(key, checked_int32(value));
 }
 

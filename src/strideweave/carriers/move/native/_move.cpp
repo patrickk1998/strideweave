@@ -20,9 +20,8 @@ void validate_copy_arguments(std::uintptr_t pointer, Index byte_count) {
     }
 }
 
-void copy_memory_to_file(
-    const std::string& path, std::uintptr_t pointer, Index byte_count
-) {
+void copy_memory_to_file(const std::string& path, std::uintptr_t pointer,
+                         Index byte_count) {
     validate_copy_arguments(pointer, byte_count);
     if (byte_count == 0) {
         return;
@@ -39,12 +38,8 @@ void copy_memory_to_file(
     }
 }
 
-void copy_file_to_memory(
-    const std::string& path,
-    Index byte_offset,
-    std::uintptr_t pointer,
-    Index byte_count
-) {
+void copy_file_to_memory(const std::string& path, Index byte_offset,
+                         std::uintptr_t pointer, Index byte_count) {
     validate_copy_arguments(pointer, byte_count);
     if (byte_offset < 0) {
         throw py::value_error("byte_offset must be non-negative");
@@ -70,19 +65,8 @@ void copy_file_to_memory(
 PYBIND11_MODULE(_move, module) {
     module.doc() = "Native bulk copy helpers for the strideweave move operation";
 
-    module.def(
-        "copy_memory_to_file",
-        &copy_memory_to_file,
-        py::arg("path"),
-        py::arg("pointer"),
-        py::arg("byte_count")
-    );
-    module.def(
-        "copy_file_to_memory",
-        &copy_file_to_memory,
-        py::arg("path"),
-        py::arg("byte_offset"),
-        py::arg("pointer"),
-        py::arg("byte_count")
-    );
+    module.def("copy_memory_to_file", &copy_memory_to_file, py::arg("path"),
+               py::arg("pointer"), py::arg("byte_count"));
+    module.def("copy_file_to_memory", &copy_file_to_memory, py::arg("path"),
+               py::arg("byte_offset"), py::arg("pointer"), py::arg("byte_count"));
 }

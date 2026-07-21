@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -39,9 +40,34 @@ struct ModeRange {
     std::size_t end = 0;
 };
 
-inline bool is_int(py::handle value) { return py::isinstance<py::int_>(value); }
+inline bool is_int(py::handle value) {
+    return py::isinstance<py::int_>(value);
+}
 
-inline Index as_index(py::handle value) { return py::cast<Index>(value); }
+inline Index as_index(py::handle value) {
+    return py::cast<Index>(value);
+}
+
+inline std::size_t as_size(Index value) {
+    if (value < 0) {
+        throw py::value_error("Index must be non-negative");
+    }
+    if constexpr (sizeof(Index) > sizeof(std::size_t)) {
+        if (value > static_cast<Index>(std::numeric_limits<std::size_t>::max())) {
+            throw std::overflow_error("Index does not fit in size_t");
+        }
+    }
+    return static_cast<std::size_t>(value);
+}
+
+inline Index size_as_index(std::size_t value) {
+    if constexpr (sizeof(std::size_t) >= sizeof(Index)) {
+        if (value > static_cast<std::size_t>(std::numeric_limits<Index>::max())) {
+            throw std::overflow_error("Size does not fit in Index");
+        }
+    }
+    return static_cast<Index>(value);
+}
 
 inline Index logical_size(py::handle shape_level) {
     return as_index(shape_level.attr("logical_size"));
@@ -83,9 +109,7 @@ public:
 
     Index rank() const { return rank_; }
 
-    Index leaf_rank() const {
-        return static_cast<Index>(leaf_shapes_.size());
-    }
+    Index leaf_rank() const { return static_cast<Index>(leaf_shapes_.size()); }
 
     const std::vector<CacheEntry>& shape_entries() const { return shape_entries_; }
 
@@ -134,9 +158,7 @@ public:
         return index;
     }
 
-    Index get_index(py::handle key) const {
-        return index_python_key(root_, key);
-    }
+    Index get_index(py::handle key) const { return index_python_key(root_, key); }
 
     void increment_key(Index* key, std::size_t size) const {
         if (size != leaf_shapes_.size()) {
@@ -157,9 +179,8 @@ public:
     }
 
 private:
-    static LayoutNode parse_level(
-        py::handle shape_object, py::handle stride_object, bool emit_markers
-    ) {
+    static LayoutNode parse_level(py::handle shape_object, py::handle stride_object,
+                                  bool emit_markers) {
         py::sequence shape = py::reinterpret_borrow<py::sequence>(shape_object);
         py::sequence stride = py::reinterpret_borrow<py::sequence>(stride_object);
 
@@ -177,7 +198,7 @@ private:
             current_stride_entries().push_back({CacheEntryKind::Push, 0});
         }
 
-        for (py::ssize_t i = 0; i < py::len(shape); ++i) {
+        for (std::size_t i = 0; i < py::len(shape); ++i) {
             py::object shape_value = shape[i];
             py::object stride_value = stride[i];
             LayoutNode child;
@@ -191,11 +212,9 @@ private:
                 child.logical_size = child.shape;
                 child.max_index = child.stride * (child.shape - 1);
                 current_shape_entries().push_back(
-                    {CacheEntryKind::Integer, child.shape}
-                );
+                    {CacheEntryKind::Integer, child.shape});
                 current_stride_entries().push_back(
-                    {CacheEntryKind::Integer, child.stride}
-                );
+                    {CacheEntryKind::Integer, child.stride});
             } else {
                 if (is_int(stride_value)) {
                     throw py::value_error("Shape and Stride do not match in Structure");
@@ -258,9 +277,8 @@ private:
         }
     }
 
-    void expand_logical_key(
-        const LayoutNode& node, Index logical_key, std::vector<Index>& expanded
-    ) const {
+    void expand_logical_key(const LayoutNode& node, Index logical_key,
+                            std::vector<Index>& expanded) const {
         if (logical_key < 0 || logical_key >= node.logical_size) {
             throw py::value_error("Key is not in domain of shape");
         }
@@ -301,12 +319,8 @@ private:
         return index;
     }
 
-    Index index_coordinate_node(
-        const LayoutNode& node,
-        const Index* key,
-        std::size_t size,
-        std::size_t& key_position
-    ) const {
+    Index index_coordinate_node(const LayoutNode& node, const Index* key,
+                                std::size_t size, std::size_t& key_position) const {
         Index index = 0;
         for (const LayoutNode& child : node.children) {
             if (key_position >= size) {
@@ -334,13 +348,12 @@ private:
 
         py::sequence sequence = py::reinterpret_borrow<py::sequence>(key);
         Index index = 0;
-        const py::ssize_t sequence_size = static_cast<py::ssize_t>(py::len(sequence));
-        const py::ssize_t children_size =
-            static_cast<py::ssize_t>(node.children.size());
-        const py::ssize_t limit =
+        const std::size_t sequence_size = py::len(sequence);
+        const std::size_t children_size = node.children.size();
+        const std::size_t limit =
             sequence_size < children_size ? sequence_size : children_size;
-        for (py::ssize_t i = 0; i < limit; ++i) {
-            const LayoutNode& child = node.children[static_cast<std::size_t>(i)];
+        for (std::size_t i = 0; i < limit; ++i) {
+            const LayoutNode& child = node.children[i];
             py::object coordinate = sequence[i];
             if (child.leaf) {
                 const Index coordinate_value = as_index(coordinate);
@@ -371,9 +384,8 @@ private:
         nullptr;
 };
 
-inline std::vector<py::object> expand_int(
-    py::handle key_object, py::handle shape_object
-) {
+inline std::vector<py::object> expand_int(py::handle key_object,
+                                          py::handle shape_object) {
     Index key = as_index(key_object);
     if (key < 0 || key >= logical_size(shape_object)) {
         throw py::value_error("Key is not in domain of shape");
@@ -394,9 +406,8 @@ inline std::vector<py::object> expand_int(
     return coordinate;
 }
 
-inline Index get_index_levels(
-    py::handle shape_object, py::handle stride_object, py::handle key
-) {
+inline Index get_index_levels(py::handle shape_object, py::handle stride_object,
+                              py::handle key) {
     py::sequence shape = py::reinterpret_borrow<py::sequence>(shape_object);
     py::sequence stride = py::reinterpret_borrow<py::sequence>(stride_object);
 
@@ -414,10 +425,10 @@ inline Index get_index_levels(
     }
 
     Index index = 0;
-    for (py::ssize_t i = 0; i < py::len(shape); ++i) {
+    for (std::size_t i = 0; i < py::len(shape); ++i) {
         py::object coordinate;
         if (key_is_int) {
-            coordinate = expanded_key[static_cast<std::size_t>(i)];
+            coordinate = expanded_key[i];
         } else {
             if (key_iterator == py::iterator::sentinel()) {
                 break;
@@ -460,7 +471,7 @@ inline Index max_index_levels(py::handle shape_object, py::handle stride_object)
     }
 
     Index max_index = 0;
-    for (py::ssize_t i = 0; i < py::len(shape); ++i) {
+    for (std::size_t i = 0; i < py::len(shape); ++i) {
         py::object shape_value = shape[i];
         py::object stride_value = stride[i];
         if (is_int(shape_value)) {

@@ -67,7 +67,7 @@ class SGD:
                 gradient = parameter.grad
                 if gradient is None:
                     continue
-                for i in range(parameter.layout.size):
+                for i in range(parameter.size()):
                     physical = parameter.offset + parameter.layout.index(i)
                     gradient_value = gradient.carrier[
                         gradient.offset + gradient.layout.index(i)
