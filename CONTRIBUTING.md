@@ -1,8 +1,9 @@
 # Contributing
 
 StrideWeave is an early-stage research project. Before proposing a change, read
-`README.md` for the current architecture and `AGENTS.md` for repository-specific
-engineering and documentation conventions.
+`README.md` for the current architecture, `INVARIANTS.md` for cross-cutting design
+constraints, and `AGENTS.md` for repository-specific engineering and documentation
+conventions.
 
 ## Development Setup
 
@@ -34,6 +35,11 @@ git diff --check
 The repository invariant checker is a dependency-free AST pass over `src`, `tests`, and
 `examples`. CI also builds the native extensions with strict compiler warnings and runs
 a separate Linux AddressSanitizer/UndefinedBehaviorSanitizer test job.
+
+When a change adds, removes, or materially changes a cross-cutting invariant, update
+`INVARIANTS.md` in the same pull request. Every registry entry must state its canonical
+implementation, enforcement type, and stable evidence locations so authors and coding
+agents can apply it before code is generated.
 
 Changes to public behavior or architecture should update `README.md`. Public
 Python APIs must follow the docstring contract documented in `AGENTS.md`.

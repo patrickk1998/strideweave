@@ -2,9 +2,11 @@
 
 ## Project Orientation
 
-Read `README.md` before making changes. It describes the
-project's architecture, carriers, operation dispatch, autograd model,
-supported public APIs, interoperability, and current limitations.
+Read `README.md` and `INVARIANTS.md` before making changes. The README describes the
+project's architecture, carriers, operation dispatch, autograd model, supported public
+APIs, interoperability, and current limitations. The invariant registry contains
+cross-cutting constraints that must shape code during design and generation, before
+linting, tests, or review detect violations.
 
 When planning or reviewing a change, check whether it would make any part of
 the README inaccurate or incomplete. Propose corresponding README updates for
@@ -12,6 +14,10 @@ changes to architecture, carriers, dtypes, operation dispatch, autograd,
 public capabilities, interoperability, development commands, or documented
 limitations. When implementing such a change, update the README in the same
 change unless the user explicitly excludes documentation work.
+
+Identify the relevant invariant IDs while planning a change. When adding, removing, or
+materially changing a cross-cutting invariant, update `INVARIANTS.md` and its stated
+enforcement evidence in the same change.
 
 ## Tensor Indexing Style
 

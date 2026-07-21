@@ -291,6 +291,11 @@ to `Generic`, because the container remains an alias of Generic storage.
 The package requires Python 3.12 or newer and builds its native modules with
 scikit-build-core and pybind11.
 
+Before designing a change, read the cross-cutting contracts in
+[`INVARIANTS.md`](INVARIANTS.md). It records the canonical implementation choices and
+whether each invariant is enforced by AST lint, Ruff, behavioral tests, native builds,
+or code review.
+
 ```bash
 uv sync --group dev
 uv run pytest tests
