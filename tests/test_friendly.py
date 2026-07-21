@@ -1,6 +1,7 @@
 import random
 
 import pytest
+
 import strideweave.friendly as friendly
 from strideweave import CPU, DType, Layout, Shape, Stride
 

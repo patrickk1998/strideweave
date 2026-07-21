@@ -1,6 +1,7 @@
 from typing import Any
 
 import pytest
+
 import strideweave as sw
 from strideweave import Generic, Layout, Module, Parameter, Shape, Stride, Tensor
 

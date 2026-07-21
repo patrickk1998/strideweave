@@ -2,6 +2,7 @@ import math
 import random
 
 import pytest
+
 import strideweave as sw
 import strideweave.nn as nn
 from strideweave import CPU, DType, Layout, Shape, Stride, Tensor

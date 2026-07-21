@@ -2,6 +2,7 @@ from importlib import import_module
 from typing import Any, Protocol, cast
 
 import pytest
+
 import strideweave as sw
 from strideweave import Layout, Node, Shape, Stride, Tree
 

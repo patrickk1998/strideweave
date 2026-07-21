@@ -2,6 +2,7 @@ import threading
 from typing import Any
 
 import pytest
+
 import strideweave as sw
 from strideweave import Generic, Layout, Operation, Shape, Stride, Tensor
 from strideweave.operation import is_grad_enabled, set_grad_enabled

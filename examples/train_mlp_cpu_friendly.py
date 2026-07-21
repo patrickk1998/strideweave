@@ -6,7 +6,7 @@ data construction and value extraction go through ``sw.friendly``
 instead of raw ``CPU`` buffers and hand-written layouts.
 
 Usage:
-    uv run python packages/strideweave/examples/train_mlp_cpu_friendly.py
+    uv run python examples/train_mlp_cpu_friendly.py
 """
 
 from __future__ import annotations

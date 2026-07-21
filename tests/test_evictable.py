@@ -1,6 +1,7 @@
 import gc
 
 import pytest
+
 import strideweave as sw
 from strideweave import (
     CPU,

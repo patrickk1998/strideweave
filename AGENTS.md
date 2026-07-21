@@ -2,7 +2,7 @@
 
 ## Project Orientation
 
-Read `packages/strideweave/README.md` before making changes. It describes the
+Read `README.md` before making changes. It describes the
 project's architecture, carriers, operation dispatch, autograd model,
 supported public APIs, interoperability, and current limitations.
 
@@ -42,7 +42,7 @@ usage example. The exact contract depends on the export kind:
   and carry a one-line summary; do not add constructor-style `Args:`/`Examples:`
   sections to them.
 
-`packages/strideweave/tests/test_docstrings.py` enforces this generically over the
+`tests/test_docstrings.py` enforces this generically over the
 public exports listed in `strideweave.__all__`, `strideweave.einops.__all__`,
 `strideweave.nn.__all__`, and `strideweave.friendly.__all__`. Adding a Python
 function or class to any of these public export lists should not require

@@ -290,11 +290,11 @@ The package requires Python 3.12 or newer and builds its native modules with
 scikit-build-core and pybind11.
 
 ```bash
-uv pip install -e packages/strideweave
-uv run pytest packages/strideweave/tests
-uv run ruff format --check . --exclude notebooks/CuTe.py
-uv run ruff check packages/strideweave
-uv run pyright packages/strideweave
+uv sync --group dev
+uv run pytest tests
+uv run ruff format --check .
+uv run ruff check .
+uv run pyright
 ```
 
 The test suite covers layouts, carriers, tensor indexing and mutation,

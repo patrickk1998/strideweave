@@ -2,6 +2,7 @@ from collections.abc import Iterable
 from typing import Any
 
 import pytest
+
 import strideweave as sw
 from strideweave import CPU, DType, Generic, Layout, Shape, Stride, Tensor
 

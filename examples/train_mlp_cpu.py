@@ -7,7 +7,7 @@ primitives (``CPU`` buffers filled element by element plus hand-written
 ``Layout`` objects) to exercise the low-level interface.
 
 Usage:
-    uv run python packages/strideweave/examples/train_mlp_cpu.py
+    uv run python examples/train_mlp_cpu.py
 """
 
 from __future__ import annotations
