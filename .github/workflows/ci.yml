@@ -65,6 +65,7 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
+          save-cache: false
           python-version: "3.12"
 
       - name: Build with strict native warnings
@@ -88,6 +89,7 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
+          save-cache: false
           python-version: "3.12"
 
       - name: Build sanitizer-instrumented extensions
@@ -96,7 +98,10 @@ jobs:
       - name: Run tests with AddressSanitizer and UndefinedBehaviorSanitizer
         run: |
           asan_runtime="$(gcc -print-file-name=libasan.so)"
-          LD_PRELOAD="$asan_runtime" \
-            ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:halt_on_error=1" \
+          cxx_runtime="$(g++ -print-file-name=libstdc++.so.6)"
+          LD_PRELOAD="$asan_runtime:$cxx_runtime" \
+            PYTHONMALLOC="malloc" \
+            PYTHONUNBUFFERED="1" \
+            ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:halt_on_error=1:symbolize=1" \
             UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
-            uv run pytest tests
+            .venv/bin/python -m pytest --capture=no --maxfail=1 tests
