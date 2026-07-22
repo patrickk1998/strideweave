@@ -132,40 +132,50 @@ using CpuSoftplusOperation = CpuUnaryElementwiseOperation<CpuSoftplusScalar>;
 using CpuELUOperation = CpuUnaryElementwiseOperation<CpuELUScalar>;
 using CpuLeakyReLUOperation = CpuUnaryElementwiseOperation<CpuLeakyReLUScalar>;
 
+template <typename FloatOperation, typename IntegerOperation>
+py::object cpu_binary_elementwise_forward(py::args inputs, const char* error_message,
+                                          FloatOperation float_operation,
+                                          IntegerOperation integer_operation) {
+    if (py::len(inputs) != 2) {
+        throw py::type_error(error_message);
+    }
+    py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
+    py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
+    CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
+    CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
+    require_same_layout(lhs, rhs);
+
+    const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
+    CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
+    {
+        py::gil_scoped_release release;
+        std::vector<Index> key(lhs_view.leaf_rank(), 0);
+        for (Index i = 0; i < lhs_view.logical_size; ++i) {
+            if (output_dtype == CpuDType::Float32) {
+                result.view.write_float_expanded(
+                    key, float_operation(lhs_view.read_float_expanded(key),
+                                         rhs_view.read_float_expanded(key)));
+            } else {
+                write_int_result(
+                    result.view, key,
+                    integer_operation(
+                        static_cast<long long>(lhs_view.read_int_expanded(key)),
+                        static_cast<long long>(rhs_view.read_int_expanded(key))));
+            }
+            lhs_view.cache->increment_key(key.data(), key.size());
+        }
+    }
+    return make_tensor(std::move(result.carrier_object),
+                       std::move(result.layout_object));
+}
+
 class CpuAddOperation : public strideweave::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
-        if (py::len(inputs) != 2) {
-            throw py::type_error("CPU add requires lhs and rhs tensors");
-        }
-        py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
-        py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
-        CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
-        CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
-        require_same_layout(lhs, rhs);
-
-        const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
-        {
-            py::gil_scoped_release release;
-            std::vector<Index> key(lhs_view.leaf_rank(), 0);
-            for (Index i = 0; i < lhs_view.logical_size; ++i) {
-                if (output_dtype == CpuDType::Float32) {
-                    result.view.write_float_expanded(
-                        key, lhs_view.read_float_expanded(key) +
-                                 rhs_view.read_float_expanded(key));
-                } else {
-                    write_int_result(
-                        result.view, key,
-                        static_cast<long long>(lhs_view.read_int_expanded(key)) +
-                            static_cast<long long>(rhs_view.read_int_expanded(key)));
-                }
-                lhs_view.cache->increment_key(key.data(), key.size());
-            }
-        }
-        return make_tensor(std::move(result.carrier_object),
-                           std::move(result.layout_object));
+        return cpu_binary_elementwise_forward(
+            inputs, "CPU add requires lhs and rhs tensors",
+            [](float lhs, float rhs) { return lhs + rhs; },
+            [](long long lhs, long long rhs) { return lhs + rhs; });
     }
 
     py::object backward(py::object gradient) override {
@@ -180,37 +190,10 @@ public:
 class CpuSubOperation : public strideweave::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
-        if (py::len(inputs) != 2) {
-            throw py::type_error("CPU subtract requires lhs and rhs tensors");
-        }
-        py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
-        py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
-        CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
-        CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
-        require_same_layout(lhs, rhs);
-
-        const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
-        {
-            py::gil_scoped_release release;
-            std::vector<Index> key(lhs_view.leaf_rank(), 0);
-            for (Index i = 0; i < lhs_view.logical_size; ++i) {
-                if (output_dtype == CpuDType::Float32) {
-                    result.view.write_float_expanded(
-                        key, lhs_view.read_float_expanded(key) -
-                                 rhs_view.read_float_expanded(key));
-                } else {
-                    write_int_result(
-                        result.view, key,
-                        static_cast<long long>(lhs_view.read_int_expanded(key)) -
-                            static_cast<long long>(rhs_view.read_int_expanded(key)));
-                }
-                lhs_view.cache->increment_key(key.data(), key.size());
-            }
-        }
-        return make_tensor(std::move(result.carrier_object),
-                           std::move(result.layout_object));
+        return cpu_binary_elementwise_forward(
+            inputs, "CPU subtract requires lhs and rhs tensors",
+            [](float lhs, float rhs) { return lhs - rhs; },
+            [](long long lhs, long long rhs) { return lhs - rhs; });
     }
 
     py::object backward(py::object gradient) override {
@@ -290,38 +273,10 @@ private:
 class CpuElementwiseMulOperation : public strideweave::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
-        if (py::len(inputs) != 2) {
-            throw py::type_error(
-                "CPU elementwise multiply requires lhs and rhs tensors");
-        }
-        py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
-        py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
-        CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
-        CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
-        require_same_layout(lhs, rhs);
-
-        const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
-        {
-            py::gil_scoped_release release;
-            std::vector<Index> key(lhs_view.leaf_rank(), 0);
-            for (Index i = 0; i < lhs_view.logical_size; ++i) {
-                if (output_dtype == CpuDType::Float32) {
-                    result.view.write_float_expanded(
-                        key, lhs_view.read_float_expanded(key) *
-                                 rhs_view.read_float_expanded(key));
-                } else {
-                    write_int_result(
-                        result.view, key,
-                        static_cast<long long>(lhs_view.read_int_expanded(key)) *
-                            static_cast<long long>(rhs_view.read_int_expanded(key)));
-                }
-                lhs_view.cache->increment_key(key.data(), key.size());
-            }
-        }
-        return make_tensor(std::move(result.carrier_object),
-                           std::move(result.layout_object));
+        return cpu_binary_elementwise_forward(
+            inputs, "CPU elementwise multiply requires lhs and rhs tensors",
+            [](float lhs, float rhs) { return lhs * rhs; },
+            [](long long lhs, long long rhs) { return lhs * rhs; });
     }
 
     py::object backward(py::object gradient) override {

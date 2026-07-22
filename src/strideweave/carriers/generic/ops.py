@@ -80,6 +80,22 @@ def _unary_elementwise_operation(
     )
 
 
+def _binary_elementwise_result(
+    lhs: Any,
+    rhs: Any,
+    *,
+    compute: Callable[[Any, Any], Any],
+) -> Any:
+    """Validate Generic binary operands and construct their detached result."""
+    lhs = _require_live_tensor(lhs, "lhs")
+    rhs = _require_live_tensor(rhs, "rhs")
+    _require_same_layout(lhs, rhs)
+
+    dtype = _generic_binary_dtype(lhs, rhs)
+    values = [compute(lhs[i], rhs[i]) for i in range(lhs.size())]
+    return _detached_tensor_like(lhs, values, dtype)
+
+
 def _exp_compute(value: Any) -> tuple[Any, Any]:
     output = math.exp(value)
     return output, output
@@ -179,13 +195,7 @@ class GenericAddOperation(Operation):
     """Generic elementwise tensor addition operation with autograd support."""
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
-        lhs = _require_live_tensor(lhs, "lhs")
-        rhs = _require_live_tensor(rhs, "rhs")
-        _require_same_layout(lhs, rhs)
-
-        dtype = _generic_binary_dtype(lhs, rhs)
-        values = [lhs[i] + rhs[i] for i in range(lhs.size())]
-        return _detached_tensor_like(lhs, values, dtype)
+        return _binary_elementwise_result(lhs, rhs, compute=lambda x, y: x + y)
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
@@ -197,13 +207,7 @@ class GenericSubOperation(Operation):
     """Generic elementwise tensor subtraction operation with autograd support."""
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
-        lhs = _require_live_tensor(lhs, "lhs")
-        rhs = _require_live_tensor(rhs, "rhs")
-        _require_same_layout(lhs, rhs)
-
-        dtype = _generic_binary_dtype(lhs, rhs)
-        values = [lhs[i] - rhs[i] for i in range(lhs.size())]
-        return _detached_tensor_like(lhs, values, dtype)
+        return _binary_elementwise_result(lhs, rhs, compute=lambda x, y: x - y)
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
@@ -243,13 +247,7 @@ class GenericElementwiseMulOperation(Operation):
     """Generic elementwise tensor multiplication operation."""
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
-        lhs = _require_live_tensor(lhs, "lhs")
-        rhs = _require_live_tensor(rhs, "rhs")
-        _require_same_layout(lhs, rhs)
-
-        dtype = _generic_binary_dtype(lhs, rhs)
-        values = [lhs[i] * rhs[i] for i in range(lhs.size())]
-        return _detached_tensor_like(lhs, values, dtype)
+        return _binary_elementwise_result(lhs, rhs, compute=lambda x, y: x * y)
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
