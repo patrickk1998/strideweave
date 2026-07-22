@@ -304,6 +304,8 @@ uv run ruff check .
 uv run python tools/lint_invariants.py
 uv run pyright
 uv build
+npm ci
+npm run duplication
 find src/strideweave -type f \( -name '*.cpp' -o -name '*.hpp' \) -exec uv run clang-format --dry-run --Werror {} +
 CMAKE_ARGS="-DSTRIDEWEAVE_STRICT_WARNINGS=ON" uv build
 ```
@@ -313,6 +315,13 @@ StrideWeave-specific source contracts without importing the package. Native sani
 coverage runs in Linux CI with `STRIDEWEAVE_SANITIZERS=ON`; it instruments the extension
 modules with AddressSanitizer and UndefinedBehaviorSanitizer before running the full
 Python test suite.
+
+The duplication gate uses the exact `jscpd` version locked by npm and the checked-in
+`.jscpd.json` configuration to scan production code under `src/`. The post-binary-
+operation-refactor baseline was 4.7% duplicated lines with 5-line/50-token minimum
+clones; CI blocks results above 5.0%. The scanner respects `.gitignore`, and the
+configuration explicitly excludes non-production, generated, dependency, cache,
+report, and build artifacts.
 
 The test suite covers layouts, carriers, tensor indexing and mutation,
 autograd, operations and activations, hierarchical command parsing, DLPack,
