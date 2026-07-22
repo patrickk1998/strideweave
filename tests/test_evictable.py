@@ -469,10 +469,10 @@ def test_new_like_preserves_hierarchy_and_supports_dtype_change():
     assert [result[i] for i in range(2)] == pytest.approx([1.5, 2.5])
 
 
-def test_empty_like_allocates_primary_and_leaves_secondary_lazy():
+def test_allocate_like_allocates_primary_and_leaves_secondary_lazy():
     carrier = make_cpu_evictable([1, 2], DType.Int32)
 
-    result = carrier.empty_like(4, mutable=False, dtype=DType.Float32)
+    result = carrier.allocate_like(4, mutable=False, dtype=DType.Float32, empty=True)
 
     assert result.size() == 4
     assert result.primary.size() == 4

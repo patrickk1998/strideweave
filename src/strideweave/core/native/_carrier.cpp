@@ -42,10 +42,10 @@ public:
         PYBIND11_OVERRIDE_PURE(py::object, Carrier, new_like, values, is_mutable);
     }
 
-    py::object empty_like(Index size, bool is_mutable,
-                          py::object dtype) const override {
-        PYBIND11_OVERRIDE_PURE(py::object, Carrier, empty_like, size, is_mutable,
-                               dtype);
+    py::object allocate_like(Index size, bool is_mutable, py::object dtype,
+                             bool empty) const override {
+        PYBIND11_OVERRIDE_PURE(py::object, Carrier, allocate_like, size, is_mutable,
+                               dtype, empty);
     }
 
     void scatter(py::object to_scatter, py::object scatter_onto, py::object mapping,
@@ -92,7 +92,7 @@ public:
         return py::cast(VectorCarrierForTest(values));
     }
 
-    py::object empty_like(Index size, bool, py::object) const override {
+    py::object allocate_like(Index size, bool, py::object, bool) const override {
         if (size < 0) {
             throw py::value_error("Carrier allocation size must be non-negative");
         }
@@ -123,8 +123,9 @@ PYBIND11_MODULE(_carrier, module) {
         .def("get_value", &Carrier::get_value, py::arg("index"))
         .def("new_like", &Carrier::new_like, py::arg("values"), py::kw_only(),
              py::arg("mutable") = true)
-        .def("empty_like", &Carrier::empty_like, py::arg("size"), py::kw_only(),
-             py::arg("mutable") = true, py::arg("dtype") = py::none())
+        .def("allocate_like", &Carrier::allocate_like, py::arg("size"), py::kw_only(),
+             py::arg("mutable") = true, py::arg("dtype") = py::none(),
+             py::arg("empty") = false)
         .def("scatter", &Carrier::scatter, py::arg("to_scatter"),
              py::arg("scatter_onto"), py::arg("mapping"), py::arg("mapping_offset") = 0)
         .def(

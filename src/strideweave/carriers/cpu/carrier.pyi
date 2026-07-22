@@ -12,6 +12,7 @@ class CPU(Carrier):
         *,
         mutable: bool = True,
         dtype: DType = ...,
+        empty: bool = False,
     ) -> None: ...
     def size(self) -> int: ...
     def dtype(self) -> DType: ...
@@ -25,12 +26,13 @@ class CPU(Carrier):
         mutable: bool = True,
         dtype: DType | None = None,
     ) -> CPU: ...
-    def empty_like(
+    def allocate_like(
         self,
         size: int,
         *,
         mutable: bool = True,
         dtype: DType | None = None,
+        empty: bool = False,
     ) -> CPU: ...
     def scatter(
         self,

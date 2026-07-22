@@ -77,6 +77,33 @@ def test_cpu_data_contract_and_mutation():
     assert carrier.version == 2
 
 
+@pytest.mark.parametrize(
+    ("dtype", "zero"),
+    [(DType.Float32, 0.0), (DType.Int32, 0)],
+)
+def test_cpu_owned_allocations_are_zero_initialized_by_default(dtype, zero):
+    carrier = CPU(3, dtype=dtype)
+
+    assert [carrier[i] for i in range(carrier.size())] == [zero, zero, zero]
+
+
+@pytest.mark.parametrize(
+    ("dtype", "values"),
+    [(DType.Float32, [1.5, -2.5, 3.5]), (DType.Int32, [1, -2, 3])],
+)
+@pytest.mark.parametrize("use_factory", [False, True])
+def test_cpu_empty_allocation_is_writable_before_reading(dtype, values, use_factory):
+    if use_factory:
+        carrier = CPU(0, dtype=dtype).allocate_like(3, empty=True)
+    else:
+        carrier = CPU(3, dtype=dtype, empty=True)
+
+    for index, value in enumerate(values):
+        carrier[index] = value
+
+    assert [carrier[i] for i in range(carrier.size())] == pytest.approx(values)
+
+
 def test_cpu_data_can_be_immutable():
     carrier = CPU(2, mutable=False)
 
@@ -103,7 +130,7 @@ def test_cpu_data_validates_constructor_inputs():
 
 def test_cpu_data_can_wrap_external_float32_pointer():
     values = array("f", [1.5, 2.5, 3.5])
-    carrier = CPU(len(values), values.buffer_info()[0])
+    carrier = CPU(len(values), values.buffer_info()[0], empty=True)
 
     assert carrier[0] == pytest.approx(1.5)
     assert carrier[2] == pytest.approx(3.5)
@@ -216,12 +243,15 @@ def test_cpu_dispatch_op_returns_supported_operations():
         carrier.dispatch_op("unknown")
 
 
-def test_cpu_empty_like_allocates_requested_storage_and_dtype():
-    result = CPU(0, dtype=DType.Int32).empty_like(3, mutable=False, dtype=DType.Float32)
+def test_cpu_allocate_like_allocates_requested_storage_and_dtype():
+    result = CPU(0, dtype=DType.Int32).allocate_like(
+        3, mutable=False, dtype=DType.Float32
+    )
 
     assert result.size() == 3
     assert result.dtype() is DType.Float32
     assert not result.is_mutable()
+    assert [result[i] for i in range(result.size())] == [0.0, 0.0, 0.0]
 
 
 def test_cpu_tensor_constructor_reports_float32_device():
