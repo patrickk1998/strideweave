@@ -19,6 +19,12 @@ accelerator carriers.
 - `Tensor(carrier, offset, layout)` references storage owned by a `Carrier`.
 - `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
   coordinates to physical storage indices.
+- `Tiler` is the public type alias for a read-only sequence of `Layout` values.
+  Layout composition APIs use tilers to describe one tile per leading
+  hierarchical mode: `Layout.compose` accepts a tiler directly, while
+  `Layout.divide_tiler` and `Layout.zipped_divide` use its layouts to divide
+  the corresponding leading modes. Lists, tuples, and other compatible
+  sequences are accepted.
 - `layout.size` is the logical element count, while `layout.cosize` is the
   physical storage size the layout addresses (one past its largest offset).
   They are equal for compact layouts but `cosize` is larger for strided or

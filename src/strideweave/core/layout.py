@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
 from typing import Any, Self
+
+type Tiler = Sequence[Layout]
 
 
 @dataclass(frozen=True)
@@ -893,7 +895,7 @@ class Layout:
         return layout
 
     @staticmethod
-    def compose(A: Layout, B: Layout | Shape | Any) -> Layout:
+    def compose(A: Layout, B: Layout | Shape | Tiler) -> Layout:
         if isinstance(B, Layout):
             return Layout.compose_layouts(A, B)
         tiler = []
@@ -965,14 +967,14 @@ class Layout:
         return Layout.compose(A, Layout.make_layout(B, Layout.complement(B, A.size)))
 
     @staticmethod
-    def divide_tiler(A: Layout, B: list[Layout]) -> Layout:
+    def divide_tiler(A: Layout, B: Tiler) -> Layout:
         tiler = []
         for a, b in zip(A[0 : len(B)], B, strict=True):
             tiler.append(Layout.make_layout(b, Layout.complement(b, a.size)))
         return Layout.compose(A, tiler)
 
     @staticmethod
-    def zipped_divide(A: Layout, B: list[Layout]) -> Layout:
+    def zipped_divide(A: Layout, B: Tiler) -> Layout:
         tiler = []
         for a, b in zip(A[0 : len(B)], B, strict=True):
             tiler.append(Layout.make_layout(b, Layout.complement(b, a.size)))

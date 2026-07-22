@@ -1,10 +1,12 @@
+from collections.abc import Sequence
 from importlib import import_module
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, cast, get_type_hints
 
 import pytest
 
 import strideweave as sw
-from strideweave import Layout, Node, Shape, Stride, Tree
+from strideweave import Layout, Node, Shape, Stride, Tiler, Tree
+from strideweave.layout import Tiler as LayoutTiler
 
 
 class NativeIndexModule(Protocol):
@@ -21,7 +23,16 @@ def test_public_api_imports():
     assert sw.Node is Node
     assert sw.Shape is Shape
     assert sw.Stride is Stride
+    assert sw.Tiler is Tiler
     assert sw.Tree is Tree
+    assert LayoutTiler is Tiler
+
+
+def test_tiler_alias_and_layout_api_annotations():
+    assert Tiler.__value__ == Sequence[Layout]
+    assert get_type_hints(Layout.compose)["B"] == Layout | Shape | Tiler
+    assert get_type_hints(Layout.divide_tiler)["B"] is Tiler
+    assert get_type_hints(Layout.zipped_divide)["B"] is Tiler
 
 
 def test_tree_reshape():
@@ -99,21 +110,19 @@ def test_layout_zipped_divide():
         Shape([[3, [2, 4]], [3, [2, 2]]]),
         Stride([[177, [13, 2]], [59, [26, 1]]]),
     )
+    list_tiler = [Layout.leaf(3, 3), Layout(Shape([2, 4]), Stride([1, 8]))]
 
-    assert (
-        Layout.zipped_divide(
-            Layout(Shape([9, [4, 8]]), Stride([59, [13, 1]])),
-            [Layout.leaf(3, 3), Layout(Shape([2, 4]), Stride([1, 8]))],
-        )
-        == correct_layout
-    )
+    layout = Layout(Shape([9, [4, 8]]), Stride([59, [13, 1]]))
+    assert Layout.zipped_divide(layout, list_tiler) == correct_layout
+    assert Layout.zipped_divide(layout, tuple(list_tiler)) == correct_layout
 
 
 def test_layout_divide_tiler_and_index():
     layout_a = Layout(Shape([9, [4, 8]]), Stride([59, [13, 1]]))
-    tiler = [Layout.leaf(3, 3), Layout(Shape([2, 4]), Stride([1, 8]))]
+    list_tiler = [Layout.leaf(3, 3), Layout(Shape([2, 4]), Stride([1, 8]))]
 
-    assert Layout.divide_tiler(layout_a, tiler).index([1, 1]) == 177 + 13
+    assert Layout.divide_tiler(layout_a, list_tiler).index([1, 1]) == 177 + 13
+    assert Layout.divide_tiler(layout_a, tuple(list_tiler)).index([1, 1]) == 177 + 13
 
 
 def test_layout_get_index_flat_coordinate_key():
@@ -538,11 +547,12 @@ def test_layout_compose_with_shape():
 
 def test_layout_compose_with_tiler():
     layout_a = Layout(Shape([12, [4, 8]]), Stride([59, [13, 1]]))
-    tile = (Layout.leaf(3, 4), Layout.leaf(8, 2))
+    list_tiler = [Layout.leaf(3, 4), Layout.leaf(8, 2)]
+    tuple_tiler = tuple(list_tiler)
+    expected = Layout(Shape([3, [2, 4]]), Stride([236, [26, 1]]))
 
-    assert Layout.compose(layout_a, tile) == Layout(
-        Shape([3, [2, 4]]), Stride([236, [26, 1]])
-    )
+    assert Layout.compose(layout_a, list_tiler) == expected
+    assert Layout.compose(layout_a, tuple_tiler) == expected
 
 
 def test_layout_append_nested_layout():
