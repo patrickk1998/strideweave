@@ -24,12 +24,13 @@ class Evictable(Carrier):
         mutable: bool = True,
         dtype: DType | None = None,
     ) -> Evictable: ...
-    def empty_like(
+    def allocate_like(
         self,
         size: int,
         *,
         mutable: bool = True,
         dtype: DType | None = None,
+        empty: bool = False,
     ) -> Evictable: ...
     def evict(self) -> None: ...
     def promote(self) -> None: ...

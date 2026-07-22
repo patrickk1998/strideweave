@@ -76,24 +76,28 @@ inline void throw_overflow_error(const std::string& message) {
 
 class CPU : public Carrier {
 public:
-    CPU(Index size, py::object pointer, bool is_mutable, py::object dtype)
+    CPU(Index size, py::object pointer, bool is_mutable, py::object dtype, bool empty)
         : size_(size), dtype_(parse_cpu_dtype(dtype)), is_mutable_(is_mutable) {
         if (size_ < 0) {
             throw py::value_error("CPU size must be non-negative");
         }
 
         if (pointer.is_none()) {
+            const std::size_t allocation_size = layout_index::as_size(size_);
             if (dtype_ == CpuDType::Float32) {
                 owned_float_data_ =
-                    std::make_unique<float[]>(static_cast<std::size_t>(size_));
+                    std::unique_ptr<float[]>(new float[allocation_size]);
                 data_ = reinterpret_cast<std::byte*>(owned_float_data_.get());
-                std::fill_n(data_as<float>(), static_cast<std::size_t>(size_), 0.0f);
+                if (!empty) {
+                    std::fill_n(data_as<float>(), allocation_size, 0.0f);
+                }
             } else {
                 owned_int_data_ =
-                    std::make_unique<std::int32_t[]>(static_cast<std::size_t>(size_));
+                    std::unique_ptr<std::int32_t[]>(new std::int32_t[allocation_size]);
                 data_ = reinterpret_cast<std::byte*>(owned_int_data_.get());
-                std::fill_n(data_as<std::int32_t>(), static_cast<std::size_t>(size_),
-                            0);
+                if (!empty) {
+                    std::fill_n(data_as<std::int32_t>(), allocation_size, 0);
+                }
             }
             return;
         }
@@ -147,15 +151,16 @@ public:
         return result;
     }
 
-    py::object empty_like(Index size, bool is_mutable,
-                          py::object dtype) const override {
+    py::object allocate_like(Index size, bool is_mutable, py::object dtype,
+                             bool empty) const override {
         if (size < 0) {
             throw py::value_error("CPU allocation size must be non-negative");
         }
         py::object cpu_type = py::module_::import("strideweave._carrier").attr("CPU");
         CpuDType result_dtype = dtype.is_none() ? dtype_ : parse_cpu_dtype(dtype);
         return cpu_type(py::int_(size), py::none(), py::arg("mutable") = is_mutable,
-                        py::arg("dtype") = cpu_dtype_object(result_dtype));
+                        py::arg("dtype") = cpu_dtype_object(result_dtype),
+                        py::arg("empty") = empty);
     }
 
     void scatter(py::object to_scatter, py::object scatter_onto, py::object mapping,

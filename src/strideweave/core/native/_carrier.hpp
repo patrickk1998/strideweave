@@ -24,8 +24,8 @@ public:
     virtual py::object dtype() const = 0;
     virtual py::object get_value(Index index) const = 0;
     virtual py::object new_like(py::iterable values, bool is_mutable) const = 0;
-    virtual py::object empty_like(Index size, bool is_mutable,
-                                  py::object dtype) const = 0;
+    virtual py::object allocate_like(Index size, bool is_mutable, py::object dtype,
+                                     bool empty) const = 0;
     virtual void scatter(py::object to_scatter, py::object scatter_onto,
                          py::object mapping, Index mapping_offset) = 0;
     bool is_mutable() const {
