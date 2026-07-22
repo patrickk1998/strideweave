@@ -111,13 +111,15 @@ class Generic(Carrier):
             values, mutable=mutable, dtype=self._dtype if dtype is None else dtype
         )
 
-    def empty_like(
+    def allocate_like(
         self,
         size: int,
         *,
         mutable: bool = True,
         dtype: DType | None = None,
+        empty: bool = False,
     ) -> Generic:
+        del empty
         normalized_size = operator_index(size)
         if normalized_size < 0:
             raise ValueError("Generic allocation size must be non-negative")

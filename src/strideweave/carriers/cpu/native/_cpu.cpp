@@ -815,13 +815,14 @@ py::object CPU::dispatch_op(const std::string& operation_name) const {
 
 void bind_cpu(py::module_& module) {
     py::class_<CPU, Carrier>(module, "CPU")
-        .def(py::init<Index, py::object, bool, py::object>(), py::arg("size"),
+        .def(py::init<Index, py::object, bool, py::object, bool>(), py::arg("size"),
              py::arg("pointer") = py::none(), py::kw_only(), py::arg("mutable") = true,
-             py::arg("dtype") = py::none())
+             py::arg("dtype") = py::none(), py::arg("empty") = false)
         .def("new_like", &CPU::new_like_with_dtype, py::arg("values"), py::kw_only(),
              py::arg("mutable") = true, py::arg("dtype") = py::none())
-        .def("empty_like", &CPU::empty_like, py::arg("size"), py::kw_only(),
-             py::arg("mutable") = true, py::arg("dtype") = py::none())
+        .def("allocate_like", &CPU::allocate_like, py::arg("size"), py::kw_only(),
+             py::arg("mutable") = true, py::arg("dtype") = py::none(),
+             py::arg("empty") = false)
         .def("pointer", &CPU::pointer)
         .def("set_value", &CPU::set_value_public, py::arg("index"), py::arg("value"))
         .def("dispatch_op", &CPU::dispatch_op, py::arg("operation_name"));

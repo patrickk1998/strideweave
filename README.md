@@ -62,9 +62,11 @@ StrideWeave currently provides four carrier implementations:
 - `Generic(values, mutable=True, dtype=DType.Floating)` stores Python
   objects. It supports differentiable `Floating` values and non-differentiable
   arbitrary `Any` values.
-- `CPU(size, pointer=None, mutable=True, dtype=DType.Float32)` owns native
-  memory or references a caller-provided address. It supports `Float32` and
-  `Int32`.
+- `CPU(size, pointer=None, *, mutable=True, dtype=DType.Float32, empty=False)`
+  owns native memory or references a caller-provided address. It supports
+  `Float32` and `Int32`. Owned storage is zero-initialized unless `empty=True`
+  opts into unspecified initial values; `empty` never initializes or changes
+  caller-owned memory supplied through `pointer`.
 - `FileBacked(filename=None, mutable=True, dtype=DType.Floating)` stores raw
   numeric values in a temporary binary file. It is intended for storage and
   movement rather than direct tensor computation.
@@ -75,6 +77,12 @@ StrideWeave currently provides four carrier implementations:
 
 The available dtype tags are `Any`, `Floating`, `Float32`, and `Int32`. Only
 `Floating` and `Float32` tensors participate in autograd.
+
+Every carrier exposes `allocate_like(size, *, mutable=True, dtype=None,
+empty=False)` for fresh size-based allocation. The default requests initialized
+storage; `empty=True` permits a backend to skip initialization, so callers must
+write every element they will read. `new_like(values, ...)` remains the separate
+factory for materializing supplied values.
 
 Carriers may be mutable or immutable. Mutating shared storage increments a version
 counter visible through `tensor.version`. Calling `release()` permanently

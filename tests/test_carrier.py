@@ -43,8 +43,13 @@ class PythonCarrier(Carrier):
     ) -> "PythonCarrier":
         return type(self)(list(values))
 
-    def empty_like(
-        self, size: int, *, mutable: bool = True, dtype: DType | None = None
+    def allocate_like(
+        self,
+        size: int,
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
+        empty: bool = False,
     ) -> "PythonCarrier":
         return type(self)([None] * size)
 
@@ -127,14 +132,18 @@ def test_data_operation_dispatch_is_instance_only(carrier_class):
         carrier_class.dispatch_op("relu")  # type: ignore[misc]
 
 
-def test_generic_empty_like_allocates_requested_storage_and_dtype():
-    result = Generic([], dtype=DType.Any).empty_like(
-        3, mutable=False, dtype=DType.Floating
+def test_generic_allocate_like_allocates_requested_storage_and_dtype():
+    result = Generic([], dtype=DType.Any).allocate_like(
+        3, mutable=False, dtype=DType.Floating, empty=True
     )
 
     assert result.size() == 3
     assert result.dtype() is DType.Floating
     assert not result.is_mutable()
+
+
+def test_carrier_api_exposes_allocate_like():
+    assert hasattr(Carrier, "allocate_like")
 
 
 def test_python_data_subclass_implements_data_contract():
