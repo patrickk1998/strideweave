@@ -31,6 +31,9 @@ from .layout import (
     Stride as Stride,
 )
 from .layout import (
+    Tiler as Tiler,
+)
+from .layout import (
     Tree as Tree,
 )
 from .module import Module as Module
@@ -53,6 +56,7 @@ _CORE_EXPORTS = [
     "Shape",
     "Stride",
     "Tensor",
+    "Tiler",
     "Tree",
 ]
 
