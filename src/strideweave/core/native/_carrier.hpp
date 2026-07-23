@@ -85,12 +85,7 @@ public:
         throw py::error_already_set();
     }
 
-    virtual py::object dispatch_op(const std::string& operation_name) const {
-        PyErr_Format(PyExc_NotImplementedError,
-                     "Carrier class does not support operation '%s'",
-                     operation_name.c_str());
-        throw py::error_already_set();
-    }
+    py::object dispatch_op(const std::string& operation_name) const;
 
     py::object get_item(Index index) const {
         require_not_released();
@@ -136,6 +131,13 @@ public:
     }
 
 protected:
+    virtual py::object _dispatch_op(const std::string& operation_name) const {
+        PyErr_Format(PyExc_NotImplementedError,
+                     "Carrier class does not support operation '%s'",
+                     operation_name.c_str());
+        throw py::error_already_set();
+    }
+
     // Backends implement storage capability here. Public is_mutable() also
     // applies the ownership guard and must not be overridden by carriers.
     virtual bool _is_mutable() const { return false; }

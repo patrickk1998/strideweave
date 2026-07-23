@@ -184,6 +184,10 @@ public:
         increment_version();
     }
 
+    py::object dispatch_registered_op(const std::string& operation_name) const {
+        return CPU::_dispatch_op(operation_name);
+    }
+
     template <typename T> T* data_as() { return reinterpret_cast<T*>(data_); }
 
     template <typename T> const T* data_as() const {
@@ -209,9 +213,9 @@ public:
                                            index * static_cast<Index>(sizeof(T)));
     }
 
-    py::object dispatch_op(const std::string& operation_name) const override;
-
 protected:
+    py::object _dispatch_op(const std::string& operation_name) const override;
+
     bool _is_mutable() const override { return is_mutable_; }
 
     void set_value(Index index, py::object value) override {

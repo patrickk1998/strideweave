@@ -71,6 +71,35 @@ class PythonMutableCarrier(PythonCarrier):
         self.values[index] = value
 
 
+class DispatchOperation(sw.Operation):
+    def _forward(self, *inputs: Any) -> Tensor:
+        return Tensor(Generic([1.0]), 0, Layout(Shape(1), Stride(1)))
+
+    def backward(self, gradient: Any) -> tuple[Any, ...]:
+        return ()
+
+
+class DispatchingPythonCarrier(PythonCarrier):
+    def _dispatch_op(self, operation_name: str) -> sw.Operation:
+        if operation_name != "custom":
+            raise NotImplementedError
+        return DispatchOperation()
+
+
+class InvalidDispatchCarrier(PythonCarrier):
+    def _dispatch_op(self, operation_name: str) -> object:
+        return object()
+
+
+class CachedDispatchCarrier(PythonCarrier):
+    def __init__(self, values: list[Any]):
+        super().__init__(values)
+        self.operation = DispatchOperation()
+
+    def _dispatch_op(self, operation_name: str) -> sw.Operation:
+        return self.operation
+
+
 def test_data_public_api_imports():
     assert sw.Carrier is Carrier
     assert sw.CPU is CPU
@@ -86,6 +115,38 @@ def test_data_default_dispatch_op_raises_not_implemented():
     carrier = PythonCarrier([])
     with pytest.raises(NotImplementedError):
         carrier.dispatch_op("add")
+
+
+def test_python_carrier_dispatch_policy_uses_hook_and_exact_class_metadata():
+    carrier = DispatchingPythonCarrier([])
+
+    first = carrier.dispatch_op("custom")
+    second = carrier.dispatch_op("custom")
+
+    assert type(first) is DispatchOperation
+    assert first is not second
+    assert first._operation_name == "custom"
+    assert first._dispatch_carrier_class is DispatchingPythonCarrier
+
+
+def test_carrier_dispatch_policy_requires_operation_result():
+    with pytest.raises(TypeError, match="_dispatch_op must return an Operation"):
+        InvalidDispatchCarrier([]).dispatch_op("custom")
+
+
+def test_carrier_dispatch_policy_rejects_cached_dispatched_operation():
+    carrier = CachedDispatchCarrier([])
+
+    first = carrier.dispatch_op("first")
+    first.ctx["state"] = "retained"
+
+    with pytest.raises(TypeError, match="fresh Operation"):
+        carrier.dispatch_op("second")
+
+    assert first is carrier.operation
+    assert first._operation_name == "first"
+    assert first._dispatch_carrier_class is CachedDispatchCarrier
+    assert first.ctx == {"state": "retained"}
 
 
 def test_generic_data_dispatch_op_returns_supported_operations():
@@ -119,6 +180,8 @@ def test_generic_data_dispatch_op_returns_supported_operations():
         assert type(first) is operation_type
         assert type(second) is operation_type
         assert first is not second
+        assert first._operation_name == operation_name
+        assert first._dispatch_carrier_class is Generic
 
 
 def test_generic_data_dispatch_op_rejects_unknown_operation():

@@ -33,8 +33,14 @@ accelerator carriers.
   needs `CPU(10)`. The `strideweave.friendly` and `strideweave.nn` layers allocate
   through `layout.cosize` for exactly this reason.
 - Operations dispatch through `tensor.carrier.dispatch_op(operation_name)`.
-  Dispatch is uniformly instance-based; class-level `dispatch_op` calls are
-  not part of the public contract.
+  The base `Carrier` method owns the shared dispatch policy: it calls the
+  backend `_dispatch_op` factory hook, requires a fresh `Operation`, and tags
+  that operation with its canonical name and exact dispatching carrier class.
+  Custom carrier implementations must override `_dispatch_op`, not
+  `dispatch_op`. Dispatch is uniformly instance-based; class-level
+  `dispatch_op` calls are not part of the public contract. A Python subclass of
+  `CPU` may extend the native registry by handling custom names in `_dispatch_op`
+  and delegating standard names through `super()._dispatch_op(...)`.
 - Python and native operations inherit from the shared native `Operation` base.
 - Views may use different layouts and offsets while sharing the same carrier.
 
@@ -146,9 +152,12 @@ kernels that use cached expanded layout keys and release the GIL in hot loops.
 An Evictable tensor dispatches through a public `EvictableOperation` adapter.
 Each adapter owns one fresh operation from the primary carrier, lowers its
 inputs to temporary primary-backed tensors, and invokes the primary operation's
-`_forward` and `backward` methods directly. The adapter is the visible autograd
-node and wraps primary results and gradients back into the same hierarchy. CPU
-and Generic implementations therefore do not need composition-specific code.
+generic lowered-execution route and `backward` method. Lowered execution shares
+framework execution hooks and result validation with regular execution but does
+not attach an inner autograd node or discard delegated state. The adapter is the
+sole visible autograd node and wraps primary results and gradients back into the
+same hierarchy. CPU and Generic implementations therefore do not need
+composition-specific code.
 New operation results allocate only their promoted primary storage. Their
 secondary tier remains empty until the first eviction provisions it.
 
@@ -163,6 +172,53 @@ contracted = sw.einsum(lhs, rhs, "a b, c b -> a c")
 
 The native lexer and Python parsers compile these descriptions into layout
 trees and cache successful specifications.
+
+## Operation Profiling
+
+`profile` is a single-use context manager that records carrier-dispatched
+operation executions on the current thread. It records execution attempts, not
+dispatch factory lookups. Events contain the canonical operation name, exact
+dispatching carrier and implementation classes, monotonic start time, inclusive
+and self synchronous host wall time, thread identity, parent relationship, and
+success status. With `record_shapes=True`, tensor argument positions also carry
+immutable snapshots of their hierarchical shapes; non-tensor positions are
+represented by `None`.
+
+```python
+import strideweave as sw
+
+tensor = sw.Tensor(
+    sw.CPU(6),
+    0,
+    sw.Layout(sw.Shape([2, 3]), sw.Stride([1, 2])),
+)
+
+with sw.profile(carriers={sw.CPU}, record_shapes=True) as prof:
+    result = sw.relu(tensor)
+
+events = prof.events()
+averages = prof.key_averages(group_by_input_shape=True)
+print(prof.table(sort_by="self_total_time_ns"))
+```
+
+`carriers=None` records every exact carrier class; an iterable such as
+`{CPU, Evictable}` selects only those exact classes and does not retain carrier
+instances. Nested composite execution is visible when selected: an Evictable
+operation produces an outer Evictable event and a nested event for its promoted
+CPU or Generic operation. Filtering out that nested event does not charge its
+time to the parent's self time. Aggregates are derived from the immutable raw
+events by operation name and carrier class, optionally adding input shapes to
+the grouping key.
+
+Profiling state is thread-local, so work on another thread requires its own
+context, and a context must exit on the thread that entered it. A rejected
+cross-thread exit abandons that registration so the owner thread recovers
+before its next dispatched operation or profiler context. Timings measure
+synchronous host wall time only; asynchronous
+accelerator activity is not modeled. Directly instantiated operations without
+carrier dispatch metadata and unannotated registry move operations are excluded.
+Results become available after the context exits, including when its body raises;
+the original exception still propagates.
 
 ## Autograd
 
@@ -267,10 +323,11 @@ classes. CPU-to-FileBacked and FileBacked-to-CPU moves use native bulk copies;
 unregistered pairs use an elementwise fallback. A successful move releases the
 source carrier, and autograd moves gradients back into fresh source-class storage.
 
-Evictable resolves the move registry for each transition and calls move
-`_forward` directly so residency changes do not add autograd nodes. Element
-access, forward operations, and scatter are unavailable while values are
-evicted. Backward may still run while an operation result is evicted because
+Evictable resolves the move registry for each transition and routes move
+operations through the framework-owned sealed lowered-execution path, so
+residency changes receive shared result validation without adding autograd
+nodes. Element access, forward operations, and scatter are unavailable while
+values are evicted. Backward may still run while an operation result is evicted because
 the result storage is not read; saved inputs and the supplied gradient must be
 promoted.
 
