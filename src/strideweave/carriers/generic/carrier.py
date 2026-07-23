@@ -162,7 +162,7 @@ class Generic(Carrier):
             )
             self[carrier_index] = to_scatter[logical_index]
 
-    def dispatch_op(self, operation_name: str) -> Any:
+    def _dispatch_op(self, operation_name: str) -> Any:
         from ..shared_ops import (
             GenericViewOperation,
             PermuteOperation,

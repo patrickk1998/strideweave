@@ -15,6 +15,9 @@ from tools.lint_invariants import check_source, discover_files, run
         ("value = tensor.dtype() == DType.Float32\n", "SW002"),
         ("class Backend(Carrier):\n    def is_mutable(self): return True\n", "SW003"),
         ("count = tensor.layout.size\n", "SW004"),
+        ("class Backend(Carrier):\n    def dispatch_op(self, name): pass\n", "RT001"),
+        ("result = operation._forward(tensor)\n", "RT011"),
+        ("result = operation._execute_lowered(tensor)\n", "RT011"),
     ],
 )
 def test_invariant_checker_reports_each_rule(source: str, code: str):
@@ -31,6 +34,9 @@ def test_invariant_checker_reports_each_rule(source: str, code: str):
         "class Backend(Carrier):\n    def _is_mutable(self): return True\n",
         "count = tensor.size()\n",
         "count = layout.size\n",
+        "class Backend(Carrier):\n    def _dispatch_op(self, name): pass\n",
+        "result = execute_lowered_operation(operation, tensor)\n",
+        "result = super()._forward(tensor)\n",
     ],
 )
 def test_invariant_checker_accepts_canonical_forms(source: str):

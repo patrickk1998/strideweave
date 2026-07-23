@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from importlib import import_module
 from numbers import Number
 from typing import Any, cast
@@ -12,6 +12,7 @@ from .dtype import DType
 
 _operation = import_module("strideweave._operation")
 Operation = cast(type[Any], _operation.Operation)
+execute_lowered_operation = cast(Callable[..., Any], _operation._execute_lowered)
 
 
 def _as_tensor(value: Any, name: str) -> Any:

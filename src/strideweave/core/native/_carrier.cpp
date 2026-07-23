@@ -4,6 +4,7 @@
 #include <limits>
 
 #include "_carrier.hpp"
+#include "_operation.hpp"
 
 namespace py = pybind11;
 
@@ -58,11 +59,12 @@ public:
         PYBIND11_OVERRIDE(py::dict, Carrier, dlpack_info);
     }
 
-    py::object dispatch_op(const std::string& operation_name) const override {
-        PYBIND11_OVERRIDE(py::object, Carrier, dispatch_op, operation_name);
+protected:
+    py::object _dispatch_op(const std::string& operation_name) const override {
+        PYBIND11_OVERRIDE_NAME(py::object, Carrier, "_dispatch_op", _dispatch_op,
+                               operation_name);
     }
 
-protected:
     bool _is_mutable() const override {
         PYBIND11_OVERRIDE_NAME(bool, Carrier, "_is_mutable", _is_mutable);
     }
@@ -112,6 +114,23 @@ private:
 };
 
 }  // namespace
+
+py::object
+strideweave::carrier::Carrier::dispatch_op(const std::string& operation_name) const {
+    py::object operation = _dispatch_op(operation_name);
+    if (!py::isinstance<strideweave::operation::Operation>(operation)) {
+        throw py::type_error("Carrier._dispatch_op must return an Operation");
+    }
+
+    auto& typed_operation = operation.cast<strideweave::operation::Operation&>();
+    if (typed_operation.is_dispatched()) {
+        throw py::type_error(
+            "Carrier._dispatch_op must return a fresh Operation instance");
+    }
+    py::object carrier = py::cast(this, py::return_value_policy::reference);
+    typed_operation.set_dispatch_metadata(operation_name, py::type::of(carrier));
+    return operation;
+}
 
 PYBIND11_MODULE(_carrier, module) {
     module.doc() = "Native carrier base classes for StrideWeave";

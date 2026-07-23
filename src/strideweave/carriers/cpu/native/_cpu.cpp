@@ -49,6 +49,17 @@ void register_python_cpu_operation(const char* operation_name,
     });
 }
 
+class PyCPU : public CPU {
+public:
+    using CPU::CPU;
+
+protected:
+    py::object _dispatch_op(const std::string& operation_name) const override {
+        PYBIND11_OVERRIDE_NAME(py::object, CPU, "_dispatch_op", _dispatch_op,
+                               operation_name);
+    }
+};
+
 bool exponent_preserves_int32(float exponent) {
     if (!std::isfinite(exponent)) {
         return false;
@@ -756,7 +767,7 @@ private:
 
 }  // namespace
 
-py::object CPU::dispatch_op(const std::string& operation_name) const {
+py::object CPU::_dispatch_op(const std::string& operation_name) const {
     auto& registry = cpu_operation_registry();
     auto operation_factory = registry.find(operation_name);
     if (operation_factory == registry.end()) {
@@ -769,7 +780,7 @@ py::object CPU::dispatch_op(const std::string& operation_name) const {
 }
 
 void bind_cpu(py::module_& module) {
-    py::class_<CPU, Carrier>(module, "CPU")
+    py::class_<CPU, Carrier, PyCPU>(module, "CPU")
         .def(py::init<Index, py::object, bool, py::object, bool>(), py::arg("size"),
              py::arg("pointer") = py::none(), py::kw_only(), py::arg("mutable") = true,
              py::arg("dtype") = py::none(), py::arg("empty") = false)
@@ -778,9 +789,9 @@ void bind_cpu(py::module_& module) {
         .def("allocate_like", &CPU::allocate_like, py::arg("size"), py::kw_only(),
              py::arg("mutable") = true, py::arg("dtype") = py::none(),
              py::arg("empty") = false)
+        .def("_dispatch_op", &CPU::dispatch_registered_op, py::arg("operation_name"))
         .def("pointer", &CPU::pointer)
-        .def("set_value", &CPU::set_value_public, py::arg("index"), py::arg("value"))
-        .def("dispatch_op", &CPU::dispatch_op, py::arg("operation_name"));
+        .def("set_value", &CPU::set_value_public, py::arg("index"), py::arg("value"));
 
     bind_cpu_operation<CpuAddOperation>(module, "_CPUAddOperation");
     bind_cpu_operation<CpuSubOperation>(module, "_CPUSubOperation");

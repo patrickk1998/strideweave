@@ -129,6 +129,37 @@ class InvariantVisitor(ast.NodeVisitor):
                             "SW003",
                             "override _is_mutable; Carrier owns public is_mutable",
                         )
+                    if statement.name == "dispatch_op":
+                        self._report(
+                            statement,
+                            "RT001",
+                            "override _dispatch_op; Carrier owns public dispatch_op",
+                        )
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_execute_lowered"
+        ):
+            self._report(
+                node,
+                "RT011",
+                "use the sealed execute_lowered_operation helper for delegation",
+            )
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "_forward":
+            receiver = node.func.value
+            is_super_call = (
+                isinstance(receiver, ast.Call)
+                and isinstance(receiver.func, ast.Name)
+                and receiver.func.id == "super"
+            )
+            if not is_super_call:
+                self._report(
+                    node,
+                    "RT011",
+                    "delegate operations with execute_lowered_operation, not _forward",
+                )
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:

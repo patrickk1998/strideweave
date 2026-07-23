@@ -159,6 +159,29 @@ def test_operation_forward_requires_tensor_result():
         operation.forward(tensor)
 
 
+def test_lowered_execution_requires_tensor_result():
+    operation = NonTensorForwardOperation()
+
+    with pytest.raises(TypeError, match="must return a Tensor"):
+        operation._execute_lowered(  # strideweave-lint: ignore=RT011
+            make_tensor([1, 2])
+        )
+
+
+def test_lowered_execution_preserves_delegated_state_without_attaching_graph():
+    operation = EchoOperation()
+    saved = make_tensor([1, 2])
+    operation.store_inputs(saved)
+
+    result = operation._execute_lowered(  # strideweave-lint: ignore=RT011
+        make_tensor([3, 4])
+    )
+
+    assert result.autograd_ctx is None
+    assert operation.inputs() == (saved,)
+    assert operation.ctx["input_count"] == 1
+
+
 def test_operation_subclass_missing_forward_raises():
     operation = MissingForwardOperation()
     tensor = make_tensor([1, 2])
