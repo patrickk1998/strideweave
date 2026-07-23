@@ -1,7 +1,9 @@
+from collections.abc import Iterable
 from contextlib import AbstractContextManager
-from typing import Any, overload
+from typing import Any, Literal, Self, overload
 
 from ._operation import Operation as Operation
+from .carriers import Carrier
 from .layout import Tree
 from .tensor import Tensor
 
@@ -31,6 +33,9 @@ __all__ = [
     "MoveOperation",
     "Operation",
     "PermuteOperation",
+    "Profiler",
+    "ProfilerAggregate",
+    "ProfilerEvent",
     "RearrangeOperation",
     "add",
     "div",
@@ -48,6 +53,7 @@ __all__ = [
     "no_grad",
     "permute",
     "pow",
+    "profile",
     "rearrange",
     "reduce",
     "relu",
@@ -182,6 +188,101 @@ class EvictableOperation(Operation):
     def forward(self, *inputs: Any) -> Tensor: ...
     def backward(self, gradient: Tensor) -> tuple[Tensor | None, ...]: ...
 
+type ShapeSnapshot = tuple[int | ShapeSnapshot, ...]
+type InputShapes = tuple[ShapeSnapshot | None, ...]
+
+class ProfilerEvent:
+    def __init__(
+        self,
+        id: int,
+        parent_id: int | None,
+        name: str,
+        carrier_type: type[Carrier],
+        implementation_type: type[Any],
+        input_shapes: InputShapes | None,
+        start_time_ns: int,
+        duration_ns: int,
+        self_time_ns: int,
+        thread_id: int,
+        succeeded: bool,
+    ) -> None: ...
+    @property
+    def id(self) -> int: ...
+    @property
+    def parent_id(self) -> int | None: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def carrier_type(self) -> type[Carrier]: ...
+    @property
+    def implementation_type(self) -> type[Any]: ...
+    @property
+    def input_shapes(self) -> InputShapes | None: ...
+    @property
+    def start_time_ns(self) -> int: ...
+    @property
+    def duration_ns(self) -> int: ...
+    @property
+    def self_time_ns(self) -> int: ...
+    @property
+    def thread_id(self) -> int: ...
+    @property
+    def succeeded(self) -> bool: ...
+
+class ProfilerAggregate:
+    def __init__(
+        self,
+        name: str,
+        carrier_type: type[Carrier],
+        input_shapes: InputShapes | None,
+        count: int,
+        total_time_ns: int,
+        self_total_time_ns: int,
+        mean_time_ns: float,
+        min_time_ns: int,
+        max_time_ns: int,
+    ) -> None: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def carrier_type(self) -> type[Carrier]: ...
+    @property
+    def input_shapes(self) -> InputShapes | None: ...
+    @property
+    def count(self) -> int: ...
+    @property
+    def total_time_ns(self) -> int: ...
+    @property
+    def self_total_time_ns(self) -> int: ...
+    @property
+    def mean_time_ns(self) -> float: ...
+    @property
+    def min_time_ns(self) -> int: ...
+    @property
+    def max_time_ns(self) -> int: ...
+
+class Profiler(AbstractContextManager[Profiler]):
+    def __init__(
+        self,
+        *,
+        carriers: Iterable[type[Carrier]] | None = None,
+        record_shapes: bool = False,
+    ) -> None: ...
+    def __enter__(self) -> Self: ...
+    def __exit__(self, *args: Any) -> Literal[False]: ...
+    def events(self) -> tuple[ProfilerEvent, ...]: ...
+    def key_averages(
+        self, *, group_by_input_shape: bool = False
+    ) -> tuple[ProfilerAggregate, ...]: ...
+    def table(
+        self,
+        *,
+        sort_by: str = "self_total_time_ns",
+        descending: bool = True,
+        group_by_input_shape: bool = False,
+        row_limit: int | None = None,
+    ) -> str: ...
+
 def is_grad_enabled() -> bool: ...
 def set_grad_enabled(enabled: bool) -> None: ...
 def no_grad() -> AbstractContextManager[None]: ...
@@ -216,3 +317,8 @@ def rearrange(
 ) -> Tensor: ...
 def permute(tensor: Tensor, *order: Any) -> Tensor: ...
 def view(tensor: Tensor, key: Any) -> Tensor: ...
+def profile(
+    *,
+    carriers: Iterable[type[Carrier]] | None = None,
+    record_shapes: bool = False,
+) -> Profiler: ...

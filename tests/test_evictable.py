@@ -351,13 +351,17 @@ def test_failed_promotion_preserves_state_and_can_be_retried():
     assert not original_primary.is_owned()
 
 
-def test_transitions_call_move_private_forward_not_autograd_forward():
+def test_transitions_use_lowered_execution_not_autograd_forward():
     calls = []
 
     class SpyMove(ElementwiseMoveOperation):
         def forward(self, *inputs):
             calls.append("forward")
             return super().forward(*inputs)
+
+        def _execute_lowered(self, *inputs):
+            calls.append("shadowed _execute_lowered")
+            raise AssertionError("dynamic lowered execution was called")
 
         def _forward(self, tensor, destination):
             calls.append("_forward")
@@ -369,6 +373,33 @@ def test_transitions_call_move_private_forward_not_autograd_forward():
         carrier.promote()
 
     assert calls == ["_forward", "_forward"]
+
+
+def test_adapter_uses_sealed_lowered_execution_when_subclass_shadows_method():
+    calls = []
+
+    class ShadowedLoweredOperation(sw.Operation):
+        def _execute_lowered(self, *inputs):
+            calls.append("shadowed _execute_lowered")
+            return inputs[0]
+
+        def _forward(self, *inputs):
+            calls.append("_forward")
+            (tensor,) = inputs
+            carrier = tensor.carrier.new_like([7.0])
+            return Tensor(carrier, tensor.offset, tensor.layout)
+
+        def backward(self, gradient):
+            return (gradient,)
+
+    tensor = make_tensor(Evictable(Generic([1.0]), Generic([0.0])))
+    adapter = EvictableOperation(ShadowedLoweredOperation())
+
+    result = adapter.forward(tensor)
+
+    assert calls == ["_forward"]
+    assert values(result) == [7.0]
+    assert result.autograd_ctx is adapter
 
 
 def test_transitions_resolve_move_registry_when_each_transition_runs():
@@ -586,6 +617,17 @@ def test_adapter_forward_is_single_use():
 
     with pytest.raises(RuntimeError, match="only be called once"):
         adapter.forward(tensor)
+
+
+def test_adapter_and_primary_operation_keep_exact_dispatch_metadata():
+    tensor = make_tensor(make_cpu_evictable([1.0]))
+
+    adapter = evictable_carrier(tensor).dispatch_op("relu")
+
+    assert adapter._operation_name == "relu"
+    assert adapter._dispatch_carrier_class is Evictable
+    assert adapter.primary_operation._operation_name == "relu"
+    assert adapter.primary_operation._dispatch_carrier_class is CPU
 
 
 def test_no_grad_uses_adapter_without_attaching_graph():

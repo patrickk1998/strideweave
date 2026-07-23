@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from ..base import Carrier
 from ..dtype import DType
+from ..operation_helpers import execute_lowered_operation
 
 
 def _new_like_with_dtype(
@@ -285,9 +286,9 @@ class Evictable(Carrier):
     def evict(self) -> None:
         """Move promoted values into secondary storage without autograd.
 
-        Repeated calls while already evicted are no-ops. The move operation's
-        ``_forward`` implementation is called directly, so the transition does
-        not add an operation to any tensor graph.
+        Repeated calls while already evicted are no-ops. The move operation uses
+        lowered execution, so the transition does not add an operation to any
+        tensor graph.
 
         Returns:
             ``None``.
@@ -313,8 +314,8 @@ class Evictable(Carrier):
             with ExitStack() as stack:
                 stack.enter_context(_owner_access(self._primary, self._primary_token))
                 stack.enter_context(_owner_access(destination, destination_token))
-                moved = operation()._forward(
-                    self._flat_tensor(self._primary), destination
+                moved = execute_lowered_operation(
+                    operation(), self._flat_tensor(self._primary), destination
                 )
         except Exception:
             if replaces_secondary:
@@ -333,8 +334,8 @@ class Evictable(Carrier):
     def promote(self) -> None:
         """Move evicted values back into fresh primary-class storage.
 
-        Repeated calls while already promoted are no-ops. The transition calls
-        move ``_forward`` directly and does not create an autograd node.
+        Repeated calls while already promoted are no-ops. The transition uses
+        lowered move execution and does not create an autograd node.
 
         Returns:
             ``None``.
@@ -363,8 +364,8 @@ class Evictable(Carrier):
                     _owner_access(self._secondary, self._secondary_token)
                 )
                 stack.enter_context(_owner_access(destination, destination_token))
-                moved = operation()._forward(
-                    self._flat_tensor(self._secondary), destination
+                moved = execute_lowered_operation(
+                    operation(), self._flat_tensor(self._secondary), destination
                 )
         except Exception:
             if replaces_primary:
@@ -417,7 +418,7 @@ class Evictable(Carrier):
     def dlpack_info(self) -> dict[str, int]:
         raise BufferError("DLPack is not supported for Evictable carrier")
 
-    def dispatch_op(self, operation_name: str) -> Any:
+    def _dispatch_op(self, operation_name: str) -> Any:
         """Create an adapter around the promoted carrier's operation.
 
         Args:

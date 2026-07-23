@@ -207,6 +207,8 @@ def test_cpu_dispatch_op_returns_supported_operations():
         assert type(second) is type(first)
         assert isinstance(first, Operation)
         assert first is not second
+        assert first._operation_name == operation_name
+        assert first._dispatch_carrier_class is CPU
 
     assert isinstance(carrier.dispatch_op("permute"), PermuteOperation)
     assert isinstance(carrier.dispatch_op("rearrange"), RearrangeOperation)
@@ -214,6 +216,69 @@ def test_cpu_dispatch_op_returns_supported_operations():
 
     with pytest.raises(NotImplementedError):
         carrier.dispatch_op("unknown")
+
+
+def test_python_cpu_subclass_can_override_dispatch_hook():
+    calls = []
+
+    class CustomCPU(CPU):
+        def _dispatch_op(self, operation_name):
+            calls.append(operation_name)
+            return sw.GenericReLUOperation()
+
+    carrier = CustomCPU(1)
+    first = carrier.dispatch_op("custom_relu")
+    second = carrier.dispatch_op("custom_relu")
+
+    assert calls == ["custom_relu", "custom_relu"]
+    assert type(first) is sw.GenericReLUOperation
+    assert type(second) is sw.GenericReLUOperation
+    assert first is not second
+    assert first._operation_name == "custom_relu"
+    assert first._dispatch_carrier_class is CustomCPU
+
+
+def test_python_cpu_subclass_without_override_uses_native_dispatch_fallback():
+    class CustomCPU(CPU):
+        pass
+
+    carrier = CustomCPU(1)
+    operation = carrier.dispatch_op("relu")
+
+    assert type(operation).__name__ == "_CPUReLUOperation"
+    assert operation._operation_name == "relu"
+    assert operation._dispatch_carrier_class is CustomCPU
+
+
+def test_python_cpu_subclass_override_can_delegate_to_native_dispatch_fallback():
+    calls = []
+
+    class CustomCPU(CPU):
+        def _dispatch_op(self, operation_name):
+            calls.append(operation_name)
+            if operation_name == "custom_relu":
+                return sw.GenericReLUOperation()
+            return super()._dispatch_op(operation_name)
+
+    carrier = CustomCPU(1)
+
+    custom = carrier.dispatch_op("custom_relu")
+    native = carrier.dispatch_op("relu")
+
+    assert calls == ["custom_relu", "relu"]
+    assert type(custom) is sw.GenericReLUOperation
+    assert type(native).__name__ == "_CPUReLUOperation"
+    assert custom._dispatch_carrier_class is CustomCPU
+    assert native._dispatch_carrier_class is CustomCPU
+
+
+def test_python_cpu_subclass_dispatch_hook_result_is_validated():
+    class InvalidCPU(CPU):
+        def _dispatch_op(self, operation_name):
+            return object()
+
+    with pytest.raises(TypeError, match="_dispatch_op must return an Operation"):
+        InvalidCPU(1).dispatch_op("invalid")
 
 
 def test_cpu_empty_like_allocates_requested_storage_and_dtype():

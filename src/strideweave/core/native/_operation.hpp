@@ -47,7 +47,8 @@ inline bool is_grad_enabled() {
 class Operation {
 public:
     Operation()
-        : ctx_(py::dict()), inputs_(py::tuple()), input_versions_(py::tuple()) {}
+        : ctx_(py::dict()), inputs_(py::tuple()), input_versions_(py::tuple()),
+          is_dispatched_(false), dispatch_carrier_class_(py::none()) {}
 
     virtual ~Operation() = default;
 
@@ -60,10 +61,7 @@ public:
             clear_inputs();
         }
 
-        py::object result = _forward(inputs);
-        if (!py::isinstance(result, tensor_type())) {
-            throw py::type_error("Operation._forward must return a Tensor");
-        }
+        py::object result = execute(inputs);
         const bool build_autograd_graph =
             should_store_inputs && is_differentiable_tensor(result);
         if (build_autograd_graph) {
@@ -74,6 +72,8 @@ public:
         }
         return result;
     }
+
+    py::object execute_lowered(py::args inputs) { return execute(inputs); }
 
     virtual py::object _forward(py::args inputs) = 0;
     virtual py::object backward(py::object gradient) = 0;
@@ -87,6 +87,25 @@ public:
     py::tuple inputs() const { return inputs_; }
 
     py::tuple input_versions() const { return input_versions_; }
+
+    void set_dispatch_metadata(std::string operation_name, py::object carrier_class) {
+        operation_name_ = std::move(operation_name);
+        is_dispatched_ = true;
+        dispatch_carrier_class_ = std::move(carrier_class);
+    }
+
+    bool is_dispatched() const { return is_dispatched_; }
+
+    const std::string& operation_name_value() const { return operation_name_; }
+
+    py::object operation_name() const {
+        if (operation_name_.empty()) {
+            return py::none();
+        }
+        return py::str(operation_name_);
+    }
+
+    py::object dispatch_carrier_class() const { return dispatch_carrier_class_; }
 
     void validate_input_versions() const {
         for (std::size_t i = 0; i < py::len(inputs_); ++i) {
@@ -107,6 +126,8 @@ protected:
     py::dict ctx_;
 
 private:
+    py::object execute(py::args inputs);
+
     void clear_inputs() {
         inputs_ = py::tuple();
         input_versions_ = py::tuple();
@@ -143,6 +164,9 @@ private:
 
     py::tuple inputs_;
     py::tuple input_versions_;
+    bool is_dispatched_;
+    std::string operation_name_;
+    py::object dispatch_carrier_class_;
 };
 
 }  // namespace strideweave::operation

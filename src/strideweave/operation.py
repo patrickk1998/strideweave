@@ -44,6 +44,7 @@ from .carriers.shared_ops import (
 )
 from .functional import *  # noqa: F403
 from .functional import __all__ as _functional_all
+from .profiling import Profiler, ProfilerAggregate, ProfilerEvent, profile
 
 _OPERATION_CLASS_EXPORTS = [
     "CpuToFileBackedMoveOperation",
@@ -71,8 +72,11 @@ _OPERATION_CLASS_EXPORTS = [
     "MoveOperation",
     "Operation",
     "PermuteOperation",
+    "Profiler",
+    "ProfilerAggregate",
+    "ProfilerEvent",
     "RearrangeOperation",
 ]
 
-_OPERATION_EXPORTS = [*_OPERATION_CLASS_EXPORTS, *_functional_all]
+_OPERATION_EXPORTS = sorted([*_OPERATION_CLASS_EXPORTS, "profile", *_functional_all])
 __all__ = _OPERATION_EXPORTS  # pyright: ignore[reportUnsupportedDunderAll]

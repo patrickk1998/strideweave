@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..operation_helpers import Operation
+from ..operation_helpers import Operation, execute_lowered_operation
 from .carrier import Evictable
 
 
@@ -12,8 +12,8 @@ class EvictableOperation(Operation):
     """Delegate one autograd operation to a promoted primary carrier.
 
     One adapter owns one stateful primary operation. Forward lowers Evictable
-    tensors to temporary primary-backed tensors and calls the primary
-    operation's ``_forward`` directly. Backward refreshes only those lowered
+    tensors to temporary primary-backed tensors and uses the primary
+    operation's lowered execution route. Backward refreshes only those lowered
     inputs before calling the same primary operation's ``backward``, preserving
     its context and native forward state.
 
@@ -120,9 +120,9 @@ class EvictableOperation(Operation):
         )
         lowered_tensors = self._tensor_inputs(lowered_arguments)
         self._primary_operation.store_inputs(*lowered_tensors)
-        primary_result = self._primary_operation._forward(*lowered_arguments)
-        if not isinstance(primary_result, Tensor):
-            raise TypeError("primary operation _forward must return a Tensor")
+        primary_result = execute_lowered_operation(
+            self._primary_operation, *lowered_arguments
+        )
         wrapped_carrier = hierarchy._wrap_primary(primary_result.carrier)
         self._output_carrier = wrapped_carrier
         return Tensor(wrapped_carrier, primary_result.offset, primary_result.layout)
