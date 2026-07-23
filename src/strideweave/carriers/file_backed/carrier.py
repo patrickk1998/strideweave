@@ -149,13 +149,15 @@ class FileBacked(Carrier):
             result._write_value(index, value)
         return result
 
-    def empty_like(
+    def allocate_like(
         self,
         size: int,
         *,
         mutable: bool = True,
         dtype: DType | None = None,
+        empty: bool = False,
     ) -> FileBacked:
+        del empty
         normalized_size = operator_index(size)
         if normalized_size < 0:
             raise ValueError("FileBacked allocation size must be non-negative")

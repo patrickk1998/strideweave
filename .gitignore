@@ -8,6 +8,7 @@ __pycache__/
 *.swp
 build/
 dist/
+node_modules/
 compile_commands.json
 
 # Beads / Dolt files (added by bd init)

@@ -7,8 +7,13 @@ class Carrier:
     def get_value(self, index: int) -> Any: ...
     def set_value(self, index: int, value: Any) -> None: ...
     def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> Carrier: ...
-    def empty_like(
-        self, size: int, *, mutable: bool = True, dtype: Any = None
+    def allocate_like(
+        self,
+        size: int,
+        *,
+        mutable: bool = True,
+        dtype: Any = None,
+        empty: bool = False,
     ) -> Carrier: ...
     def scatter(
         self,
@@ -47,6 +52,7 @@ class CPU(Carrier):
         *,
         mutable: bool = True,
         dtype: Any = None,
+        empty: bool = False,
     ) -> None: ...
     def _dispatch_op(self, operation_name: str) -> Any: ...
     def pointer(self) -> int: ...
@@ -59,8 +65,13 @@ class CPU(Carrier):
         mutable: bool = True,
         dtype: Any = None,
     ) -> CPU: ...
-    def empty_like(
-        self, size: int, *, mutable: bool = True, dtype: Any = None
+    def allocate_like(
+        self,
+        size: int,
+        *,
+        mutable: bool = True,
+        dtype: Any = None,
+        empty: bool = False,
     ) -> CPU: ...
     def scatter(
         self,

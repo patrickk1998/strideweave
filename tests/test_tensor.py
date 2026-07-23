@@ -50,8 +50,13 @@ class UnsupportedData(Carrier):
     ) -> "UnsupportedData":
         return UnsupportedData(list(values))
 
-    def empty_like(
-        self, size: int, *, mutable: bool = True, dtype: DType | None = None
+    def allocate_like(
+        self,
+        size: int,
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
+        empty: bool = False,
     ) -> "UnsupportedData":
         return UnsupportedData([None] * size)
 

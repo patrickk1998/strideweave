@@ -19,6 +19,12 @@ accelerator carriers.
 - `Tensor(carrier, offset, layout)` references storage owned by a `Carrier`.
 - `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
   coordinates to physical storage indices.
+- `Tiler` is the public type alias for a read-only sequence of `Layout` values.
+  Layout composition APIs use tilers to describe one tile per leading
+  hierarchical mode: `Layout.compose` accepts a tiler directly, while
+  `Layout.divide_tiler` and `Layout.zipped_divide` use its layouts to divide
+  the corresponding leading modes. Lists, tuples, and other compatible
+  sequences are accepted.
 - `layout.size` is the logical element count, while `layout.cosize` is the
   physical storage size the layout addresses (one past its largest offset).
   They are equal for compact layouts but `cosize` is larger for strided or
@@ -68,9 +74,11 @@ StrideWeave currently provides four carrier implementations:
 - `Generic(values, mutable=True, dtype=DType.Floating)` stores Python
   objects. It supports differentiable `Floating` values and non-differentiable
   arbitrary `Any` values.
-- `CPU(size, pointer=None, mutable=True, dtype=DType.Float32)` owns native
-  memory or references a caller-provided address. It supports `Float32` and
-  `Int32`.
+- `CPU(size, pointer=None, *, mutable=True, dtype=DType.Float32, empty=False)`
+  owns native memory or references a caller-provided address. It supports
+  `Float32` and `Int32`. Owned storage is zero-initialized unless `empty=True`
+  opts into unspecified initial values; `empty` never initializes or changes
+  caller-owned memory supplied through `pointer`.
 - `FileBacked(filename=None, mutable=True, dtype=DType.Floating)` stores raw
   numeric values in a temporary binary file. It is intended for storage and
   movement rather than direct tensor computation.
@@ -81,6 +89,12 @@ StrideWeave currently provides four carrier implementations:
 
 The available dtype tags are `Any`, `Floating`, `Float32`, and `Int32`. Only
 `Floating` and `Float32` tensors participate in autograd.
+
+Every carrier exposes `allocate_like(size, *, mutable=True, dtype=None,
+empty=False)` for fresh size-based allocation. The default requests initialized
+storage; `empty=True` permits a backend to skip initialization, so callers must
+write every element they will read. `new_like(values, ...)` remains the separate
+factory for materializing supplied values.
 
 Carriers may be mutable or immutable. Mutating shared storage increments a version
 counter visible through `tensor.version`. Calling `release()` permanently
@@ -361,6 +375,8 @@ uv run ruff check .
 uv run python tools/lint_invariants.py
 uv run pyright
 uv build
+npm ci
+npm run duplication
 find src/strideweave -type f \( -name '*.cpp' -o -name '*.hpp' \) -exec uv run clang-format --dry-run --Werror {} +
 CMAKE_ARGS="-DSTRIDEWEAVE_STRICT_WARNINGS=ON" uv build
 ```
@@ -370,6 +386,13 @@ StrideWeave-specific source contracts without importing the package. Native sani
 coverage runs in Linux CI with `STRIDEWEAVE_SANITIZERS=ON`; it instruments the extension
 modules with AddressSanitizer and UndefinedBehaviorSanitizer before running the full
 Python test suite.
+
+The duplication gate uses the exact `jscpd` version locked by npm and the checked-in
+`.jscpd.json` configuration to scan production code under `src/`. The post-binary-
+operation-refactor baseline was 4.7% duplicated lines with 5-line/50-token minimum
+clones; CI blocks results above 5.0%. The scanner respects `.gitignore`, and the
+configuration explicitly excludes non-production, generated, dependency, cache,
+report, and build artifacts.
 
 The test suite covers layouts, carriers, tensor indexing and mutation,
 autograd, operations and activations, hierarchical command parsing, DLPack,

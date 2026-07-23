@@ -223,23 +223,28 @@ class Evictable(Carrier):
             mutable=mutable,
             dtype=result_dtype,
         )
-        secondary = self._secondary.empty_like(
+        secondary = self._secondary.allocate_like(
             0,
             mutable=True,
             dtype=result_dtype,
         )
         return Evictable(primary, secondary)
 
-    def empty_like(
+    def allocate_like(
         self,
         size: int,
         *,
         mutable: bool = True,
         dtype: DType | None = None,
+        empty: bool = False,
     ) -> Evictable:
         result_dtype = self._dtype if dtype is None else dtype
-        primary = self._primary.empty_like(size, mutable=mutable, dtype=result_dtype)
-        secondary = self._secondary.empty_like(0, mutable=True, dtype=result_dtype)
+        primary = self._primary.allocate_like(
+            size, mutable=mutable, dtype=result_dtype, empty=empty
+        )
+        secondary = self._secondary.allocate_like(
+            0, mutable=True, dtype=result_dtype, empty=empty
+        )
         return Evictable(primary, secondary)
 
     def _wrap_primary(self, primary: Carrier) -> Evictable:
@@ -247,7 +252,7 @@ class Evictable(Carrier):
             return self
         if type(primary) is not type(self._primary):
             raise TypeError("operation result does not use the primary carrier")
-        secondary = self._secondary.empty_like(
+        secondary = self._secondary.allocate_like(
             0,
             mutable=True,
             dtype=primary.dtype(),
@@ -265,7 +270,7 @@ class Evictable(Carrier):
     ) -> tuple[Carrier, int, bool]:
         if not prototype.is_released() and prototype.size() >= self._size:
             return prototype, prototype_token, False
-        destination = prototype.empty_like(
+        destination = prototype.allocate_like(
             self._size,
             mutable=True,
             dtype=self._dtype,

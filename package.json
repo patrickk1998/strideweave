@@ -1,0 +1,13 @@
+{
+  "name": "strideweave-quality-tools",
+  "private": true,
+  "scripts": {
+    "duplication": "jscpd --config .jscpd.json"
+  },
+  "devDependencies": {
+    "jscpd": "5.0.12"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
