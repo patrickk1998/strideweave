@@ -87,8 +87,355 @@ StrideWeave currently provides four carrier implementations:
   to secondary storage and blocks access until `promote()` restores them. Its
   constructor takes exclusive ownership of both supplied carriers.
 
-The available dtype tags are `Any`, `Floating`, `Float32`, and `Int32`. Only
-`Floating` and `Float32` tensors participate in autograd.
+### Dtype Descriptors
+
+Dtype descriptors form a small immutable hierarchy rooted at `DType`, and every
+registered descriptor is a singleton, so tags are compared with `is`. The
+attributes of `DType` are exactly the built-in descriptors. That namespace is
+frozen: reassigning or deleting a binding raises, and so does binding any
+further descriptor as a class attribute, so class lookup and `DType.from_name`
+can never disagree.
+
+Constructing a descriptor is one transaction owned by the dtype model rather
+than a sequence an implementation has to order correctly. The most-derived
+`__init__` runs first and simply assigns its own fields; the finished descriptor
+is then validated, sealed against mutation, and published under the registry
+lock. Three properties follow from that single finalization boundary:
+
+- A constructor that raises at any depth registers nothing, so a failed name and
+  its structure both stay free for a later descriptor.
+- A concurrent lookup never observes a partly initialized descriptor, because
+  the entry that makes it reachable is written after it is complete and sealed.
+- Claiming is thread-atomic: one lock guards every registry read and write, so a
+  name — and, for a block-scaled descriptor, a structure — is checked and
+  claimed indivisibly. Two threads constructing the same name therefore produce
+  exactly one descriptor, and every descriptor a constructor returns is the
+  identity that `DType.from_name` reports.
+
+The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
+
+- `SimpleDType` is one fixed-width scalar encoding rather than a composition
+  of subtensors, so a single carrier could store it homogeneously, and each
+  reports an exact `bits` width. `DType.Float32` and
+  `DType.Int32` are the concrete simple storage dtypes carriers support today;
+  the registry also defines the simple encodings `Int8`, `E8M0`, `E5M2`, `E4M3`,
+  `E3M2`, `E2M3`, and `E2M1`, which are structural only. Being simple describes
+  the encoding, not carrier support.
+- `DTypeCategory` is an abstract relationship with no bit width. `DType.Any` is
+  the root category, and `DType.Floating` and `DType.Integer` enclose the
+  matching simple dtypes. A category is not itself a representation.
+- `DType.Any` and `DType.Floating` additionally carry the legacy *opaque
+  storage* disposition, which is the one way a category is accepted as storage:
+  `Generic` accepts exactly those two for Python-object and width-unspecified
+  numeric values, and `FileBacked` accepts `Floating` alongside the concrete
+  simple dtypes. `DType.Integer` carries no such disposition, so no carrier
+  accepts it.
+- `CompoundDType` describes a logical value whose physical representation is
+  composed from several simple-dtype planes. It is never carrier storage
+  itself; its ordered `simple_types` are the per-plane storage dtypes a
+  multi-plane implementation would use, one carrier per plane.
+
+`DType` and `CompoundDType` are abstract at runtime, as is any subclass that
+does not declare `abstract=False`, so a class that describes no representation
+of its own cannot produce descriptors that claim registry names. The kinds are
+also closed: every
+descriptor is a `DTypeCategory`, a `SimpleDType`, or a `CompoundDType`, and a
+subclass of the root that is none of them is rejected.
+
+A concrete compound representation is added by subclassing, using public APIs
+only. The subclass declares `abstract=False`, hands its ordered planes to
+`super().__init__`, and keeps whatever fields it needs:
+
+```python
+class Planar(sw.CompoundDType, abstract=False):
+    __slots__ = ("_label",)
+
+    def __init__(self, name, *, planes, label):
+        super().__init__(name, supertype=sw.DType.Any, simple_types=planes)
+        self._label = label
+
+pair = Planar("Planar32", planes=(sw.DType.Float32, sw.DType.Int32), label="pair")
+assert sw.CompoundDType.from_name("Planar32") is pair
+assert pair.num_carriers == 2
+```
+
+`CompoundDType` copies the planes into a tuple it owns and validates that copy,
+so a mapping that is empty, not iterable, or not all `SimpleDType` descriptors
+never reaches the registry, and mutating the collection the caller passed in
+changes nothing afterwards.
+
+More generally, a descriptor's stored fields and the accessors that report its
+representation — `name`, `value`, `supertype`, `supertypes()`, `structure()`,
+`is_subtype_of()`, the kind predicates, `bits`, `simple_types`, `num_carriers`,
+`element`, `levels`, `num_axes`, and `bits_per_element` — are owned by the
+model, and a subclass that redefines one of them, whether as a slot, a property,
+or a method, is refused when the class is created. The attribute machinery
+itself — `__getattribute__`, `__getattr__`, `__setattr__`, and `__delattr__` —
+is owned on the same terms, because intercepting attribute access decides what
+every accessor answers. Each would otherwise let a
+registered descriptor report a representation that disagrees with the structure
+recorded for its identity and its pickle. A subclass extends the model by adding
+its own fields and, when its representation carries state of its own, by
+overriding `structure_extension()`.
+
+Ownership is layered by contract class — the root descriptor, categories,
+simple, compound, and block-scaled dtypes each own what they define, and every
+class below inherits that — and the layers live in the dtype module rather than
+on the classes themselves. Assigning to or deleting a class attribute therefore
+cannot weaken the policy: the same rule applies to a later `setattr` on a
+descriptor class as to its class body. An implementation's own declared slots
+stay protected against a further subclass on top of that.
+
+Those layers are part of a wider rule: a descriptor's identity is composed by
+the model, not reported by the descriptor. Each contract class has one immutable
+specification held in the dtype module, carrying the members it owns, the
+fragment it contributes to a canonical structure, the validation it requires,
+and whether its descriptors are additionally unique by structure. Finalizing a
+descriptor resolves the specifications its class inherits through the method
+resolution order, general to specific, and applies them in that order — so a
+`CompoundDType` implementation is bound by the root and compound contracts, and
+a `BlockScaledDType` subclass by those two plus the block-scaled one. Nothing
+about identity is dispatched through the descriptor, so an implementation cannot
+omit a canonical layer from its fingerprint, decline the uniqueness its contract
+imposes, or weaken a check it still claims to satisfy. The names the model once
+dispatched through — `_contract_structure`, `_structural_key`,
+`_structure_conflict`, and `_validate_finalized` — are reserved on the same
+terms as the accessors, so defining one is refused at class creation rather than
+silently ignored. Contracts are not registrable: an external representation
+inherits a recognized one and is first-class through registration, subtype and
+kind queries, discovery, copying, pickling, and `structure_extension()`.
+
+The check spans the whole hierarchy a descriptor class is built from, not only
+its class body: a mixin supplying an owned accessor or an attribute-interception
+method is refused at class creation, whichever side of the contract class it is
+listed on, and the error names the member and the base it came from. Mixins that
+add behavior of their own remain ordinary bases. Only the hierarchy as defined
+is checked — a class and its bases are trusted to stay what they were when the
+descriptor class was created.
+
+The rule covers a descriptor's own state as well as its class. Declaring
+`__slots__` is optional, so an implementation may keep its fields in an instance
+dictionary — but an entry named like an owned member, such as a `structure` or
+an `is_compound` assigned in `__init__`, would take precedence over the
+inherited accessor, so finalization rejects the descriptor before it is sealed
+or registered. The check runs again after finalization has consulted
+`structure_extension()`, the one hook that runs after the constructor and can
+assign to `self` just as `__init__` does, so an accidental shadow introduced
+there is caught before anything is claimed. Its name and structural key stay
+free and the rejected object keeps neither structure nor seal.
+
+Together these rules describe guardrails, not a sandbox. What the model actually
+does is bounded and worth stating exactly. It validates a descriptor class's
+initial hierarchy when the class is created, validates the completed descriptor
+during finalization — as its constructor leaves it and again after the hooks
+that describe it — seals every registered instance against mutation, and keeps
+the built-in `DType` namespace frozen. Within that, both slotted and
+dictionary-backed implementations are supported, an implementation's own fields
+stay its own, and a registered descriptor's model-owned accessors agree with the
+structure recorded for its identity, which is what pickling and structural
+uniqueness use.
+
+The rest is contract rather than enforcement. From the moment a descriptor
+class is created, that extension class and every base contributing behavior to
+it must stay as they were: Python classes remain mutable, and the model checks a
+hierarchy when it is defined instead of watching it afterwards.
+Representation-bearing state must be initialized before registration and
+described by a pure, stable
+`structure_extension()`, read exactly once during finalization — a field an
+implementation keeps changing afterwards alters nothing about the registered
+identity, and an object an extension field merely refers to is not deep-frozen.
+
+The following are therefore unsupported rather than intercepted, and code that
+uses one forfeits the registry, structural-identity, pickle, and immutability
+guarantees above: a custom `__dict__` or other concealment of a descriptor's own
+state, reassigning `__slots__`, mutating an extension class or a participating
+mixin after the descriptor class is created, `object.__setattr__`,
+`type.__setattr__`, and reaching into the dtype module's private state. The
+dtype model is an API-integrity boundary against mistakes and drift in
+cooperative code, not a defense against hostile metaprogramming sharing the
+process.
+
+Field assignment inside `__init__` works because descriptor state is open
+exactly until finalization seals it; every published descriptor is immutable. An
+implementation that omits `super().__init__` is rejected rather than published
+without a name or without planes, and a construction that fails leaves the
+object inert: it keeps no structure and no seal, so it cannot later be used as
+another descriptor's supertype or plane.
+
+Descriptors expose `name`, `supertype`, `supertypes()`, `is_simple()`,
+`is_category()`, `is_compound()`, `is_opaque_storage()`, and
+`is_subtype_of(other)`. The kind predicates classify the *representation*, not
+backend availability: `is_simple()` reports that a dtype is one fixed-width
+scalar encoding, which stays true for an encoding no carrier accepts. There is
+deliberately no global "is this storable" predicate, because whether a dtype can
+be stored is a decision of an exact carrier class together with a dtype, not a
+property of the descriptor. `E4M3` is a perfectly well-formed simple dtype that
+no carrier accepts today, and `is_opaque_storage()` reports a descriptor's
+legacy disposition rather than permission from any carrier.
+
+`name` is the canonical descriptor field. `value` is a read-only compatibility
+alias returning the same string, kept because `DType` was previously an `Enum`
+whose members exposed `value`; code such as `tensor.dtype().value` therefore
+still works and can never disagree with `name`.
+
+`DType.registered()` and `DType.from_name(name)` query the registry and narrow
+to the receiving class in both value and type, so `SimpleDType.registered()`
+returns only simple dtypes and `SimpleDType.from_name("E4M3").bits` type-checks
+without a cast. Constructing a `SimpleDType` or `DTypeCategory` registers it
+under a unique name and extends the hierarchy.
+
+Registration deliberately does not install a `DType` class attribute, which
+would let extensions collide with the built-in namespace and leave the
+attribute surface untypable. Extensions are therefore discovered through the
+registry rather than by attribute lookup:
+
+```python
+extension = sw.SimpleDType("Float16", bits=16, supertype=sw.DType.Floating)
+assert sw.DType.from_name("Float16") is extension  # registry lookup works
+assert extension in sw.SimpleDType.registered()    # enumeration includes it
+assert not hasattr(sw.DType, "Float16")            # the namespace is unchanged
+sw.DType.Float16 = extension                       # AttributeError: the namespace is frozen
+```
+
+Copying and pickling preserve identity rather than producing a duplicate
+descriptor. A pickle carries the descriptor's name and its structure, which the
+*receiving* process resolves against its own registry; it never ships a dtype
+definition. A built-in therefore unpickles in any process that imports
+`strideweave`, while a dynamically registered dtype requires that process to
+register a matching descriptor first:
+
+```python
+payload = pickle.dumps(sw.SimpleDType("Float16", bits=16, supertype=sw.DType.Floating))
+
+# In the receiving process, registration must happen before the load.
+recreated = sw.SimpleDType("Float16", bits=16, supertype=sw.DType.Floating)
+assert pickle.loads(payload) is recreated
+```
+
+Without that registration the load raises `LookupError`, and if the receiving
+process registered `Float16` with a different width or category the load raises
+`ValueError` rather than silently substituting a different representation.
+
+That check covers the whole referenced graph, not a list of names. A structure
+records each contract class's own fields and expands every descriptor it names —
+supertype, compound plane, block element, scale — into that descriptor's
+structure recursively, so a receiver whose `E4M3` is 16 bits, whose `Floating`
+is not opaque, or whose compound planes differ is rejected even though every
+name matches. The error names the field that actually differs. `structure()`
+returns the recorded value, which is computed once at finalization and is the
+authority for structural identity.
+
+A descriptor may reference only descriptors that are *canonically registered* —
+finalized and still the descriptor their name resolves to. That keeps the graph
+acyclic and the expansion finite, and it keeps an object whose own registration
+was rejected from becoming the supertype or plane of a descriptor that does
+register.
+
+Every leaf of a structure is stored as a string naming its exact type alongside
+its value, so structures never compare through ordinary Python equality:
+`True`, `1`, and `1.0` are three different representations rather than one, and
+a `NaN` tag gets a single deterministic spelling instead of a value that is not
+equal to itself. Floats are recorded in exact hexadecimal form, so a tag
+round-trips through a pickle without precision loss.
+
+An implementation whose representation carries state beyond its contract
+declares it by overriding `structure_extension()` — the only part of a
+descriptor's identity an implementation controls — which returns exact strings,
+numbers, `None`, `Whole`, and tuples of those. Two descriptors that would
+otherwise be structurally identical are then distinguished for both pickle
+compatibility and structural uniqueness:
+
+```python
+class Tagged(sw.CompoundDType, abstract=False):
+    __slots__ = ("_tag",)
+
+    def __init__(self, name, *, tag):
+        super().__init__(
+            name,
+            supertype=sw.DType.Any,
+            simple_types=(sw.DType.Float32,),
+        )
+        self._tag = tag
+
+    def structure_extension(self):
+        return (self._tag,)
+```
+
+Shipping the dtype definition itself — a cross-process descriptor schema — is
+deliberately out of scope and remains possible future work.
+
+The narrow simple encodings `Int8`, `E8M0`, `E5M2`, `E4M3`, `E3M2`, `E2M3`, and
+`E2M1` are registered so the block-scaled formats below can name their elements
+and scales. They are structural descriptors only: no carrier stores them and no
+kernel interprets them yet, so `SimpleDType.registered()` deliberately returns
+more encodings than any carrier accepts.
+
+### Block-Scaled Descriptors
+
+`BlockScaledDType` is the currently implemented compound dtype: one simple
+element dtype plus a linear chain of simple scale `Level` entries. A level's
+`block` extent is measured in the *previous* level's coordinate space, so each
+level coarsens the grouping below it, and only the final level may use the
+symbolic `Whole` extent that produces a single scale for the entire tensor.
+`Whole` is a true singleton — `WholeExtent()`, copying, and unpickling all yield
+it — so equivalent whole-scaled formats cannot bypass structural uniqueness.
+
+- `simple_types` maps position to plane dtype, so plane `i` is stored by a
+  carrier whose dtype is `simple_types[i]`; `num_carriers` is its length.
+- `num_axes` counts the blocking axes a tensor of this dtype must be given,
+  which excludes `Whole` levels.
+- `bits_per_element` returns a `float`, or a `SymbolicBits` value with an
+  `evaluate(element_count)` method when the final level is `Whole`.
+
+The registered formats are `MXFP8_E4M3`, `MXFP8_E5M2`, `MXFP6_E3M2`,
+`MXFP6_E2M3`, `MXFP4`, `MXINT8`, and `NVFP4`. Block extents are fixed by each
+format, so no public signature other than the structural `Level` definition
+accepts one. Descriptors are unique by structure as well as by name: two
+descriptors describe the same representation only when they are the same
+object. That uniqueness is anchored at `BlockScaledDType` itself, so a subclass
+that adds no structure of its own describes an already registered
+representation and is rejected instead of becoming a second identity for it.
+
+These descriptors are structural. Block-scaled tensors, tilers, quantization,
+requantization, and dispatch eligibility are not implemented.
+
+The runtime implementation is organized behind the stable
+`strideweave.carriers.dtype` facade. Private modules separate canonical
+structure encoding, contract ownership, the descriptor and registry model,
+block-scaled definitions, built-in installation, and carrier-facing storage
+validation. This organization is internal: public import paths, class module
+identities, structure fingerprints, and pickle resolution continue to use
+`strideweave.carriers.dtype`.
+
+### Carrier Storage Dtypes
+
+A carrier holds elements of exactly one dtype, so each carrier accepts a fixed
+set of descriptors:
+
+| Carrier | Accepted storage dtypes |
+| --- | --- |
+| `Generic` | `Any`, `Floating` (legacy opaque storage) |
+| `CPU` | `Float32`, `Int32` |
+| `FileBacked` | `Floating`, `Float32`, `Int32` |
+| `Evictable` | Whatever both composed tiers accept, which must match |
+
+Each table row is the exact accepted set: membership is checked by object
+identity — never by equality, including in the native CPU parser, so an object
+that merely compares equal to `DType.Float32` is rejected like any other
+unsupported dtype — and every registered descriptor outside a carrier's row is
+rejected at construction.
+`Any` and `Floating` are accepted only where the table lists them, as legacy
+opaque storage; the category `Integer` is accepted nowhere; the narrow simple
+encodings have no carrier support yet; and a compound descriptor is rejected
+with an error naming the deferred capability rather than partially constructing
+a carrier that could hold only one of its planes. Every carrier gives that same diagnostic, including
+the native CPU parser. Multi-plane storage — one carrier per entry of
+`simple_types` — is future work; carrier-authoring code can reuse
+`strideweave.carriers.dtype.validate_storage_dtype` to get the same behavior.
+
+Only `Floating` and `Float32` tensors participate in autograd. That set is an
+explicit pair rather than a `Floating` category query, because the narrow
+floating encodings have no numerical semantics yet.
 
 Every carrier exposes `allocate_like(size, *, mutable=True, dtype=None,
 empty=False)` for fresh size-based allocation. The default requests initialized
