@@ -1,6 +1,14 @@
 from .base import Carrier as Carrier
 from .cpu import CPU as CPU
+from .dtype import BlockScaledDType as BlockScaledDType
+from .dtype import CompoundDType as CompoundDType
 from .dtype import DType as DType
+from .dtype import DTypeCategory as DTypeCategory
+from .dtype import Level as Level
+from .dtype import SimpleDType as SimpleDType
+from .dtype import SymbolicBits as SymbolicBits
+from .dtype import Whole as Whole
+from .dtype import WholeExtent as WholeExtent
 from .evictable import Evictable as Evictable
 from .evictable import EvictableOperation as EvictableOperation
 from .file_backed import FileBacked as FileBacked

@@ -5,7 +5,7 @@ from operator import index as operator_index
 from typing import Any, Protocol, runtime_checkable
 
 from ..base import Carrier
-from ..dtype import DType
+from ..dtype import DType, validate_storage_dtype
 
 
 @runtime_checkable
@@ -37,16 +37,22 @@ def _as_sized_indexable(
     return list(values)
 
 
+# Generic holds Python objects, so it accepts exactly the legacy opaque-storage
+# descriptors rather than any fixed-size simple dtype.
+_GENERIC_DTYPES = (DType.Any, DType.Floating)
+
+
 def _validate_generic_dtype(dtype: DType) -> DType:
-    if not isinstance(dtype, DType):
-        raise TypeError("Generic dtype must be a DType")
-    if dtype not in (DType.Any, DType.Floating):
-        raise ValueError("Generic dtype must be DType.Any or DType.Floating")
-    return dtype
+    return validate_storage_dtype(dtype, carrier="Generic", accepted=_GENERIC_DTYPES)
 
 
 class Generic(Carrier):
-    """Python-backed carrier storage for generic StrideWeave tensors."""
+    """Python-backed carrier storage for generic StrideWeave tensors.
+
+    Generic stores Python objects rather than a fixed-size encoding, so it
+    accepts only the legacy opaque-storage descriptors: ``DType.Floating`` for
+    differentiable numeric values and ``DType.Any`` for arbitrary objects.
+    """
 
     def __init__(
         self,

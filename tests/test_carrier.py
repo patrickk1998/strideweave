@@ -105,6 +105,12 @@ def test_data_public_api_imports():
     assert sw.CPU is CPU
     assert sw.DType is DType
     assert sw.Generic is Generic
+    assert DType.Any.name == "Any"
+    assert DType.Floating.name == "Floating"
+    assert DType.Integer.name == "Integer"
+    assert DType.Float32.name == "Float32"
+    assert DType.Int32.name == "Int32"
+    # ``value`` is the pre-descriptor compatibility alias for ``name``.
     assert DType.Any.value == "Any"
     assert DType.Floating.value == "Floating"
     assert DType.Float32.value == "Float32"
