@@ -4,10 +4,19 @@ from .carriers import (
     CPU as CPU,
 )
 from .carriers import (
+    BlockScaledDType as BlockScaledDType,
+)
+from .carriers import (
     Carrier as Carrier,
 )
 from .carriers import (
+    CompoundDType as CompoundDType,
+)
+from .carriers import (
     DType as DType,
+)
+from .carriers import (
+    DTypeCategory as DTypeCategory,
 )
 from .carriers import (
     Evictable as Evictable,
@@ -17,6 +26,21 @@ from .carriers import (
 )
 from .carriers import (
     Generic as Generic,
+)
+from .carriers import (
+    Level as Level,
+)
+from .carriers import (
+    SimpleDType as SimpleDType,
+)
+from .carriers import (
+    SymbolicBits as SymbolicBits,
+)
+from .carriers import (
+    Whole as Whole,
+)
+from .carriers import (
+    WholeExtent as WholeExtent,
 )
 from .layout import (
     Layout as Layout,
@@ -43,21 +67,29 @@ from .operation import __all__ as _operation_all
 from .tensor import Tensor as Tensor
 
 _CORE_EXPORTS = [
+    "BlockScaledDType",
     "CPU",
     "Carrier",
+    "CompoundDType",
     "DType",
+    "DTypeCategory",
     "Evictable",
     "FileBacked",
     "Generic",
     "Layout",
+    "Level",
     "Module",
     "Node",
     "Parameter",
     "Shape",
+    "SimpleDType",
     "Stride",
+    "SymbolicBits",
     "Tensor",
     "Tiler",
     "Tree",
+    "Whole",
+    "WholeExtent",
 ]
 
 _TOP_LEVEL_EXPORTS = [*_CORE_EXPORTS, *_operation_all]

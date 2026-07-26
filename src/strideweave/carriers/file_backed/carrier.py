@@ -12,8 +12,10 @@ from typing import Any
 from uuid import uuid4
 
 from ..base import Carrier
-from ..dtype import DType
+from ..dtype import DType, validate_storage_dtype
 
+# FileBacked packs raw numeric values, so it accepts the legacy width-unspecified
+# Floating storage alongside the fixed-size simple dtypes it can pack.
 _STRUCT_FORMATS = {
     DType.Floating: "d",
     DType.Float32: "f",
@@ -38,13 +40,9 @@ def _remove_file(path: Path) -> None:
 
 
 def _validate_file_backed_dtype(dtype: DType) -> DType:
-    if not isinstance(dtype, DType):
-        raise TypeError("FileBacked dtype must be a DType")
-    if dtype not in _STRUCT_FORMATS:
-        raise ValueError(
-            "FileBacked dtype must be DType.Floating, DType.Float32, or DType.Int32"
-        )
-    return dtype
+    return validate_storage_dtype(
+        dtype, carrier="FileBacked", accepted=tuple(_STRUCT_FORMATS)
+    )
 
 
 class FileBacked(Carrier):

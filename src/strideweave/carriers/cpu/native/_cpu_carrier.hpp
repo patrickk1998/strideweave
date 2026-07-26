@@ -32,26 +32,41 @@ inline bool layouts_equal(py::handle left, py::handle right) {
     return result == 1;
 }
 
-inline bool objects_equal(py::handle left, py::handle right) {
-    const int result = PyObject_RichCompareBool(left.ptr(), right.ptr(), Py_EQ);
-    if (result < 0) {
-        throw py::error_already_set();
-    }
-    return result == 1;
-}
-
 inline py::object dtype_object(const char* name) {
     return py::module_::import("strideweave.carriers").attr("DType").attr(name);
 }
 
+inline py::object carriers_attribute(const char* name) {
+    return py::module_::import("strideweave.carriers").attr(name);
+}
+
 enum class CpuDType { Float32, Int32 };
 
+// Mirrors the diagnostic that Python carriers raise through
+// strideweave.carriers.dtype.validate_storage_dtype, so every carrier explains
+// deferred compound storage the same way.
+[[noreturn]] inline void throw_compound_dtype_error(py::handle dtype) {
+    const std::string name = py::cast<std::string>(dtype.attr("name"));
+    throw py::value_error("CPU cannot store compound dtype '" + name +
+                          "': a carrier holds one simple dtype, and a compound "
+                          "representation needs one carrier per simple_types "
+                          "plane, which is not implemented");
+}
+
+// Dtype tags are identity values (SW002), and RT012 makes each carrier's
+// accepted set exact, so recognition here is pointer identity against the
+// registered singletons. Equality is deliberately never consulted: an object
+// with a spoofed, raising, or side-effecting __eq__ must be rejected like any
+// other unsupported dtype rather than deciding what this carrier stores.
 inline CpuDType parse_cpu_dtype(py::handle dtype) {
-    if (dtype.is_none() || objects_equal(dtype, dtype_object("Float32"))) {
+    if (dtype.is_none() || dtype.is(dtype_object("Float32"))) {
         return CpuDType::Float32;
     }
-    if (objects_equal(dtype, dtype_object("Int32"))) {
+    if (dtype.is(dtype_object("Int32"))) {
         return CpuDType::Int32;
+    }
+    if (py::isinstance(dtype, carriers_attribute("CompoundDType"))) {
+        throw_compound_dtype_error(dtype);
     }
     throw py::value_error("CPU dtype must be DType.Float32 or DType.Int32");
 }
