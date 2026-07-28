@@ -8,11 +8,11 @@ import weakref
 from collections.abc import Iterable
 from operator import index as operator_index
 from pathlib import Path
-from typing import Any
+from typing import Any, final
 from uuid import uuid4
 
-from ..base import Carrier
-from ..dtype import DType, validate_storage_dtype
+from ..base import Carrier, reject_carrier_subclass
+from ..dtype import DType, accepts_storage_dtype, validate_storage_dtype
 
 # FileBacked packs raw numeric values, so it accepts the legacy width-unspecified
 # Floating storage alongside the fixed-size simple dtypes it can pack.
@@ -45,6 +45,7 @@ def _validate_file_backed_dtype(dtype: DType) -> DType:
     )
 
 
+@final
 class FileBacked(Carrier):
     """Carrier storage backed by a raw binary file on disk.
 
@@ -54,6 +55,9 @@ class FileBacked(Carrier):
     is removed when the interpreter exits. FileBacked supports no dispatched
     tensor operations — tensors backed by it can only be read, written, and
     moved to another carrier with ``strideweave.move``.
+
+    FileBacked is a closed implementation: extend StrideWeave with a sibling
+    ``Carrier`` rather than a specialization of this one.
 
     Args:
         filename: Bare file name inside the hidden session directory, or
@@ -68,6 +72,9 @@ class FileBacked(Carrier):
         >>> carrier.size()
         0
     """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        reject_carrier_subclass("FileBacked")
 
     def __init__(
         self,
@@ -111,6 +118,14 @@ class FileBacked(Carrier):
     def _is_mutable(self) -> bool:
         return self._mutable
 
+    def _supports_storage_dtype(self, dtype: DType) -> bool:
+        """Report the dtypes FileBacked can allocate a file for.
+
+        Exactly the encodings it has a binary struct format for, which is
+        the same set its constructor validates against.
+        """
+        return accepts_storage_dtype(dtype, tuple(_STRUCT_FORMATS))
+
     def get_value(self, index: int) -> Any:
         path = self._require_file()
         normalized = self._validate_index(index)
@@ -132,10 +147,6 @@ class FileBacked(Carrier):
         mutable: bool = True,
         dtype: DType | None = None,
     ) -> FileBacked:
-        if type(self) is not FileBacked:
-            raise NotImplementedError(
-                "FileBacked carrier factory only supports exact FileBacked carriers"
-            )
         result = FileBacked(
             mutable=mutable, dtype=self._dtype if dtype is None else dtype
         )

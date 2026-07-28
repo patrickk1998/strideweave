@@ -71,9 +71,42 @@ def _is_dtype_expression(node: ast.AST) -> bool:
     return len(parts) >= 2 and parts[-2] == "DType"
 
 
+CARRIER_BASES = ("Carrier", "DependentCarrier")
+
+# Public capability queries a carrier answers. Carrier owns them so that one
+# resolution decides both introspection and enforcement: a backend states what
+# it executes through a declaration or a dependent carrier's generator, never by
+# answering the question itself.
+CAPABILITY_QUERIES = (
+    "operation_capabilities",
+    "supports_operation_plan",
+    "unsupported_plan_reason",
+    "require_operation_plan",
+)
+
+
 def _is_carrier_base(node: ast.expr) -> bool:
-    return (isinstance(node, ast.Name) and node.id == "Carrier") or (
-        isinstance(node, ast.Attribute) and node.attr == "Carrier"
+    return (isinstance(node, ast.Name) and node.id in CARRIER_BASES) or (
+        isinstance(node, ast.Attribute) and node.attr in CARRIER_BASES
+    )
+
+
+def _is_attribute_call(node: ast.AST, name: str) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == name
+    )
+
+
+def _is_super_call(node: ast.Call) -> bool:
+    if not isinstance(node.func, ast.Attribute):
+        return False
+    receiver = node.func.value
+    return (
+        isinstance(receiver, ast.Call)
+        and isinstance(receiver.func, ast.Name)
+        and receiver.func.id == "super"
     )
 
 
@@ -84,6 +117,8 @@ class InvariantVisitor(ast.NodeVisitor):
         self.path = path
         self.suppressions = suppressions
         self.diagnostics: list[Diagnostic] = []
+        self._function_names: list[str] = []
+        self._delegated_dispatch_names: list[set[str]] = []
 
     def _report(self, node: ast.AST, code: str, message: str) -> None:
         line = getattr(node, "lineno", 1)
@@ -135,10 +170,88 @@ class InvariantVisitor(ast.NodeVisitor):
                             "RT001",
                             "override _dispatch_op; Carrier owns public dispatch_op",
                         )
+                    if statement.name == "supports_storage_dtype":
+                        self._report(
+                            statement,
+                            "RT012",
+                            "override _supports_storage_dtype; Carrier owns "
+                            "public supports_storage_dtype",
+                        )
+                    if statement.name in CAPABILITY_QUERIES:
+                        self._report(
+                            statement,
+                            "RT013",
+                            f"do not override {statement.name}; declare capabilities "
+                            "for the class or generate them in "
+                            "_generate_operation_capabilities",
+                        )
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._function_names.append(node.name)
+        self._delegated_dispatch_names.append(set())
+        self.generic_visit(node)
+        self._delegated_dispatch_names.pop()
+        self._function_names.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._function_names.append(node.name)
+        self._delegated_dispatch_names.append(set())
+        self.generic_visit(node)
+        self._delegated_dispatch_names.pop()
+        self._function_names.pop()
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if self._function_names and self._function_names[-1] == "_dispatch_op":
+            assigned_names = {
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            }
+            delegated_names = self._delegated_dispatch_names[-1]
+            delegated_names.difference_update(assigned_names)
+            if _is_attribute_call(node.value, "dispatch_op"):
+                delegated_names.update(assigned_names)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if (
+            self._function_names
+            and self._function_names[-1] == "_dispatch_op"
+            and isinstance(node.target, ast.Name)
+        ):
+            delegated_names = self._delegated_dispatch_names[-1]
+            delegated_names.discard(node.target.id)
+            if _is_attribute_call(node.value, "dispatch_op"):
+                delegated_names.add(node.target.id)
+        self.generic_visit(node)
+
+    def visit_Return(self, node: ast.Return) -> None:
+        in_dispatch_hook = (
+            self._function_names and self._function_names[-1] == "_dispatch_op"
+        )
+        returns_delegated_call = _is_attribute_call(node.value, "dispatch_op")
+        returns_delegated_name = (
+            isinstance(node.value, ast.Name)
+            and bool(self._delegated_dispatch_names)
+            and node.value.id in self._delegated_dispatch_names[-1]
+        )
+        if in_dispatch_hook and (returns_delegated_call or returns_delegated_name):
+            self._report(
+                node,
+                "RT011",
+                "wrap a nested dispatch_op result in a composite-owned operation",
+            )
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        if (
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "_dispatch_op":
+            if not _is_super_call(node):
+                self._report(
+                    node,
+                    "RT011",
+                    "do not call another carrier's _dispatch_op; wrap its public "
+                    "dispatch_op result in a composite-owned operation",
+                )
+        elif (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "_execute_lowered"
         ):
@@ -148,18 +261,24 @@ class InvariantVisitor(ast.NodeVisitor):
                 "use the sealed execute_lowered_operation helper for delegation",
             )
         elif isinstance(node.func, ast.Attribute) and node.func.attr == "_forward":
-            receiver = node.func.value
-            is_super_call = (
-                isinstance(receiver, ast.Call)
-                and isinstance(receiver.func, ast.Name)
-                and receiver.func.id == "super"
-            )
-            if not is_super_call:
+            if not _is_super_call(node):
                 self._report(
                     node,
                     "RT011",
                     "delegate operations with execute_lowered_operation, not _forward",
                 )
+        elif (
+            self._function_names
+            and self._function_names[-1] == "_forward"
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "forward"
+            and not _is_super_call(node)
+        ):
+            self._report(
+                node,
+                "RT011",
+                "delegate operations with execute_lowered_operation, not forward",
+            )
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:

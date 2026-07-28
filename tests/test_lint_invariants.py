@@ -16,6 +16,56 @@ from tools.lint_invariants import check_source, discover_files, run
         ("class Backend(Carrier):\n    def is_mutable(self): return True\n", "SW003"),
         ("count = tensor.layout.size\n", "SW004"),
         ("class Backend(Carrier):\n    def dispatch_op(self, name): pass\n", "RT001"),
+        (
+            "class Backend(Carrier):\n"
+            "    def supports_storage_dtype(self, dtype): return True\n",
+            "RT012",
+        ),
+        (
+            "class Backend(Carrier):\n"
+            "    def operation_capabilities(self, operation_name=None): return ()\n",
+            "RT013",
+        ),
+        (
+            "class Hierarchy(DependentCarrier):\n"
+            "    def supports_operation_plan(self, plan): return True\n",
+            "RT013",
+        ),
+        (
+            "class Hierarchy(DependentCarrier):\n"
+            "    def require_operation_plan(self, plan): return plan\n",
+            "RT013",
+        ),
+        (
+            "class Hierarchy(DependentCarrier):\n"
+            "    def unsupported_plan_reason(self, plan): return None\n",
+            "RT013",
+        ),
+        (
+            "class Hierarchy(DependentCarrier):\n"
+            "    def dispatch_op(self, name): pass\n",
+            "RT001",
+        ),
+        ("operation = carrier._dispatch_op('relu')\n", "RT011"),
+        (
+            "class Backend(Carrier):\n"
+            "    def _dispatch_op(self, name):\n"
+            "        return self.inner.dispatch_op(name)\n",
+            "RT011",
+        ),
+        (
+            "class Backend(Carrier):\n"
+            "    def _dispatch_op(self, name):\n"
+            "        delegated = self.inner.dispatch_op(name)\n"
+            "        return delegated\n",
+            "RT011",
+        ),
+        (
+            "class Adapter(Operation):\n"
+            "    def _forward(self, tensor):\n"
+            "        return self.inner_operation.forward(tensor)\n",
+            "RT011",
+        ),
         ("result = operation._forward(tensor)\n", "RT011"),
         ("result = operation._execute_lowered(tensor)\n", "RT011"),
     ],
@@ -35,8 +85,34 @@ def test_invariant_checker_reports_each_rule(source: str, code: str):
         "count = tensor.size()\n",
         "count = layout.size\n",
         "class Backend(Carrier):\n    def _dispatch_op(self, name): pass\n",
+        (
+            "class Hierarchy(DependentCarrier):\n"
+            "    def _generate_operation_capabilities(self): return ()\n"
+        ),
+        (
+            "class Backend(Carrier):\n"
+            "    def _supports_storage_dtype(self, dtype): return True\n"
+        ),
+        (
+            "class Backend(Carrier):\n"
+            "    def _dispatch_op(self, name):\n"
+            "        return Adapter(self.inner.dispatch_op(name))\n"
+        ),
+        (
+            "class Backend(Carrier):\n"
+            "    def _dispatch_op(self, name):\n"
+            "        delegated = self.inner.dispatch_op(name)\n"
+            "        return Adapter(delegated)\n"
+        ),
+        "operation = super()._dispatch_op(name)\n",
         "result = execute_lowered_operation(operation, tensor)\n",
         "result = super()._forward(tensor)\n",
+        (
+            "class Adapter(Operation):\n"
+            "    def _forward(self, tensor):\n"
+            "        return super().forward(tensor)\n"
+        ),
+        "result = operation.forward(tensor)\n",
     ],
 )
 def test_invariant_checker_accepts_canonical_forms(source: str):

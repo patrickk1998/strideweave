@@ -1,12 +1,79 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import FrozenInstanceError
+from typing import Any
 
 import pytest
 
 import strideweave as sw
 import strideweave.operation as operation
-from strideweave import Evictable, Generic, Layout, Shape, Stride, Tensor
+from strideweave import (
+    Carrier,
+    DType,
+    Evictable,
+    Generic,
+    Layout,
+    Shape,
+    Stride,
+    Tensor,
+)
+
+
+class GenericBackedCarrier(Carrier):
+    """An independent carrier storing through Generic and owning its operations.
+
+    The shipped concrete carriers are closed, so a distinct carrier class the
+    profiler filter can tell apart from `Generic` is a sibling `Carrier` owning
+    one rather than a subclass of it. Its operation runs through the public
+    Carrier interface and therefore needs no nested execution.
+    """
+
+    def __init__(self, values: list[float]):
+        super().__init__()
+        self._inner = Generic(values)
+
+    def size(self) -> int:
+        return self._inner.size()
+
+    def dtype(self) -> DType:
+        return self._inner.dtype()
+
+    def get_value(self, index: int) -> Any:
+        return self._inner[index]
+
+    def _is_mutable(self) -> bool:
+        return True
+
+    def set_value(self, index: int, value: Any) -> None:
+        self._inner[index] = value
+
+    def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> Any:
+        return type(self)(list(values))
+
+    def allocate_like(
+        self,
+        size: int,
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
+        empty: bool = False,
+    ) -> Any:
+        return type(self)([0.0] * size)
+
+    def scatter(
+        self,
+        to_scatter: Any,
+        scatter_onto: Any,
+        mapping: Any,
+        mapping_offset: int = 0,
+    ) -> None:
+        raise NotImplementedError("GenericBackedCarrier does not implement scatter")
+
+    def _dispatch_op(self, operation_name: str) -> Any:
+        if operation_name == "add":
+            return sw.GenericAddOperation()
+        raise NotImplementedError(operation_name)
 
 
 def tensor(values: list[float]) -> Tensor:
@@ -51,11 +118,10 @@ def test_profiler_context_records_all_and_selected_exact_carriers():
 
 
 def test_profiler_carrier_filter_uses_exact_classes():
-    class CustomGeneric(Generic):
-        pass
-
+    # A carrier that composes Generic storage is still its own exact class, so
+    # filtering on Generic must not record its events.
     value = Tensor(
-        CustomGeneric([1.0]),
+        GenericBackedCarrier([1.0]),
         0,
         Layout(Shape(1), Stride(1)),
     )
@@ -63,13 +129,13 @@ def test_profiler_carrier_filter_uses_exact_classes():
     with sw.profile(carriers={Generic}) as base_profiler:
         with pytest.raises(TypeError, match="rhs must be a Tensor"):
             value.carrier.dispatch_op("add").forward(value, "not a tensor")
-    with sw.profile(carriers={CustomGeneric}) as custom_profiler:
+    with sw.profile(carriers={GenericBackedCarrier}) as custom_profiler:
         with pytest.raises(TypeError, match="rhs must be a Tensor"):
             value.carrier.dispatch_op("add").forward(value, "not a tensor")
 
     assert base_profiler.events() == ()
     (event,) = custom_profiler.events()
-    assert event.carrier_type is CustomGeneric
+    assert event.carrier_type is GenericBackedCarrier
 
 
 @pytest.mark.parametrize(
