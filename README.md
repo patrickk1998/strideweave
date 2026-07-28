@@ -38,9 +38,13 @@ accelerator carriers.
   that operation with its canonical name and exact dispatching carrier class.
   Custom carrier implementations must override `_dispatch_op`, not
   `dispatch_op`. Dispatch is uniformly instance-based; class-level
-  `dispatch_op` calls are not part of the public contract. A Python subclass of
-  `CPU` may extend the native registry by handling custom names in `_dispatch_op`
-  and delegating standard names through `super()._dispatch_op(...)`.
+  `dispatch_op` calls are not part of the public contract. A carrier composing
+  another handles custom names in its own `_dispatch_op` and returns a
+  composite-owned operation adapter for delegated names. The adapter owns the
+  visible autograd node, obtains a fresh nested operation through the owned
+  carrier's public `dispatch_op`, lowers tensor arguments into representations
+  that operation accepts, invokes it through sealed lowered execution, and wraps
+  results and gradients back into the composite representation.
 - Python and native operations inherit from the shared native `Operation` base.
 - Views may use different layouts and offsets while sharing the same carrier.
 
@@ -72,8 +76,9 @@ working with the core API construct the carrier and layout explicitly.
 StrideWeave currently provides four carrier implementations:
 
 - `Generic(values, mutable=True, dtype=DType.Floating)` stores Python
-  objects. It supports differentiable `Floating` values and non-differentiable
-  arbitrary `Any` values.
+  objects. It supports differentiable `Floating` values, non-differentiable
+  arbitrary `Any` values, and the concrete simple dtypes `Float32` and `Int32`,
+  for which it is StrideWeave's behavioral reference implementation.
 - `CPU(size, pointer=None, *, mutable=True, dtype=DType.Float32, empty=False)`
   owns native memory or references a caller-provided address. It supports
   `Float32` and `Int32`. Owned storage is zero-initialized unless `empty=True`
@@ -86,6 +91,34 @@ StrideWeave currently provides four carrier implementations:
   hierarchy. Computation uses promoted primary storage; `evict()` moves values
   to secondary storage and blocks access until `promote()` restores them. Its
   constructor takes exclusive ownership of both supplied carriers.
+
+These four are closed implementations: `Carrier` is the extension interface and
+stays open, but `Generic`, `CPU`, `FileBacked`, and `Evictable` reject subclass
+creation with a message naming the supported alternative, and each is declared
+`@final` on every import path, so a type checker reports the same closure before
+the program runs. Each states its
+allocation factories, storage normalization, dispatch metadata, and capability
+declarations in terms of its exact class — `Evictable` in terms of its exact
+instances — so a specialization would inherit claims it cannot honor: a
+`Generic` subclass would advertise every plan `Generic` executes while
+`Generic.new_like` refused to allocate a result for it.
+
+A new backend is therefore a sibling `Carrier`, normally composed from the
+existing ones the way `Evictable` composes a memory hierarchy: it owns the
+carriers it delegates storage to, implements `_dispatch_op` for the operations
+it defines itself, and returns one of its own adapters for operations delegated
+to an owned carrier. Returning the owned carrier's operation directly is not
+lowering: outer tensors would reach an implementation that accepts only the
+inner carrier, and the outer carrier would own neither result wrapping nor the
+autograd boundary. Composition keeps the new backend's exact class in dispatch
+metadata, profiler filtering, capability declarations, results, and gradients,
+which is what a subclass silently shared.
+
+A composed backend has one further choice. `Carrier` is the *independent* model,
+where an exact class declares the plans its own implementation executes. When
+what a backend can execute instead depends on the carrier instances it was
+handed, it implements `DependentCarrier` and generates its capabilities per
+instance, as described under [Backend Capabilities](#backend-capabilities).
 
 ### Dtype Descriptors
 
@@ -134,6 +167,218 @@ The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
   composed from several simple-dtype planes. It is never carrier storage
   itself; its ordered `simple_types` are the per-plane storage dtypes a
   multi-plane implementation would use, one carrier per plane.
+
+Descriptors describe representation; they do not decide what an operation
+computes in or returns. That policy is specified in
+[`design/SimpleDType-operation-policy.md`](design/SimpleDType-operation-policy.md)
+and implemented by the backend-independent planner in
+`strideweave.carriers.operation_policy`, which resolves promotion, arithmetic,
+accumulation, and result dtype for `Float32` and `Int32` operands. Autograd
+eligibility follows from the result dtype by the same floating-dtype rule the
+tensor layer applies to every tensor, so the plan does not restate it. The
+policy is a deliberately evolvable starting point rather than a compatibility
+promise.
+
+`Generic` executes those plans and is the reference every other backend
+conforms to. Native `CPU` resolves the same plans: each operation asks the
+planner for its promotion, arithmetic, accumulation, and result dtype while the
+GIL is still held, then releases it to run the kernel that plan selected. No
+backend carries a promotion table of its own, so `Float32` and `Int32` results
+agree across carriers by construction rather than by parallel maintenance.
+
+#### Backend Capabilities
+
+Resolving a plan is not permission to run it. Policy decides what an operation
+*must* do; a backend's capabilities record which of those resolved plans it
+*can* faithfully do, and a plan matching none of them is refused before any
+storage is allocated rather than executed as the nearest shape the backend
+implements. Support therefore means faithful execution of an already-resolved
+plan — never that the backend chose the promotion.
+
+A carrier reports its backend's capabilities without running a kernel:
+
+```python
+carrier = sw.CPU(4, dtype=sw.DType.Int32)
+plan = sw.carriers.operation_policy.resolve_operation_plan("relu", sw.DType.Int32)
+
+carrier.operation_capabilities("relu")     # immutable descriptors, stable order
+carrier.supports_operation_plan(plan)      # True
+carrier.unsupported_plan_reason(plan)      # None when supported
+carrier.require_operation_plan(plan)       # the capability, or raises
+```
+
+`operation_capabilities(operation_name=None)` returns immutable
+`OperationCapability` descriptors — operation, per-operand source dtype and
+conversion target, compute arithmetic, accumulation, and output dtype — in a
+deterministic order. The four queries answer from whichever set owns that
+carrier: an independent carrier's exact class declarations, or the frozen
+snapshot a dependent carrier generated for that instance. A caller asks the
+carrier and never has to know which, and a new backend of either kind gets the
+right answer without overriding these methods. The query describes the carrier's
+capabilities rather than its own storage dtype, so a `Float32` CPU carrier still
+reports the `Int32` plans CPU executes. An operation the backend has nothing for
+yields an empty tuple and a reason naming the operation; a plan whose shape is
+unsupported yields a reason describing the shape; `require_operation_plan` raises
+`UnsupportedOperationPlan` in both cases. These are the same entries execution
+is accepted against, so an advertised plan is executable and an executed plan
+was advertised.
+
+Capabilities belong to an exact carrier class and are never resolved through its
+bases: a class that declares nothing supports nothing. Every shipped independent
+carrier — `Generic`, `CPU`, and `FileBacked` — declares its entries once during
+carrier-package initialization and is sealed afterwards, through a
+framework-internal path that is exported nowhere. `FileBacked` declares the
+empty set: it plans no operation of its own, and declaring that makes it a
+stated fact rather than an unclaimed class. `Evictable` declares nothing at all,
+because what a hierarchy executes depends on the tiers it was handed; it
+generates its capabilities per instance, as described below. Registration
+accepts only an independent `Carrier`
+implementation — never `object`, the `Carrier` root, an unrelated class, a
+`DependentCarrier` class, or a sealed built-in — so no call can widen what a
+shipped carrier claims to execute.
+
+A class declares once, and its answer is fixed from then on. The complete set is
+published and sealed in the same call, so no observer sees part of a declaration
+and no second call can add to one — including after an empty declaration, which
+is itself a complete statement. Observation seals as well: querying or requiring
+a plan of an independent class that has not declared seals its empty set on the
+spot, so first observation is the final answer rather than a provisional one.
+That is what lets one carrier snapshot another class's reach without the
+snapshot going stale; the practical rule is to declare a custom carrier's
+capabilities in its own module, at import time, before anything can ask.
+
+A custom carrier declares its own capabilities against its exact class, which is
+what that class executes and nothing else:
+
+```python
+from strideweave.carriers.operation_capability import (
+    OperationCapability,
+    register_operation_capabilities,
+)
+
+class MyBackend(sw.Carrier):
+    def __init__(self, size):
+        super().__init__()
+        self._inner = sw.CPU(size, dtype=sw.DType.Int32)
+
+    def _dispatch_op(self, operation_name):
+        nested = self._inner.dispatch_op(operation_name)
+        # The composite-owned adapter described below.
+        return MyBackendOperation(nested)
+
+register_operation_capabilities(MyBackend, [OperationCapability.from_plan(plan)])
+```
+
+`MyBackendOperation` is a composite-owned adapter, not a marker wrapper around
+the nested operation. Like the complete `EvictableOperation` implementation, it
+lowers every outer tensor argument into the representation `nested` accepts,
+calls `execute_lowered_operation`, and wraps results and gradients back into
+`MyBackend` tensors. Consequently, the capabilities registered above are exactly
+the plans that this outer adapter can lower and restore faithfully.
+
+##### Carriers Whose Reach Depends on What They Compose
+
+Declaring for an exact class fits an *independent* carrier: one whose reach is
+fixed by the kernels it ships, so every instance of it executes the same plans.
+`Carrier` is that default model. A carrier assembled out of other carriers is
+not independent — a hierarchy over `CPU` tiers and one over object-storage tiers
+execute different plans while sharing a class — so `sw.DependentCarrier` is the
+second extension category, and it moves capability ownership from the class to
+the constructed instance:
+
+```python
+class Mirror(sw.DependentCarrier):
+    def __init__(self, inner):
+        super().__init__()
+        self._inner = inner
+        self._finalize_dependent_capabilities()   # last step of construction
+
+    def _generate_operation_capabilities(self):
+        return self._inner.operation_capabilities()
+```
+
+`_generate_operation_capabilities` is unimplemented by the base: how an instance
+decides what it executes is entirely its own, whether that means enumerating a
+composed carrier's capabilities, filtering them by what it can store, or
+building entries outright.
+
+Finalization is explicit and cooperative rather than automatic. The base never
+calls the generator itself — only the concrete carrier knows when its
+dependencies are complete — so construction calls
+`_finalize_dependent_capabilities()` as its last step, in the same thread, before
+the unfinished instance becomes reachable anywhere else. Finalization is not a
+thread-safe initialization protocol: concurrent calls and leaking `self` during
+construction are outside the supported extension contract. Within that
+construction step, the call materializes the generated iterable once, rejects
+anything that is not an `OperationCapability` and any exact shape generated
+twice, and freezes a deterministically ordered immutable snapshot. Before it,
+the instance answers no capability query, which keeps a half-built hierarchy
+from advertising an empty set a caller then trusts; a later call is an error, so
+a snapshot is never quietly replaced; and a generation that fails publishes
+nothing rather than a partial set. Capabilities are frozen against the
+dependencies the instance ended up with, so two instances of one dependent class
+may answer differently, and a dependent class cannot declare class-level
+capabilities at all — it knows nothing about the carriers its instances will be
+handed. Until an instance finalizes, its four capability queries raise rather
+than answering. Unlike the shipped concrete carriers, `DependentCarrier` and the
+dependent carriers built on it stay open to subclassing — but not to overriding
+those four queries, which `Carrier` owns so that introspection and enforcement
+cannot disagree.
+
+`Evictable` is the shipped example. At the end of construction it takes the
+plans its own promoted primary executes — asked of the carrier, so a primary
+that is itself dependent composes through its snapshot — and keeps exactly those
+whose output dtype *both* tiers can store, because a result only the primary
+could hold is a value the hierarchy could never evict. It rewrites no plan,
+chooses no promotion, and keeps no operation table of its own. A hierarchy over
+`Int32` CPU storage therefore advertises and executes `relu(Int32)`, while a
+hierarchy whose secondary tier can only store `Int32` does not advertise
+`exp(Int32) -> Float32` and refuses it once, before lowering or any kernel work,
+rather than computing a result it could not keep. The snapshot is structural, so
+eviction, promotion, and release do not change it, and results and gradients are
+hierarchies that generate their own.
+
+Like the policy itself, the capability surface is evolvable rather than a
+compatibility promise.
+
+One consequence is worth calling out for `pow`: an exponent preserves an
+`Int32` result only when it is a weak *integer* in `[0, 2**31 - 1]`. A float
+exponent takes the floating path even when its value is integral, so
+`int_tensor ** 2` stays `Int32` while `int_tensor ** 2.0` is `Float32`. On the
+integer path the exponent is used exactly rather than carried through a float,
+so an exponent above `2**24` keeps its parity — `(-1) ** (2**24 + 1)` is `-1`,
+where a float-carried exponent rounded to an even one and returned `1`.
+
+### Generic Reference Semantics
+
+On concrete storage `Generic` implements the encodings faithfully rather than
+approximating them with Python's own numeric types:
+
+- `Float32` storage holds binary32-exact values, and arithmetic rounds to
+  binary32 at every step. IEEE singularities are results rather than
+  exceptions, in forward and backward alike: dividing by zero yields `±inf`,
+  `0.0 / 0.0` and `0.0 ** -1` follow IEEE-754, and an overflowing magnitude
+  saturates to an infinity instead of raising.
+- `Int32` storage holds in-range integers. Arithmetic is exact and narrowing is
+  checked, so an out-of-range result raises `OverflowError` rather than
+  wrapping. A reduction accumulates exactly and checks only the final sum, so a
+  partial sum may legitimately leave `Int32` range. `Int32` tensors are not
+  differentiable.
+- Concrete storage is normalized and owned. Values are converted when stored,
+  including through `carrier[i] = value` and `scatter`, and the carrier copies
+  the supplied sequence, so no caller-held alias can place an unrepresentable
+  value or change stored values without the version counter observing it.
+  Legacy `Any` and `Floating` storage keeps its documented aliasing behavior.
+- NumPy supplies the binary32 mechanics and is imported lazily on first
+  concrete `Float32` use, so importing StrideWeave, or using only `CPU`,
+  `Int32`, or the legacy dtypes, never loads it.
+
+The legacy dtypes are outside this policy. An operation whose operands mix
+legacy `Any`/`Floating` storage with concrete storage stays on Generic's
+historical Python arithmetic rather than silently selecting a concrete plan,
+which means the concrete operand's binary32 semantics are downgraded to
+binary64 for that operation. Legacy `Any` values are never routed through
+checked integer arithmetic.
 
 `DType` and `CompoundDType` are abstract at runtime, as is any subclass that
 does not declare `abstract=False`, so a class that describes no representation
@@ -414,7 +659,7 @@ set of descriptors:
 
 | Carrier | Accepted storage dtypes |
 | --- | --- |
-| `Generic` | `Any`, `Floating` (legacy opaque storage) |
+| `Generic` | `Any`, `Floating` (legacy opaque storage), `Float32`, `Int32` |
 | `CPU` | `Float32`, `Int32` |
 | `FileBacked` | `Floating`, `Float32`, `Int32` |
 | `Evictable` | Whatever both composed tiers accept, which must match |
@@ -432,6 +677,32 @@ a carrier that could hold only one of its planes. Every carrier gives that same 
 the native CPU parser. Multi-plane storage — one carrier per entry of
 `simple_types` — is future work; carrier-authoring code can reuse
 `strideweave.carriers.dtype.validate_storage_dtype` to get the same behavior.
+
+The same table is readable at run time, without allocating anything:
+
+```python
+sw.CPU(4, dtype=sw.DType.Float32).supports_storage_dtype(sw.DType.Int32)   # True
+sw.CPU(4).supports_storage_dtype(sw.DType.Integer)                         # False
+```
+
+`supports_storage_dtype(dtype)` asks whether the carrier's *implementation* can
+allocate that dtype at all. It is structural rather than a report of state: it
+allocates nothing, changes nothing, and is unaffected by size, mutability,
+ownership, eviction residency, release, or which dtype the carrier currently
+holds, so a `Float32` CPU carrier still reports `Int32`. A dtype outside the
+carrier's row — an abstract category, an unimplemented narrow encoding, or a
+compound descriptor whose per-plane storage is deferred — is unsupported rather
+than an error; only a non-`DType` argument raises. `Evictable` reports the
+intersection of its tiers, because a value it cannot evict is a value it cannot
+hold. This is what lets a composed carrier decide, before any work begins,
+whether it could store an operation's result.
+
+`Carrier` owns the public query and its validation; a carrier implementation
+states its accepted set through the protected `_supports_storage_dtype(dtype)`
+hook, exactly as `_is_mutable()` works. The conservative default claims only
+the dtype the instance currently holds, which is the most any carrier can be
+assumed to allocate without saying so, so a custom carrier that can allocate
+more overrides the hook.
 
 Only `Floating` and `Float32` tensors participate in autograd. That set is an
 explicit pair rather than a `Floating` category query, because the narrow
@@ -504,7 +775,14 @@ framework execution hooks and result validation with regular execution but does
 not attach an inner autograd node or discard delegated state. The adapter is the
 sole visible autograd node and wraps primary results and gradients back into the
 same hierarchy. CPU and Generic implementations therefore do not need
-composition-specific code.
+composition-specific code. Before it lowers anything, the adapter resolves the
+logical plan the central policy gives for its operation name and its *outer*
+operands and requires that plan against the hierarchy's own frozen
+capabilities, so no plan the hierarchy does not advertise reaches a nested
+allocation or a kernel. Only an operation name the policy does not register and
+legacy opaque operand storage skip planning and keep their documented behavior;
+a registered operation handed operands its shape does not accept is refused by
+the resolver at that gate rather than further down.
 New operation results allocate only their promoted primary storage. Their
 secondary tier remains empty until the first eviction provisions it.
 
@@ -743,7 +1021,10 @@ report, and build artifacts.
 
 The test suite covers layouts, carriers, tensor indexing and mutation,
 autograd, operations and activations, hierarchical command parsing, DLPack,
-movement, modules, and public docstrings.
+movement, modules, and public docstrings. `tests/test_dtype_conformance.py`
+additionally enumerates the operation policy's registry and compares `Generic`
+against native `CPU` for every registered operation, so a backend that drifts
+from the shared plans fails there rather than in review.
 
 ## License
 
