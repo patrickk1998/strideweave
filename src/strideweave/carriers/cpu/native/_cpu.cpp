@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -49,33 +48,26 @@ void register_python_cpu_operation(const char* operation_name,
     });
 }
 
-class PyCPU : public CPU {
-public:
-    using CPU::CPU;
-
-protected:
-    py::object _dispatch_op(const std::string& operation_name) const override {
-        PYBIND11_OVERRIDE_NAME(py::object, CPU, "_dispatch_op", _dispatch_op,
-                               operation_name);
-    }
-};
-
-bool exponent_preserves_int32(float exponent) {
-    if (!std::isfinite(exponent)) {
-        return false;
-    }
-    const float rounded = std::round(exponent);
-    return exponent == rounded && exponent >= 0.0f &&
-           rounded <= static_cast<float>(std::numeric_limits<int>::max());
+// CPU is a closed carrier implementation, so there is no Python subclass for a
+// trampoline to dispatch back into. The wording matches
+// `strideweave.carriers.base.CLOSED_CARRIER_MESSAGE`, which
+// `tests/test_carrier.py::test_a_closed_carrier_states_one_refusal` pins.
+[[noreturn]] void reject_cpu_subclass() {
+    throw py::type_error(
+        "CPU is a closed carrier implementation and cannot be subclassed; "
+        "implement a sibling Carrier instead, normally by composing existing "
+        "carriers and lowering operations onto them the way Evictable does");
 }
 
 struct CpuExpScalar {
+    static constexpr const char* kOperation = "exp";
     static constexpr const char* kForwardError = "CPU exp requires a tensor";
     static float value(float input) { return std::exp(input); }
     static float gradient_multiplier(float input) { return std::exp(input); }
 };
 
 struct CpuSigmoidScalar {
+    static constexpr const char* kOperation = "sigmoid";
     static constexpr const char* kForwardError = "CPU sigmoid requires a tensor";
     static float value(float input) { return sigmoid_value(input); }
     static float gradient_multiplier(float input) {
@@ -85,6 +77,7 @@ struct CpuSigmoidScalar {
 };
 
 struct CpuTanhScalar {
+    static constexpr const char* kOperation = "tanh";
     static constexpr const char* kForwardError = "CPU tanh requires a tensor";
     static float value(float input) { return std::tanh(input); }
     static float gradient_multiplier(float input) {
@@ -94,6 +87,7 @@ struct CpuTanhScalar {
 };
 
 struct CpuGELUScalar {
+    static constexpr const char* kOperation = "gelu";
     static constexpr const char* kForwardError = "CPU GELU requires a tensor";
     static float value(float input) { return gelu_value(input); }
     static float gradient_multiplier(float input) {
@@ -102,6 +96,7 @@ struct CpuGELUScalar {
 };
 
 struct CpuSiLUScalar {
+    static constexpr const char* kOperation = "silu";
     static constexpr const char* kForwardError = "CPU SiLU requires a tensor";
     static float value(float input) { return input * sigmoid_value(input); }
     static float gradient_multiplier(float input) {
@@ -111,12 +106,14 @@ struct CpuSiLUScalar {
 };
 
 struct CpuSoftplusScalar {
+    static constexpr const char* kOperation = "softplus";
     static constexpr const char* kForwardError = "CPU softplus requires a tensor";
     static float value(float input) { return softplus_value(input); }
     static float gradient_multiplier(float input) { return sigmoid_value(input); }
 };
 
 struct CpuELUScalar {
+    static constexpr const char* kOperation = "elu";
     static constexpr const char* kForwardError = "CPU ELU requires a tensor";
     static float value(float input) { return input > 0.0f ? input : std::expm1(input); }
     static float gradient_multiplier(float input) {
@@ -125,6 +122,7 @@ struct CpuELUScalar {
 };
 
 struct CpuLeakyReLUScalar {
+    static constexpr const char* kOperation = "leaky_relu";
     static constexpr const char* kForwardError = "CPU leaky ReLU requires a tensor";
     static float value(float input) {
         return input >= 0.0f ? input : kLeakyReluNegativeSlope * input;
@@ -143,8 +141,19 @@ using CpuSoftplusOperation = CpuUnaryElementwiseOperation<CpuSoftplusScalar>;
 using CpuELUOperation = CpuUnaryElementwiseOperation<CpuELUScalar>;
 using CpuLeakyReLUOperation = CpuUnaryElementwiseOperation<CpuLeakyReLUScalar>;
 
+// Resolve the plan for a binary operation over two CPU tensors. The GIL is
+// still held here, before any kernel releases it.
+CpuPlan resolve_binary_plan(py::handle lhs, const char* operation,
+                            const CpuTensorView& lhs_view,
+                            const CpuTensorView& rhs_view) {
+    return resolve_cpu_plan(executing_carrier_class(lhs), operation,
+                            cpu_dtype_object(lhs_view.carrier->cpu_dtype()),
+                            cpu_dtype_object(rhs_view.carrier->cpu_dtype()));
+}
+
 template <typename FloatOperation, typename IntegerOperation>
-py::object cpu_binary_elementwise_forward(py::args inputs, const char* error_message,
+py::object cpu_binary_elementwise_forward(py::args inputs, const char* operation,
+                                          const char* error_message,
                                           FloatOperation float_operation,
                                           IntegerOperation integer_operation) {
     if (py::len(inputs) != 2) {
@@ -156,22 +165,23 @@ py::object cpu_binary_elementwise_forward(py::args inputs, const char* error_mes
     CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
     require_same_layout(lhs, rhs);
 
-    const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
-    CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(lhs), output_dtype);
+    const CpuPlan plan = resolve_binary_plan(lhs, operation, lhs_view, rhs_view);
+    CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(lhs), plan.output);
     {
         py::gil_scoped_release release;
         std::vector<Index> key(lhs_view.leaf_rank(), 0);
         for (Index i = 0; i < lhs_view.logical_size; ++i) {
-            if (output_dtype == CpuDType::Float32) {
-                result.view.write_float_expanded(
-                    key, float_operation(lhs_view.read_float_expanded(key),
-                                         rhs_view.read_float_expanded(key)));
-            } else {
-                write_int_result(
+            if (plan.is_integer()) {
+                write_computed_int(
                     result.view, key,
                     integer_operation(
                         static_cast<long long>(lhs_view.read_int_expanded(key)),
-                        static_cast<long long>(rhs_view.read_int_expanded(key))));
+                        static_cast<long long>(rhs_view.read_int_expanded(key))),
+                    plan.compute);
+            } else {
+                result.view.write_float_expanded(
+                    key, float_operation(lhs_view.read_float_expanded(key),
+                                         rhs_view.read_float_expanded(key)));
             }
             lhs_view.cache->increment_key(key.data(), key.size());
         }
@@ -184,7 +194,7 @@ class CpuAddOperation : public strideweave::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
         return cpu_binary_elementwise_forward(
-            inputs, "CPU add requires lhs and rhs tensors",
+            inputs, "add", "CPU add requires lhs and rhs tensors",
             [](float lhs, float rhs) { return lhs + rhs; },
             [](long long lhs, long long rhs) { return lhs + rhs; });
     }
@@ -202,7 +212,7 @@ class CpuSubOperation : public strideweave::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
         return cpu_binary_elementwise_forward(
-            inputs, "CPU subtract requires lhs and rhs tensors",
+            inputs, "sub", "CPU subtract requires lhs and rhs tensors",
             [](float lhs, float rhs) { return lhs - rhs; },
             [](long long lhs, long long rhs) { return lhs - rhs; });
     }
@@ -224,30 +234,31 @@ public:
         }
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+        // The scalar is weak: it selects the plan but never forces a width, so
+        // the plan — not the scalar's Python type — decides the result dtype.
+        const CpuPlan plan = resolve_cpu_plan(
+            executing_carrier_class(tensor), "mul",
+            cpu_dtype_object(tensor_view.carrier->cpu_dtype()), inputs[1]);
         scalar_ = require_float(inputs[1], "scalar");
         ctx_["scalar"] = py::float_(scalar_);
-        const bool scalar_is_integral = is_integral_scalar(inputs[1]);
         const std::int32_t int_scalar =
-            scalar_is_integral ? require_int32_scalar(inputs[1], "scalar") : 0;
-        const CpuDType output_dtype =
-            tensor_view.carrier->cpu_dtype() == CpuDType::Float32 || !scalar_is_integral
-                ? CpuDType::Float32
-                : CpuDType::Int32;
+            plan.is_integer() ? require_int32_scalar(inputs[1], "scalar") : 0;
 
         CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), output_dtype);
+            allocate_cpu_tensor(tensor_layout(tensor), plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
-                if (output_dtype == CpuDType::Float32) {
-                    result.view.write_float_expanded(
-                        key, tensor_view.read_float_expanded(key) * scalar_);
-                } else {
-                    write_int_result(
+                if (plan.is_integer()) {
+                    write_computed_int(
                         result.view, key,
                         static_cast<long long>(tensor_view.read_int_expanded(key)) *
-                            static_cast<long long>(int_scalar));
+                            static_cast<long long>(int_scalar),
+                        plan.compute);
+                } else {
+                    result.view.write_float_expanded(
+                        key, tensor_view.read_float_expanded(key) * scalar_);
                 }
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
@@ -262,8 +273,7 @@ public:
         require_same_layout(tensor, gradient);
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
         {
             py::gil_scoped_release release;
             std::vector<Index> key(gradient_view.leaf_rank(), 0);
@@ -285,7 +295,8 @@ class CpuElementwiseMulOperation : public strideweave::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
         return cpu_binary_elementwise_forward(
-            inputs, "CPU elementwise multiply requires lhs and rhs tensors",
+            inputs, "elementwise_mul",
+            "CPU elementwise multiply requires lhs and rhs tensors",
             [](float lhs, float rhs) { return lhs * rhs; },
             [](long long lhs, long long rhs) { return lhs * rhs; });
     }
@@ -300,10 +311,8 @@ public:
         CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation lhs_result =
-            allocate_cpu_tensor(tensor_layout(lhs), CpuDType::Float32);
-        CpuTensorAllocation rhs_result =
-            allocate_cpu_tensor(tensor_layout(rhs), CpuDType::Float32);
+        CpuTensorAllocation lhs_result = allocate_gradient_tensor(tensor_layout(lhs));
+        CpuTensorAllocation rhs_result = allocate_gradient_tensor(tensor_layout(rhs));
         {
             py::gil_scoped_release release;
             std::vector<Index> key(lhs_view.leaf_rank(), 0);
@@ -336,8 +345,11 @@ public:
         CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
         require_same_layout(lhs, rhs);
 
+        // Division has no integer path: the plan converts two Int32 operands to
+        // Float32 rather than truncating.
+        const CpuPlan plan = resolve_binary_plan(lhs, "div", lhs_view, rhs_view);
         CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(lhs), CpuDType::Float32);
+            allocate_cpu_tensor(tensor_layout(lhs), plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(lhs_view.leaf_rank(), 0);
@@ -362,10 +374,8 @@ public:
         CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation lhs_result =
-            allocate_cpu_tensor(tensor_layout(lhs), CpuDType::Float32);
-        CpuTensorAllocation rhs_result =
-            allocate_cpu_tensor(tensor_layout(rhs), CpuDType::Float32);
+        CpuTensorAllocation lhs_result = allocate_gradient_tensor(tensor_layout(lhs));
+        CpuTensorAllocation rhs_result = allocate_gradient_tensor(tensor_layout(rhs));
         {
             py::gil_scoped_release release;
             std::vector<Index> key(lhs_view.leaf_rank(), 0);
@@ -396,18 +406,24 @@ public:
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
 
-        CpuTensorAllocation result = allocate_cpu_tensor(
-            tensor_layout(tensor), tensor_view.carrier->cpu_dtype());
+        // ReLU preserves its input dtype, and selecting between an element and
+        // zero cannot overflow, so the integer plan is exact and unchecked.
+        const CpuPlan plan =
+            resolve_cpu_plan(executing_carrier_class(tensor), "relu",
+                             cpu_dtype_object(tensor_view.carrier->cpu_dtype()));
+        CpuTensorAllocation result =
+            allocate_cpu_tensor(tensor_layout(tensor), plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
-                if (tensor_view.carrier->cpu_dtype() == CpuDType::Float32) {
+                if (plan.is_integer()) {
+                    const std::int32_t value = tensor_view.read_int_expanded(key);
+                    write_computed_int(result.view, key, value > 0 ? value : 0,
+                                       plan.compute);
+                } else {
                     const float value = tensor_view.read_float_expanded(key);
                     result.view.write_float_expanded(key, value > 0.0f ? value : 0.0f);
-                } else {
-                    const std::int32_t value = tensor_view.read_int_expanded(key);
-                    result.view.write_int_expanded(key, value > 0 ? value : 0);
                 }
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
@@ -423,8 +439,7 @@ public:
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
@@ -448,28 +463,32 @@ public:
         }
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+        // Whether the exponent preserves an integer result is central policy,
+        // so the plan decides it; the exponent is then materialized exactly for
+        // the integer path rather than round-tripped through float.
+        const CpuPlan plan = resolve_cpu_plan(
+            executing_carrier_class(tensor), "pow",
+            cpu_dtype_object(tensor_view.carrier->cpu_dtype()), inputs[1]);
         exponent_ = require_float(inputs[1], "exponent");
         ctx_["exponent"] = py::float_(exponent_);
-        const bool int_output = tensor_view.carrier->cpu_dtype() == CpuDType::Int32 &&
-                                exponent_preserves_int32(exponent_);
-        const CpuDType output_dtype = int_output ? CpuDType::Int32 : CpuDType::Float32;
-        const int int_exponent =
-            int_output ? static_cast<int>(std::round(exponent_)) : 0;
+        const std::int32_t int_exponent =
+            plan.is_integer() ? require_int32_scalar(inputs[1], "exponent") : 0;
 
         CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), output_dtype);
+            allocate_cpu_tensor(tensor_layout(tensor), plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
             for (Index i = 0; i < tensor_view.logical_size; ++i) {
-                if (output_dtype == CpuDType::Float32) {
-                    result.view.write_float_expanded(
-                        key, std::pow(tensor_view.read_float_expanded(key), exponent_));
-                } else {
-                    write_int_result(
+                if (plan.is_integer()) {
+                    write_computed_int(
                         result.view, key,
                         checked_int32_pow(tensor_view.read_int_expanded(key),
-                                          int_exponent));
+                                          int_exponent),
+                        plan.compute);
+                } else {
+                    result.view.write_float_expanded(
+                        key, std::pow(tensor_view.read_float_expanded(key), exponent_));
                 }
                 tensor_view.cache->increment_key(key.data(), key.size());
             }
@@ -485,8 +504,7 @@ public:
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
@@ -522,8 +540,13 @@ public:
             canonical_layout_from_modes({mode_shape(tensor_layout(tensor), 0)});
         ctx_["output_layout"] = output_layout_;
 
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(output_layout_, tensor_view.carrier->cpu_dtype());
+        // The plan's accumulation decides how the terms combine: an exact
+        // integer accumulator whose only checked step is the final narrowing,
+        // or a sequential binary32 sum that rounds at every step.
+        const CpuPlan plan =
+            resolve_cpu_plan(executing_carrier_class(tensor), "reduce",
+                             cpu_dtype_object(tensor_view.carrier->cpu_dtype()));
+        CpuTensorAllocation result = allocate_cpu_tensor(output_layout_, plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> row_key(tensor_view.leaf_rank(), 0);
@@ -531,7 +554,15 @@ public:
             std::vector<Index> output_key(result.view.leaf_rank(), 0);
             for (Index i = 0; i < n_size; ++i) {
                 input_key = row_key;
-                if (tensor_view.carrier->cpu_dtype() == CpuDType::Float32) {
+                if (plan.accumulation == CpuAccumulation::ExactInteger) {
+                    ExactIntegerSum sum;
+                    for (Index j = 0; j < m_size; ++j) {
+                        sum.add(tensor_view.read_int_expanded(input_key));
+                        tensor_view.cache->increment_mode(input_key.data(),
+                                                          input_key.size(), 1);
+                    }
+                    write_accumulated_int(result.view, output_key, sum);
+                } else {
                     float sum = 0.0f;
                     for (Index j = 0; j < m_size; ++j) {
                         sum += tensor_view.read_float_expanded(input_key);
@@ -539,15 +570,6 @@ public:
                                                           input_key.size(), 1);
                     }
                     result.view.write_float_expanded(output_key, sum);
-                } else {
-                    long long sum = 0;
-                    for (Index j = 0; j < m_size; ++j) {
-                        sum =
-                            checked_add(sum, tensor_view.read_int_expanded(input_key));
-                        tensor_view.cache->increment_mode(input_key.data(),
-                                                          input_key.size(), 1);
-                    }
-                    write_int_result(result.view, output_key, sum);
                 }
                 tensor_view.cache->increment_mode(row_key.data(), row_key.size(), 0);
                 result.view.cache->increment_key(output_key.data(), output_key.size());
@@ -565,8 +587,7 @@ public:
 
         const Index n_size = mode_logical_size(tensor_layout(tensor), 0);
         const Index m_size = mode_logical_size(tensor_layout(tensor), 1);
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
         {
             py::gil_scoped_release release;
             std::vector<Index> row_key(result.view.leaf_rank(), 0);
@@ -619,8 +640,11 @@ public:
             {mode_shape(tensor_layout(lhs), 0), mode_shape(tensor_layout(rhs), 0)});
         ctx_["output_layout"] = output_layout_;
 
-        const CpuDType output_dtype = promote_cpu_binary_dtype(lhs, rhs);
-        CpuTensorAllocation result = allocate_cpu_tensor(output_layout_, output_dtype);
+        // Matmul promotes like binary arithmetic but accumulates: two Int32
+        // operands compute each product exactly and check only the narrowing of
+        // the finished sum, so terms that legitimately cancel are not rejected.
+        const CpuPlan plan = resolve_binary_plan(lhs, "matmul", lhs_view, rhs_view);
+        CpuTensorAllocation result = allocate_cpu_tensor(output_layout_, plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> output_key(result.view.leaf_rank(), 0);
@@ -633,7 +657,22 @@ public:
                 for (Index i = 0; i < n_size; ++i) {
                     lhs_key = lhs_i_base;
                     rhs_key = rhs_j_base;
-                    if (output_dtype == CpuDType::Float32) {
+                    if (plan.accumulation == CpuAccumulation::ExactInteger) {
+                        ExactIntegerSum sum;
+                        for (Index k = 0; k < lhs_k_size; ++k) {
+                            // Each product is exact in int64; only their sum
+                            // needs the wider accumulator.
+                            sum.add(static_cast<std::int64_t>(
+                                        lhs_view.read_int_expanded(lhs_key)) *
+                                    static_cast<std::int64_t>(
+                                        rhs_view.read_int_expanded(rhs_key)));
+                            lhs_view.cache->increment_mode(lhs_key.data(),
+                                                           lhs_key.size(), 1);
+                            rhs_view.cache->increment_mode(rhs_key.data(),
+                                                           rhs_key.size(), 1);
+                        }
+                        write_accumulated_int(result.view, output_key, sum);
+                    } else {
                         float sum = 0.0f;
                         for (Index k = 0; k < lhs_k_size; ++k) {
                             sum += lhs_view.read_float_expanded(lhs_key) *
@@ -644,20 +683,6 @@ public:
                                                            rhs_key.size(), 1);
                         }
                         result.view.write_float_expanded(output_key, sum);
-                    } else {
-                        long long sum = 0;
-                        for (Index k = 0; k < lhs_k_size; ++k) {
-                            sum = checked_add(
-                                sum, static_cast<long long>(
-                                         lhs_view.read_int_expanded(lhs_key)) *
-                                         static_cast<long long>(
-                                             rhs_view.read_int_expanded(rhs_key)));
-                            lhs_view.cache->increment_mode(lhs_key.data(),
-                                                           lhs_key.size(), 1);
-                            rhs_view.cache->increment_mode(rhs_key.data(),
-                                                           rhs_key.size(), 1);
-                        }
-                        write_int_result(result.view, output_key, sum);
                     }
                     result.view.cache->increment_key(output_key.data(),
                                                      output_key.size());
@@ -684,10 +709,8 @@ public:
         const Index k_size = mode_logical_size(tensor_layout(lhs), 1);
         const Index m_size = mode_logical_size(tensor_layout(rhs), 0);
 
-        CpuTensorAllocation lhs_result =
-            allocate_cpu_tensor(tensor_layout(lhs), CpuDType::Float32);
-        CpuTensorAllocation rhs_result =
-            allocate_cpu_tensor(tensor_layout(rhs), CpuDType::Float32);
+        CpuTensorAllocation lhs_result = allocate_gradient_tensor(tensor_layout(lhs));
+        CpuTensorAllocation rhs_result = allocate_gradient_tensor(tensor_layout(rhs));
         {
             py::gil_scoped_release release;
             std::vector<Index> lhs_k_base(lhs_result.view.leaf_rank(), 0);
@@ -780,7 +803,16 @@ py::object CPU::_dispatch_op(const std::string& operation_name) const {
 }
 
 void bind_cpu(py::module_& module) {
-    py::class_<CPU, Carrier, PyCPU>(module, "CPU")
+    py::class_<CPU, Carrier>(module, "CPU")
+        // Closed through `__init_subclass__` rather than `py::is_final()` on
+        // purpose. `is_final()` refuses at the C level, which is the stronger
+        // guarantee, but it reports CPython's generic "not an acceptable base
+        // type" instead of the wording every closed carrier shares. That shared
+        // wording is the contract
+        // `tests/test_carrier.py::test_a_closed_carrier_states_one_refusal`
+        // pins, so switching to `is_final()` would break it.
+        .def_static("__init_subclass__",
+                    [](const py::args&, const py::kwargs&) { reject_cpu_subclass(); })
         .def(py::init<Index, py::object, bool, py::object, bool>(), py::arg("size"),
              py::arg("pointer") = py::none(), py::kw_only(), py::arg("mutable") = true,
              py::arg("dtype") = py::none(), py::arg("empty") = false)

@@ -14,15 +14,12 @@
 #include <vector>
 
 #include "_carrier.hpp"
+#include "_cpu_policy.hpp"
 #include "_layout_index.hpp"
 
 namespace py = pybind11;
 
 namespace strideweave::carrier {
-
-inline py::object tensor_type() {
-    return py::module_::import("strideweave.tensor").attr("Tensor");
-}
 
 inline bool layouts_equal(py::handle left, py::handle right) {
     const int result = PyObject_RichCompareBool(left.ptr(), right.ptr(), Py_EQ);
@@ -30,59 +27,6 @@ inline bool layouts_equal(py::handle left, py::handle right) {
         throw py::error_already_set();
     }
     return result == 1;
-}
-
-inline py::object dtype_object(const char* name) {
-    return py::module_::import("strideweave.carriers").attr("DType").attr(name);
-}
-
-inline py::object carriers_attribute(const char* name) {
-    return py::module_::import("strideweave.carriers").attr(name);
-}
-
-enum class CpuDType { Float32, Int32 };
-
-// Mirrors the diagnostic that Python carriers raise through
-// strideweave.carriers.dtype.validate_storage_dtype, so every carrier explains
-// deferred compound storage the same way.
-[[noreturn]] inline void throw_compound_dtype_error(py::handle dtype) {
-    const std::string name = py::cast<std::string>(dtype.attr("name"));
-    throw py::value_error("CPU cannot store compound dtype '" + name +
-                          "': a carrier holds one simple dtype, and a compound "
-                          "representation needs one carrier per simple_types "
-                          "plane, which is not implemented");
-}
-
-// Dtype tags are identity values (SW002), and RT012 makes each carrier's
-// accepted set exact, so recognition here is pointer identity against the
-// registered singletons. Equality is deliberately never consulted: an object
-// with a spoofed, raising, or side-effecting __eq__ must be rejected like any
-// other unsupported dtype rather than deciding what this carrier stores.
-inline CpuDType parse_cpu_dtype(py::handle dtype) {
-    if (dtype.is_none() || dtype.is(dtype_object("Float32"))) {
-        return CpuDType::Float32;
-    }
-    if (dtype.is(dtype_object("Int32"))) {
-        return CpuDType::Int32;
-    }
-    if (py::isinstance(dtype, carriers_attribute("CompoundDType"))) {
-        throw_compound_dtype_error(dtype);
-    }
-    throw py::value_error("CPU dtype must be DType.Float32 or DType.Int32");
-}
-
-inline py::object cpu_dtype_object(CpuDType dtype) {
-    if (dtype == CpuDType::Float32) {
-        return dtype_object("Float32");
-    }
-    return dtype_object("Int32");
-}
-
-inline std::size_t cpu_dtype_size(CpuDType dtype) {
-    if (dtype == CpuDType::Float32) {
-        return sizeof(float);
-    }
-    return sizeof(std::int32_t);
 }
 
 inline void throw_overflow_error(const std::string& message) {
@@ -233,6 +177,13 @@ protected:
 
     bool _is_mutable() const override { return is_mutable_; }
 
+    // The kernels are written for these two encodings, whichever one this
+    // carrier currently holds; parse_cpu_dtype accepts exactly the same pair.
+    bool _supports_storage_dtype(py::object dtype) const override {
+        const CpuBindings& bindings = cpu_bindings();
+        return dtype.is(bindings.float32) || dtype.is(bindings.int32);
+    }
+
     void set_value(Index index, py::object value) override {
         set_value_public(index, value);
     }
@@ -303,19 +254,6 @@ inline float require_float(py::handle value, const char* name) {
     return static_cast<float>(result);
 }
 
-inline bool is_integral_scalar(py::handle value) {
-    if (PyBool_Check(value.ptr())) {
-        return false;
-    }
-    PyObject* index_object = PyNumber_Index(value.ptr());
-    if (index_object == nullptr) {
-        PyErr_Clear();
-        return false;
-    }
-    Py_DECREF(index_object);
-    return true;
-}
-
 inline std::int32_t require_int32_scalar(py::handle value, const char* name) {
     PyObject* index_object = PyNumber_Index(value.ptr());
     if (index_object == nullptr) {
@@ -342,18 +280,60 @@ inline std::int32_t checked_int32(long long value) {
     return static_cast<std::int32_t>(value);
 }
 
-inline long long checked_add(long long lhs, long long rhs) {
-    if ((rhs > 0 && lhs > std::numeric_limits<long long>::max() - rhs) ||
-        (rhs < 0 && lhs < std::numeric_limits<long long>::min() - rhs)) {
-        throw_overflow_error("CPU integer accumulation overflowed");
+// The accumulator an EXACT_INTEGER plan combines its terms in.
+//
+// That plan accumulates over the mathematical integers and checks only the
+// final narrowing, so a partial sum may leave Int32 range and still produce a
+// representable result. For a contraction of maximal Int32 products a partial
+// sum leaves *int64* range too — three products of INT32_MAX already exceed it
+// — so a 64-bit accumulator would reject sums whose later terms cancel, which
+// `Generic` computes exactly. This holds two 64-bit halves instead, giving an
+// exact 128-bit signed sum without relying on a compiler extension: it is
+// exact for any contraction of fewer than 2**64 Int32 products, which no
+// layout can address.
+class ExactIntegerSum {
+public:
+    void add(std::int64_t term) {
+        const std::uint64_t addend = static_cast<std::uint64_t>(term);
+        const std::uint64_t updated = low_ + addend;
+        const std::int64_t carry = updated < low_ ? 1 : 0;
+        low_ = updated;
+        // Adding a signed 64-bit term to a 128-bit value adds its sign
+        // extension, which is -1 for a negative term and 0 otherwise.
+        high_ += (term < 0 ? -1 : 0) + carry;
     }
-    return lhs + rhs;
-}
 
-inline std::int32_t checked_int32_pow(std::int32_t base, int exponent) {
+    bool fits_int32() const {
+        if (high_ == 0) {
+            return low_ <=
+                   static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+        }
+        if (high_ == -1) {
+            return low_ >= kInt32MinAsUnsigned;
+        }
+        return false;
+    }
+
+    std::int32_t narrow() const {
+        if (!fits_int32()) {
+            throw_overflow_error("CPU Int32 operation result is out of int32 range");
+        }
+        return static_cast<std::int32_t>(static_cast<std::int64_t>(low_));
+    }
+
+private:
+    // INT32_MIN sign-extended to 64 bits, as its two's complement pattern.
+    static constexpr std::uint64_t kInt32MinAsUnsigned = static_cast<std::uint64_t>(
+        static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min()));
+
+    std::uint64_t low_ = 0;
+    std::int64_t high_ = 0;
+};
+
+inline std::int32_t checked_int32_pow(std::int32_t base, std::int32_t exponent) {
     long long result = 1;
     long long factor = base;
-    int remaining = exponent;
+    std::int32_t remaining = exponent;
     while (remaining > 0) {
         if (remaining & 1) {
             result = checked_int32(result * factor);
@@ -633,11 +613,19 @@ inline CpuTensorAllocation allocate_cpu_tensor(py::object layout,
     };
 }
 
+// Gradients are always Float32 computed in binary32, whatever dtype the forward
+// plan produced: an Int32 result is not differentiable, so a gradient only ever
+// flows along the floating path. This is a fixed rule of the shared policy's
+// backward section rather than a per-operation promotion decision.
+inline CpuTensorAllocation allocate_gradient_tensor(py::object layout) {
+    return allocate_cpu_tensor(std::move(layout), CpuDType::Float32);
+}
+
 inline py::object copy_gradient_for(py::handle target, py::handle gradient) {
     require_same_layout(target, gradient);
     CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
     py::object output_layout = tensor_layout(target);
-    CpuTensorAllocation output = allocate_cpu_tensor(output_layout, CpuDType::Float32);
+    CpuTensorAllocation output = allocate_gradient_tensor(output_layout);
     {
         py::gil_scoped_release release;
         std::vector<Index> key(output.view.leaf_rank(), 0);
@@ -655,7 +643,7 @@ inline py::object copy_negated_gradient_for(py::handle target, py::handle gradie
     require_same_layout(target, gradient);
     CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
     py::object output_layout = tensor_layout(target);
-    CpuTensorAllocation output = allocate_cpu_tensor(output_layout, CpuDType::Float32);
+    CpuTensorAllocation output = allocate_gradient_tensor(output_layout);
     {
         py::gil_scoped_release release;
         std::vector<Index> key(output.view.leaf_rank(), 0);
@@ -669,19 +657,23 @@ inline py::object copy_negated_gradient_for(py::handle target, py::handle gradie
                        std::move(output.layout_object));
 }
 
-inline CpuDType promote_cpu_binary_dtype(py::handle lhs, py::handle rhs) {
-    CPU& lhs_carrier = cpu_carrier_from_tensor(lhs, "lhs");
-    CPU& rhs_carrier = cpu_carrier_from_tensor(rhs, "rhs");
-    if (lhs_carrier.cpu_dtype() == CpuDType::Float32 ||
-        rhs_carrier.cpu_dtype() == CpuDType::Float32) {
-        return CpuDType::Float32;
-    }
-    return CpuDType::Int32;
+// The narrowing an EXACT_INTEGER accumulation checks: partial sums may leave
+// Int32 range, and only the finished sum must fit.
+inline void write_accumulated_int(CpuTensorView& view, const std::vector<Index>& key,
+                                  const ExactIntegerSum& sum) {
+    view.write_int_expanded(key, sum.narrow());
 }
 
-inline void write_int_result(CpuTensorView& view, const std::vector<Index>& key,
-                             long long value) {
-    view.write_int_expanded(key, checked_int32(value));
+// An elementwise integer result is checked exactly when its plan says so:
+// INT32_EXACT_CHECKED must reject a result that leaves Int32, while INT32_EXACT
+// is used only where the policy has established the result cannot.
+inline void write_computed_int(CpuTensorView& view, const std::vector<Index>& key,
+                               long long value, CpuArithmetic compute) {
+    if (compute == CpuArithmetic::Int32ExactChecked) {
+        view.write_int_expanded(key, checked_int32(value));
+        return;
+    }
+    view.write_int_expanded(key, static_cast<std::int32_t>(value));
 }
 
 }  // namespace strideweave::carrier
