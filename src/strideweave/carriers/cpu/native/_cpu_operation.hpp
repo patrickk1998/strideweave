@@ -42,13 +42,14 @@ inline float gelu_gradient_multiplier(float value) {
 // Unary elementwise CPU operation parameterized on a scalar policy:
 //
 //     struct Scalar {
+//         static constexpr const char* kOperation = "op";
 //         static constexpr const char* kForwardError = "CPU op requires a tensor";
 //         static float value(float input);
 //         static float gradient_multiplier(float input);
 //     };
 //
-// forward writes value(x) elementwise into a Float32 result; backward writes
-// gradient * gradient_multiplier(x).
+// forward writes value(x) elementwise into a result whose dtype comes from the
+// shared plan; backward writes gradient * gradient_multiplier(x).
 template <typename Scalar>
 class CpuUnaryElementwiseOperation : public strideweave::operation::Operation {
 public:
@@ -59,8 +60,13 @@ public:
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
 
+        // These activations are floating for every input dtype, so an Int32
+        // input is converted by the plan rather than by a kernel-local rule.
+        const CpuPlan plan =
+            resolve_cpu_plan(executing_carrier_class(tensor), Scalar::kOperation,
+                             cpu_dtype_object(tensor_view.carrier->cpu_dtype()));
         CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+            allocate_cpu_tensor(tensor_layout(tensor), plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
@@ -81,8 +87,7 @@ public:
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), CpuDType::Float32);
+        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);

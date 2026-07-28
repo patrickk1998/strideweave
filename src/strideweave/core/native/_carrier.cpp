@@ -69,6 +69,11 @@ protected:
         PYBIND11_OVERRIDE_NAME(bool, Carrier, "_is_mutable", _is_mutable);
     }
 
+    bool _supports_storage_dtype(py::object dtype) const override {
+        PYBIND11_OVERRIDE_NAME(bool, Carrier, "_supports_storage_dtype",
+                               _supports_storage_dtype, dtype);
+    }
+
     void set_value(Index index, py::object value) override {
         PYBIND11_OVERRIDE(void, Carrier, set_value, index, value);
     }
@@ -113,7 +118,39 @@ private:
     py::list values_;
 };
 
+// The read-only view of a backend's declared operation-plan capabilities. The
+// module is imported once and deliberately never freed: it is a process-lifetime
+// singleton, and a static py::object destructor would run after the interpreter
+// has finalized.
+const py::object& capability_api() {
+    static const py::object* api = new py::object(
+        py::module_::import("strideweave.carriers.operation_capability"));
+    return *api;
+}
+
+// The dtype model, imported once for the same reason the capability module is.
+const py::object& dtype_api() {
+    static const py::object* api =
+        new py::object(py::module_::import("strideweave.carriers.dtype"));
+    return *api;
+}
+
+// Capabilities are owned either by an exact carrier class or by one constructed
+// dependent instance, so a query is asked of the carrier itself and the
+// capability module selects the owner. Casting back reaches the carrier's own
+// Python object, so a Python subclass instance keeps its exact identity.
+py::object carrier_object(const Carrier& carrier) {
+    return py::cast(&carrier, py::return_value_policy::reference);
+}
+
 }  // namespace
+
+bool strideweave::carrier::Carrier::supports_storage_dtype(py::object dtype) const {
+    if (!py::isinstance(dtype, dtype_api().attr("DType"))) {
+        throw py::type_error("storage dtype must be a DType");
+    }
+    return _supports_storage_dtype(std::move(dtype));
+}
 
 py::object
 strideweave::carrier::Carrier::dispatch_op(const std::string& operation_name) const {
@@ -178,6 +215,37 @@ PYBIND11_MODULE(_carrier, module) {
              "    ... )\n"
              "    >>> primary.is_owned()\n"
              "    True")
+        .def("supports_storage_dtype", &Carrier::supports_storage_dtype,
+             py::arg("dtype"),
+             "Report whether this carrier implementation can store a dtype.\n\n"
+             "This is a structural question about the implementation, not about "
+             "this instance's current state: it allocates nothing, changes "
+             "nothing, and is unaffected by size, mutability, ownership, "
+             "eviction residency, release, or which dtype the carrier currently "
+             "holds. A carrier composing others reports what every "
+             "representation it must build can store, which is what lets it "
+             "decide whether it could hold an operation's result before any "
+             "work begins.\n\n"
+             "Descriptors are registry singletons, so a dtype is recognized by "
+             "identity; an object that merely compares equal to one is not that "
+             "dtype. Support is narrower than being a valid descriptor: "
+             "abstract categories no carrier stores, simple encodings no backend "
+             "implements, and compound descriptors, whose per-plane storage is "
+             "deferred, are all unsupported rather than errors.\n\n"
+             "Args:\n"
+             "    dtype: The DType to ask about.\n\n"
+             "Returns:\n"
+             "    True when this carrier implementation can allocate that "
+             "dtype.\n\n"
+             "Raises:\n"
+             "    TypeError: If dtype is not a DType.\n\n"
+             "Examples:\n"
+             "    >>> import strideweave as sw\n"
+             "    >>> carrier = sw.CPU(1, dtype=sw.DType.Float32)\n"
+             "    >>> carrier.supports_storage_dtype(sw.DType.Int32)\n"
+             "    True\n"
+             "    >>> carrier.supports_storage_dtype(sw.DType.Integer)\n"
+             "    False")
         .def("_has_owner_access", &Carrier::has_owner_access)
         .def("_claim_ownership", &Carrier::claim_ownership)
         .def("_relinquish_ownership", &Carrier::relinquish_ownership, py::arg("token"))
@@ -194,6 +262,111 @@ PYBIND11_MODULE(_carrier, module) {
              "instance. Move's backward pass relies on this to materialize\n"
              "gradients in a released source carrier.")
         .def("dispatch_op", &Carrier::dispatch_op, py::arg("operation_name"))
+        .def(
+            "operation_capabilities",
+            [](const Carrier& self, py::object operation_name) {
+                return capability_api().attr("carrier_operation_capabilities")(
+                    carrier_object(self), operation_name);
+            },
+            py::arg("operation_name") = py::none(),
+            "Return the operation plans this carrier executes.\n\n"
+            "Support means faithful execution of an already-resolved plan from "
+            "strideweave.carriers.operation_policy. It is not a claim about "
+            "promotion: which plan is correct for a set of operand dtypes is "
+            "central policy that no backend owns. Both the policy and the "
+            "capability surface are evolvable rather than a compatibility "
+            "promise.\n\n"
+            "The answer comes from whichever set owns this carrier: the sealed "
+            "declarations of its exact class for an independent carrier, or "
+            "the frozen snapshot a DependentCarrier generated for this "
+            "instance. A caller asks the carrier and does not need to know "
+            "which.\n\n"
+            "Args:\n"
+            "    operation_name: Restrict the result to one operation, or None "
+            "for every operation this backend executes.\n\n"
+            "Returns:\n"
+            "    Immutable OperationCapability descriptors in a deterministic "
+            "order, the same entries execution is accepted against.\n\n"
+            "Examples:\n"
+            "    >>> import strideweave as sw\n"
+            "    >>> [entry.output.name for entry in "
+            "sw.CPU(1).operation_capabilities('relu')]\n"
+            "    ['Float32', 'Int32']\n")
+        .def(
+            "supports_operation_plan",
+            [](const Carrier& self, py::object plan) {
+                return capability_api().attr("carrier_supports_operation_plan")(
+                    carrier_object(self), plan);
+            },
+            py::arg("plan"),
+            "Report whether this carrier executes a resolved plan.\n\n"
+            "The decision is the one enforcement makes, read from this "
+            "carrier's own capabilities.\n\n"
+            "Args:\n"
+            "    plan: An OperationPlan resolved by "
+            "strideweave.carriers.operation_policy.\n\n"
+            "Returns:\n"
+            "    True when a declared capability matches the plan exactly, "
+            "including its operand conversions and whether it accumulates.\n\n"
+            "Examples:\n"
+            "    >>> import strideweave as sw\n"
+            "    >>> from strideweave.carriers.operation_policy import (\n"
+            "    ...     resolve_operation_plan,\n"
+            "    ... )\n"
+            "    >>> plan = resolve_operation_plan('relu', sw.DType.Int32)\n"
+            "    >>> sw.CPU(1).supports_operation_plan(plan)\n"
+            "    True\n")
+        .def(
+            "unsupported_plan_reason",
+            [](const Carrier& self, py::object plan) {
+                return capability_api().attr("carrier_unsupported_plan_reason")(
+                    carrier_object(self), plan);
+            },
+            py::arg("plan"),
+            "Explain why this carrier cannot execute a resolved plan.\n\n"
+            "The reason distinguishes an operation this carrier has nothing "
+            "for from an operation it has other shapes of.\n\n"
+            "Args:\n"
+            "    plan: An OperationPlan resolved by "
+            "strideweave.carriers.operation_policy.\n\n"
+            "Returns:\n"
+            "    A stable explanatory sentence, or None when the plan is "
+            "supported.\n\n"
+            "Examples:\n"
+            "    >>> import strideweave as sw\n"
+            "    >>> from strideweave.carriers.operation_policy import (\n"
+            "    ...     resolve_operation_plan,\n"
+            "    ... )\n"
+            "    >>> plan = resolve_operation_plan('relu', sw.DType.Int32)\n"
+            "    >>> sw.CPU(1).unsupported_plan_reason(plan) is None\n"
+            "    True\n")
+        .def(
+            "require_operation_plan",
+            [](const Carrier& self, py::object plan) {
+                return capability_api().attr("require_carrier_capability")(
+                    carrier_object(self), plan);
+            },
+            py::arg("plan"),
+            "Return the capability a resolved plan executes under, or refuse "
+            "it.\n\n"
+            "This is the acceptance gate operations use, exposed so a caller can "
+            "ask for the same decision without running a kernel.\n\n"
+            "Args:\n"
+            "    plan: An OperationPlan resolved by "
+            "strideweave.carriers.operation_policy.\n\n"
+            "Returns:\n"
+            "    The matching immutable OperationCapability.\n\n"
+            "Raises:\n"
+            "    UnsupportedOperationPlan: If this carrier has no capability "
+            "for that exact shape.\n\n"
+            "Examples:\n"
+            "    >>> import strideweave as sw\n"
+            "    >>> from strideweave.carriers.operation_policy import (\n"
+            "    ...     resolve_operation_plan,\n"
+            "    ... )\n"
+            "    >>> plan = resolve_operation_plan('relu', sw.DType.Int32)\n"
+            "    >>> sw.CPU(1).require_operation_plan(plan).compute.value\n"
+            "    'int32_exact'\n")
         .def("__getitem__", &Carrier::get_item, py::arg("index"))
         .def("__setitem__", &Carrier::set_item, py::arg("index"), py::arg("value"));
 

@@ -17,6 +17,7 @@ from strideweave import (
     CompoundDType,
     DType,
     DTypeCategory,
+    Evictable,
     FileBacked,
     Generic,
     Level,
@@ -1780,6 +1781,8 @@ def test_no_dtype_constructor_accepts_a_format_mandated_block_size():
         "SimpleDType",
         "SymbolicBits",
         "WholeExtent",
+        "accepts_storage_dtype",
+        "storage_zero",
         "validate_storage_dtype",
     }
 
@@ -1867,10 +1870,11 @@ def test_every_carrier_explains_deferred_compound_storage_the_same_way():
 def test_each_carrier_accepts_exactly_its_documented_dtype_set():
     # RT012 states each accepted set exactly, so it is checked exhaustively
     # against every built-in descriptor rather than by sampling. Note that the
-    # sets are not "the simple dtypes": Generic accepts only the two legacy
-    # opaque categories, and the narrow simple encodings are accepted nowhere.
+    # sets are not "the simple dtypes": Generic accepts the two legacy opaque
+    # categories alongside the concrete simple dtypes it is the reference for,
+    # and the narrow simple encodings are accepted nowhere.
     accepted_sets = {
-        "Generic": (DType.Any, DType.Floating),
+        "Generic": (DType.Any, DType.Floating, DType.Float32, DType.Int32),
         "CPU": (DType.Float32, DType.Int32),
         "FileBacked": (DType.Floating, DType.Float32, DType.Int32),
     }
@@ -2881,3 +2885,221 @@ def test_registry_lookups_keep_their_subclass_type_without_a_cast():
         dtype.is_opaque_storage() in (True, False)
         for dtype in DTypeCategory.registered()
     )
+
+
+# --- Structural storage-dtype support ----------------------------------------
+#
+# What a carrier implementation *could* allocate, asked without allocating. A
+# carrier composing others needs this to decide, before any work begins, whether
+# every representation it must build could hold a result.
+
+
+STORAGE_SUPPORT_SETS = {
+    "Generic": (DType.Any, DType.Floating, DType.Float32, DType.Int32),
+    "CPU": (DType.Float32, DType.Int32),
+    "FileBacked": (DType.Floating, DType.Float32, DType.Int32),
+}
+STORAGE_CARRIERS = {
+    "Generic": lambda: Generic([1.0]),
+    "CPU": lambda: CPU(4),
+    "FileBacked": lambda: FileBacked(),
+}
+
+
+@pytest.mark.parametrize("name", STORAGE_SUPPORT_SETS)
+def test_a_carrier_reports_exactly_the_dtypes_it_can_store(name):
+    # Checked exhaustively against every built-in descriptor rather than
+    # sampled, and against the same set RT012 pins for construction: a carrier
+    # that reported storage it would then refuse would make a composing
+    # carrier advertise an operation it cannot complete.
+    carrier = STORAGE_CARRIERS[name]()
+    supported = STORAGE_SUPPORT_SETS[name]
+
+    for dtype in BUILT_IN_DTYPES:
+        expected = any(dtype is candidate for candidate in supported)
+        assert carrier.supports_storage_dtype(dtype) is expected, dtype.name
+
+
+@pytest.mark.parametrize("name", STORAGE_SUPPORT_SETS)
+def test_storage_support_agrees_with_what_construction_accepts(name):
+    builders = {
+        "Generic": lambda dtype: Generic([1], dtype=dtype),
+        "CPU": lambda dtype: CPU(4, dtype=dtype),
+        "FileBacked": lambda dtype: FileBacked(dtype=dtype),
+    }
+    carrier = STORAGE_CARRIERS[name]()
+
+    for dtype in BUILT_IN_DTYPES:
+        if carrier.supports_storage_dtype(dtype):
+            assert builders[name](dtype).dtype() is dtype
+        else:
+            with pytest.raises(ValueError, match=f"^{name} "):
+                builders[name](dtype)
+
+
+@pytest.mark.parametrize("name", STORAGE_SUPPORT_SETS)
+def test_no_carrier_claims_a_category_or_encoding_it_cannot_store(name):
+    carrier = STORAGE_CARRIERS[name]()
+
+    assert not carrier.supports_storage_dtype(DType.Integer)
+    for dtype in (DType.Int8, DType.E8M0, DType.E5M2, DType.E4M3):
+        assert not carrier.supports_storage_dtype(dtype)
+    for dtype in BUILT_IN_BLOCK_SCALED_DTYPES:
+        assert not carrier.supports_storage_dtype(dtype)
+    # A compound descriptor is unsupported rather than an error: its per-plane
+    # storage is deferred, not malformed.
+    planar = PlanarDType(f"TestStorageSupport{name}Planes", planes=(DType.Float32,))
+    assert not carrier.supports_storage_dtype(planar)
+
+
+@pytest.mark.parametrize("name", STORAGE_SUPPORT_SETS)
+def test_the_dtype_a_carrier_currently_holds_does_not_narrow_its_answer(name):
+    supported = STORAGE_SUPPORT_SETS[name]
+    builders = {
+        "Generic": lambda dtype: Generic([1], dtype=dtype),
+        "CPU": lambda dtype: CPU(4, dtype=dtype),
+        "FileBacked": lambda dtype: FileBacked(dtype=dtype),
+    }
+
+    answers = [
+        {
+            dtype.name: builders[name](held).supports_storage_dtype(dtype)
+            for dtype in BUILT_IN_DTYPES
+        }
+        for held in supported
+    ]
+
+    assert all(answer == answers[0] for answer in answers)
+
+
+def test_storage_support_is_allocation_free_and_survives_state_changes():
+    carrier = CPU(4, dtype=DType.Float32)
+    version = carrier.version
+
+    assert carrier.supports_storage_dtype(DType.Int32)
+    assert carrier.version == version
+    assert carrier.size() == 4
+    assert carrier.dtype() is DType.Float32
+
+    carrier.release()
+
+    # Structure is not state: a released carrier's implementation can still
+    # allocate what it always could.
+    assert carrier.supports_storage_dtype(DType.Int32)
+    assert carrier.is_released()
+
+
+def test_an_evictable_hierarchy_reports_what_both_tiers_can_store():
+    narrow = Evictable(CPU(1), Generic([0.0], dtype=DType.Float32))
+    wide = Evictable(Generic([0.0]), Generic([0.0]))
+
+    # CPU cannot allocate the legacy opaque descriptors, so the hierarchy that
+    # composes it cannot either, even though its secondary tier could.
+    assert narrow.supports_storage_dtype(DType.Float32)
+    assert narrow.supports_storage_dtype(DType.Int32)
+    assert not narrow.supports_storage_dtype(DType.Floating)
+    assert not narrow.supports_storage_dtype(DType.Any)
+    assert wide.supports_storage_dtype(DType.Any)
+    assert wide.supports_storage_dtype(DType.Floating)
+
+
+def test_an_evictable_answer_is_unchanged_by_residency():
+    hierarchy = Evictable(CPU(2), FileBacked(dtype=DType.Float32))
+    before = [hierarchy.supports_storage_dtype(dtype) for dtype in BUILT_IN_DTYPES]
+
+    hierarchy.evict()
+    evicted = [hierarchy.supports_storage_dtype(dtype) for dtype in BUILT_IN_DTYPES]
+    hierarchy.promote()
+
+    assert evicted == before
+    assert [
+        hierarchy.supports_storage_dtype(dtype) for dtype in BUILT_IN_DTYPES
+    ] == before
+    assert hierarchy.supports_storage_dtype(DType.Int32)
+    assert not hierarchy.supports_storage_dtype(DType.Floating)
+
+
+class _MinimalCarrier(sw.Carrier):
+    """The least a custom carrier can implement, with no dtype claim of its own."""
+
+    def __init__(self, dtype: DType = DType.Int32) -> None:
+        super().__init__()
+        self._dtype = dtype
+
+    def size(self) -> int:
+        return 0
+
+    def dtype(self) -> DType:
+        return self._dtype
+
+    def get_value(self, index: int) -> object:
+        raise IndexError(index)
+
+    def new_like(self, values: Iterable[object], *, mutable: bool = True) -> sw.Carrier:
+        raise NotImplementedError
+
+    def allocate_like(
+        self,
+        size: int,
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
+        empty: bool = False,
+    ) -> sw.Carrier:
+        raise NotImplementedError
+
+    def scatter(
+        self,
+        to_scatter: object,
+        scatter_onto: object,
+        mapping: object,
+        mapping_offset: int = 0,
+    ) -> None:
+        raise NotImplementedError
+
+
+class _WideningCarrier(_MinimalCarrier):
+    """A custom carrier that states the further dtypes it can allocate."""
+
+    def _supports_storage_dtype(self, dtype: DType) -> bool:
+        return dtype is DType.Float32 or dtype is DType.Int32
+
+
+def test_a_minimal_custom_carrier_claims_only_what_it_currently_stores():
+    carrier = _MinimalCarrier()
+
+    assert carrier.supports_storage_dtype(DType.Int32)
+    assert not carrier.supports_storage_dtype(DType.Float32)
+    assert not carrier.supports_storage_dtype(DType.Any)
+    assert _MinimalCarrier(DType.Float32).supports_storage_dtype(DType.Float32)
+
+
+def test_a_custom_carrier_widens_support_through_the_protected_hook():
+    carrier = _WideningCarrier()
+
+    assert carrier.supports_storage_dtype(DType.Float32)
+    assert carrier.supports_storage_dtype(DType.Int32)
+    assert not carrier.supports_storage_dtype(DType.Floating)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["Float32", None, 32, object()],
+    ids=["name", "none", "width", "object"],
+)
+def test_storage_support_requires_a_dtype(invalid):
+    for carrier in (CPU(1), Generic([1.0]), _MinimalCarrier()):
+        with pytest.raises(TypeError, match="storage dtype must be a DType"):
+            carrier.supports_storage_dtype(invalid)
+
+
+def test_a_dtype_lookalike_cannot_claim_storage_support():
+    spoofed = _SpoofedDType()
+
+    for carrier in (CPU(1), Generic([1.0]), FileBacked(), _MinimalCarrier()):
+        with pytest.raises(TypeError, match="storage dtype must be a DType"):
+            carrier.supports_storage_dtype(cast(DType, spoofed))
+    assert spoofed.compared == []
+    for carrier in (CPU(1), Generic([1.0]), FileBacked(), _MinimalCarrier()):
+        with pytest.raises(TypeError, match="storage dtype must be a DType"):
+            carrier.supports_storage_dtype(cast(DType, _ExplodingDType()))
