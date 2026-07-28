@@ -12,6 +12,8 @@ __all__ = [
     "SymbolicBits",
     "Whole",
     "WholeExtent",
+    "accepts_storage_dtype",
+    "storage_zero",
     "validate_storage_dtype",
 ]
 
@@ -35,6 +37,8 @@ class _ContractSpec:
 
 _CONTRACT_SPECS: Final[dict[type, _ContractSpec]]
 
+def accepts_storage_dtype(dtype: DType, accepted: tuple[DType, ...]) -> bool: ...
+def storage_zero(dtype: DType) -> object: ...
 def validate_storage_dtype(
     dtype: object, *, carrier: str, accepted: tuple[DType, ...]
 ) -> DType: ...

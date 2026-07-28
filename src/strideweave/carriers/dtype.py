@@ -121,7 +121,11 @@ from ._dtype import model as _model
 from ._dtype.block_scaled import BlockScaledDType, Level, SymbolicBits
 from ._dtype.contracts import _CONTRACT_SPECS, _ContractSpec  # noqa: F401
 from ._dtype.model import CompoundDType, DType, DTypeCategory, SimpleDType
-from ._dtype.storage import validate_storage_dtype
+from ._dtype.storage import (
+    accepts_storage_dtype,
+    storage_zero,
+    validate_storage_dtype,
+)
 from ._dtype.structure import Whole, WholeExtent
 
 
@@ -169,5 +173,7 @@ __all__ = [
     "SymbolicBits",
     "Whole",
     "WholeExtent",
+    "accepts_storage_dtype",
+    "storage_zero",
     "validate_storage_dtype",
 ]

@@ -1,9 +1,10 @@
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, final
 
 from ..base import Carrier
 from ..dtype import DType
 
+@final
 class Generic(Carrier):
     def __init__(
         self,
@@ -17,6 +18,7 @@ class Generic(Carrier):
     def get_value(self, index: int) -> Any: ...
     def is_mutable(self) -> bool: ...
     def _is_mutable(self) -> bool: ...
+    def _supports_storage_dtype(self, dtype: DType) -> bool: ...
     def set_value(self, index: int, value: Any) -> None: ...
     def new_like(
         self,
