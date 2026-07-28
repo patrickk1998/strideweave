@@ -18,6 +18,7 @@ from strideweave import (
     Shape,
     Stride,
 )
+from strideweave.carriers.operation_helpers import execute_lowered_operation
 from strideweave.tensor import Tensor
 
 
@@ -245,67 +246,189 @@ def test_cpu_dispatch_op_returns_supported_operations():
         carrier.dispatch_op("unknown")
 
 
-def test_python_cpu_subclass_can_override_dispatch_hook():
-    calls = []
+def test_cpu_is_a_closed_carrier_implementation():
+    # CPU owns storage and capability claims stated in terms of its exact class,
+    # so it is extended by composition rather than by specialization.
+    with pytest.raises(TypeError, match="CPU is a closed carrier implementation"):
+        type("CustomCPU", (CPU,), {})
 
-    class CustomCPU(CPU):
-        def _dispatch_op(self, operation_name):
-            calls.append(operation_name)
+
+class CpuBackedCarrier(Carrier):
+    """An independent carrier composing a CPU carrier, as Evictable composes.
+
+    This is the supported way to build a backend on top of an existing one: a
+    sibling `Carrier` owning a CPU carrier and wrapping delegated operations in
+    an adapter that owns lowering, result wrapping, and the autograd boundary.
+    """
+
+    def __init__(self, size: int, dtype: DType = DType.Float32):
+        super().__init__()
+        self._inner = CPU(size, dtype=dtype)
+        self.dispatched: list[str] = []
+
+    @classmethod
+    def _from_inner(cls, inner: CPU) -> Any:
+        result = cls.__new__(cls)
+        Carrier.__init__(result)
+        result._inner = inner
+        result.dispatched = []
+        return result
+
+    def size(self) -> int:
+        return self._inner.size()
+
+    def dtype(self) -> DType:
+        return self._inner.dtype()
+
+    def get_value(self, index: int) -> Any:
+        return self._inner[index]
+
+    def _is_mutable(self) -> bool:
+        return True
+
+    def set_value(self, index: int, value: Any) -> None:
+        self._inner[index] = value
+
+    def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> Any:
+        materialized = list(values)
+        result = type(self)(len(materialized), dtype=self.dtype())
+        for index, value in enumerate(materialized):
+            result[index] = value
+        return result
+
+    def allocate_like(
+        self,
+        size: int,
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
+        empty: bool = False,
+    ) -> Any:
+        return type(self)(size, dtype=self.dtype() if dtype is None else dtype)
+
+    def scatter(
+        self,
+        to_scatter: Any,
+        scatter_onto: Any,
+        mapping: Any,
+        mapping_offset: int = 0,
+    ) -> None:
+        raise NotImplementedError("CpuBackedCarrier does not implement scatter")
+
+    def _dispatch_op(self, operation_name: str) -> Any:
+        self.dispatched.append(operation_name)
+        if operation_name == "custom_relu":
             return sw.GenericReLUOperation()
+        return CpuBackedOperation(self._inner.dispatch_op(operation_name))
 
-    carrier = CustomCPU(1)
+
+class CpuBackedOperation(Operation):
+    """Own one outer autograd node while delegating computation to CPU."""
+
+    def __init__(self, primary_operation: Operation) -> None:
+        super().__init__()
+        self.primary_operation = primary_operation
+
+    @staticmethod
+    def _lower_tensor(tensor: Any) -> Tensor:
+        if not isinstance(tensor, Tensor):
+            raise TypeError("operation tensor inputs must be Tensors")
+        if not isinstance(tensor.carrier, CpuBackedCarrier):
+            raise TypeError("CpuBackedOperation requires CpuBackedCarrier inputs")
+        return Tensor(tensor.carrier._inner, tensor.offset, tensor.layout)
+
+    @staticmethod
+    def _wrap_tensor(tensor: Any) -> Tensor:
+        if not isinstance(tensor, Tensor):
+            raise TypeError("nested operation must return a Tensor")
+        if type(tensor.carrier) is not CPU:
+            raise TypeError("nested operation result must be backed by CPU")
+        return Tensor(
+            CpuBackedCarrier._from_inner(tensor.carrier),
+            tensor.offset,
+            tensor.layout,
+        )
+
+    def _forward(self, *inputs: Any) -> Tensor:
+        lowered_arguments = tuple(
+            self._lower_tensor(value) if isinstance(value, Tensor) else value
+            for value in inputs
+        )
+        self.primary_operation.store_inputs(
+            *(value for value in lowered_arguments if isinstance(value, Tensor))
+        )
+        primary_result = execute_lowered_operation(
+            self.primary_operation, *lowered_arguments
+        )
+        return self._wrap_tensor(primary_result)
+
+    def backward(self, gradient: Any) -> tuple[Any, ...]:
+        lowered_gradient = self._lower_tensor(gradient)
+        primary_gradients = tuple(self.primary_operation.backward(lowered_gradient))
+        if len(primary_gradients) != len(self.inputs()):
+            raise ValueError("nested operation returned wrong number of gradients")
+        return tuple(
+            None if value is None else self._wrap_tensor(value)
+            for value in primary_gradients
+        )
+
+
+class InvalidDispatchCpuBackedCarrier(CpuBackedCarrier):
+    def _dispatch_op(self, operation_name: str) -> Any:
+        return object()
+
+
+def test_a_composed_carrier_supplies_its_own_operations():
+    carrier = CpuBackedCarrier(1)
+
     first = carrier.dispatch_op("custom_relu")
     second = carrier.dispatch_op("custom_relu")
 
-    assert calls == ["custom_relu", "custom_relu"]
+    assert carrier.dispatched == ["custom_relu", "custom_relu"]
     assert type(first) is sw.GenericReLUOperation
     assert type(second) is sw.GenericReLUOperation
     assert first is not second
     assert first._operation_name == "custom_relu"
-    assert first._dispatch_carrier_class is CustomCPU
+    assert first._dispatch_carrier_class is CpuBackedCarrier
 
 
-def test_python_cpu_subclass_without_override_uses_native_dispatch_fallback():
-    class CustomCPU(CPU):
-        pass
-
-    carrier = CustomCPU(1)
-    operation = carrier.dispatch_op("relu")
-
-    assert type(operation).__name__ == "_CPUReLUOperation"
-    assert operation._operation_name == "relu"
-    assert operation._dispatch_carrier_class is CustomCPU
-
-
-def test_python_cpu_subclass_override_can_delegate_to_native_dispatch_fallback():
-    calls = []
-
-    class CustomCPU(CPU):
-        def _dispatch_op(self, operation_name):
-            calls.append(operation_name)
-            if operation_name == "custom_relu":
-                return sw.GenericReLUOperation()
-            return super()._dispatch_op(operation_name)
-
-    carrier = CustomCPU(1)
+def test_a_composed_carrier_lowers_standard_operations_onto_cpu():
+    carrier = CpuBackedCarrier(2)
+    carrier[0] = -1.0
+    carrier[1] = 2.0
+    tensor = Tensor(carrier, 0, Layout(Shape(2), Stride(1)))
 
     custom = carrier.dispatch_op("custom_relu")
-    native = carrier.dispatch_op("relu")
+    result = sw.relu(tensor)
 
-    assert calls == ["custom_relu", "relu"]
+    assert carrier.dispatched == ["custom_relu", "relu"]
     assert type(custom) is sw.GenericReLUOperation
-    assert type(native).__name__ == "_CPUReLUOperation"
-    assert custom._dispatch_carrier_class is CustomCPU
-    assert native._dispatch_carrier_class is CustomCPU
+    assert type(result.carrier) is CpuBackedCarrier
+    assert tensor_values(result) == [0.0, 2.0]
+    adapter = result.autograd_ctx
+    assert type(adapter) is CpuBackedOperation
+    assert type(adapter.primary_operation).__name__ == "_CPUReLUOperation"
+    (lowered_input,) = adapter.primary_operation.inputs()
+    assert type(lowered_input.carrier) is CPU
+    # Only the composite-owned adapter is visible in the graph and dispatch
+    # metadata; the nested CPU operation remains behind lowered execution.
+    assert custom._dispatch_carrier_class is CpuBackedCarrier
+    assert adapter._dispatch_carrier_class is CpuBackedCarrier
+    assert adapter._operation_name == "relu"
+
+    gradient_carrier = CpuBackedCarrier(2)
+    gradient_carrier[0] = 3.0
+    gradient_carrier[1] = 4.0
+    result.backward(Tensor(gradient_carrier, 0, result.layout))
+
+    assert tensor.grad is not None
+    assert type(tensor.grad.carrier) is CpuBackedCarrier
+    assert tensor_values(tensor.grad) == [0.0, 4.0]
 
 
-def test_python_cpu_subclass_dispatch_hook_result_is_validated():
-    class InvalidCPU(CPU):
-        def _dispatch_op(self, operation_name):
-            return object()
-
+def test_a_composed_carrier_dispatch_hook_result_is_validated():
     with pytest.raises(TypeError, match="_dispatch_op must return an Operation"):
-        InvalidCPU(1).dispatch_op("invalid")
+        InvalidDispatchCpuBackedCarrier(1).dispatch_op("invalid")
 
 
 def test_cpu_allocate_like_allocates_requested_storage_and_dtype():
@@ -794,8 +917,6 @@ def test_cpu_int32_pow_handles_large_exponents():
     tensor = make_cpu_tensor([1, 0, -1], Layout(Shape(3), Stride(1)), DType.Int32)
 
     even = sw.pow(tensor, 2**30)
-    # The exponent is carried as float32, so the odd exponent must stay
-    # within float32's exact-integer range.
     odd = sw.pow(tensor, 2**24 - 1)
 
     assert even.dtype() is DType.Int32
