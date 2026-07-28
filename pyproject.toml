@@ -9,7 +9,10 @@ authors = [
     { name = "Patrick Krusiec", email = "patrick.krusiec@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+# NumPy supplies the reference binary32 mechanics for Generic Float32 storage
+# and arithmetic. It is imported lazily, on first concrete Float32 use, so a
+# CPU-only or Int32-only program never loads it.
+dependencies = ["numpy>=1.26"]
 
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",

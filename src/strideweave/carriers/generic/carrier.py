@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from operator import index as operator_index
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, final, runtime_checkable
 
-from ..base import Carrier
-from ..dtype import DType, validate_storage_dtype
+from ..base import Carrier, reject_carrier_subclass
+from ..dtype import (
+    DType,
+    accepts_storage_dtype,
+    storage_zero,
+    validate_storage_dtype,
+)
+from .numerics import (
+    is_concrete_simple_dtype,
+    normalize_storage_value,
+    normalize_storage_values,
+)
 
 
 @runtime_checkable
@@ -37,22 +47,60 @@ def _as_sized_indexable(
     return list(values)
 
 
-# Generic holds Python objects, so it accepts exactly the legacy opaque-storage
-# descriptors rather than any fixed-size simple dtype.
-_GENERIC_DTYPES = (DType.Any, DType.Floating)
+# Generic stores Python objects, so it accepts the legacy opaque-storage
+# descriptors, and it is the behavioral reference for the concrete simple
+# dtypes, so it accepts those too.
+_GENERIC_DTYPES = (DType.Any, DType.Floating, DType.Float32, DType.Int32)
 
 
 def _validate_generic_dtype(dtype: DType) -> DType:
     return validate_storage_dtype(dtype, carrier="Generic", accepted=_GENERIC_DTYPES)
 
 
+# A fresh concrete allocation starts at its dtype's zero, per RT004's
+# initialized storage contract; `storage_zero` is that rule's single source and
+# returns None for legacy opaque storage, which keeps its historical fill.
+
+
+def _normalized_storage(
+    values: Iterable[Any], dtype: DType, class_name: str, *, mutable: bool
+) -> _SizedIndexable:
+    """Build this carrier's backing storage for ``dtype``.
+
+    Concrete simple dtypes are normalized into a list this carrier owns, so no
+    caller-held alias can later place a value the encoding cannot represent, or
+    change stored values without the version counter observing it. Legacy opaque
+    storage keeps its documented aliasing behavior.
+    """
+    if not is_concrete_simple_dtype(dtype):
+        return _as_sized_indexable(values, class_name, mutable=mutable)
+    try:
+        supplied = list(values)
+    except TypeError as exc:
+        raise TypeError(f"{class_name} requires an iterable object") from exc
+    return normalize_storage_values(dtype, supplied, f"{class_name} value")
+
+
+@final
 class Generic(Carrier):
     """Python-backed carrier storage for generic StrideWeave tensors.
 
-    Generic stores Python objects rather than a fixed-size encoding, so it
-    accepts only the legacy opaque-storage descriptors: ``DType.Floating`` for
-    differentiable numeric values and ``DType.Any`` for arbitrary objects.
+    Generic accepts the legacy opaque-storage descriptors — ``DType.Floating``
+    for differentiable numeric values and ``DType.Any`` for arbitrary objects —
+    and the concrete simple dtypes ``DType.Float32`` and ``DType.Int32``, for
+    which it is StrideWeave's behavioral reference implementation.
+
+    Concrete storage is normalized and owned: a ``Float32`` carrier holds
+    binary32-exact floats and an ``Int32`` carrier holds in-range integers,
+    copied into storage this carrier owns. Legacy opaque storage continues to
+    alias a mutable container the caller supplied.
+
+    Generic is a closed implementation: extend StrideWeave with a sibling
+    ``Carrier`` rather than a specialization of this one.
     """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        reject_carrier_subclass("Generic")
 
     def __init__(
         self,
@@ -64,8 +112,8 @@ class Generic(Carrier):
         super().__init__()
         self._mutable = bool(mutable)
         self._dtype = _validate_generic_dtype(dtype)
-        self._values: _SizedIndexable | None = _as_sized_indexable(
-            values, "Generic", mutable=self._mutable
+        self._values: _SizedIndexable | None = _normalized_storage(
+            values, self._dtype, "Generic", mutable=self._mutable
         )
 
     def _require_values(self) -> _SizedIndexable:
@@ -98,8 +146,17 @@ class Generic(Carrier):
     def _is_mutable(self) -> bool:
         return self._mutable
 
+    def _supports_storage_dtype(self, dtype: DType) -> bool:
+        """Report the dtypes Generic can allocate, whatever it holds now.
+
+        The same accepted set its constructor validates against, so the
+        reference backend cannot advertise storage it would then refuse.
+        """
+        return accepts_storage_dtype(dtype, _GENERIC_DTYPES)
+
     def set_value(self, index: int, value: Any) -> None:
-        self._require_mutable_values()[index] = value
+        values = self._require_mutable_values()
+        values[index] = normalize_storage_value(self._dtype, value)
         self._increment_version()
 
     def new_like(
@@ -109,10 +166,6 @@ class Generic(Carrier):
         mutable: bool = True,
         dtype: DType | None = None,
     ) -> Generic:
-        if type(self) is not Generic:
-            raise NotImplementedError(
-                "Generic carrier factory only supports exact Generic carriers"
-            )
         return Generic(
             values, mutable=mutable, dtype=self._dtype if dtype is None else dtype
         )
@@ -129,10 +182,14 @@ class Generic(Carrier):
         normalized_size = operator_index(size)
         if normalized_size < 0:
             raise ValueError("Generic allocation size must be non-negative")
+        allocated_dtype = self._dtype if dtype is None else dtype
+        # A concrete carrier's storage always holds representable values, so
+        # fresh allocations start at that dtype's zero rather than at None.
+        initial: Any = storage_zero(allocated_dtype)
         return Generic(
-            [None] * normalized_size,
+            [initial] * normalized_size,
             mutable=mutable,
-            dtype=self._dtype if dtype is None else dtype,
+            dtype=allocated_dtype,
         )
 
     def scatter(

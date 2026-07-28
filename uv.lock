@@ -428,6 +428,9 @@ wheels = [
 name = "strideweave"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "numpy" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -440,6 +443,7 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=1.26" }]
 
 [package.metadata.requires-dev]
 dev = [

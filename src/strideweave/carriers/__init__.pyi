@@ -13,3 +13,7 @@ from .evictable import Evictable as Evictable
 from .evictable import EvictableOperation as EvictableOperation
 from .file_backed import FileBacked as FileBacked
 from .generic import Generic as Generic
+from .operation_capability import DependentCarrier as DependentCarrier
+from .operation_capability import OperandCapability as OperandCapability
+from .operation_capability import OperationCapability as OperationCapability
+from .operation_capability import UnsupportedOperationPlan as UnsupportedOperationPlan

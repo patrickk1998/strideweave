@@ -53,3 +53,61 @@ def validate_storage_dtype(
         )
     expected = _join_alternatives([f"DType.{candidate.name}" for candidate in accepted])
     raise ValueError(f"{carrier} dtype must be {expected}")
+
+
+def accepts_storage_dtype(dtype: DType, accepted: tuple[DType, ...]) -> bool:
+    """Report whether ``accepted`` contains ``dtype``, matched by identity.
+
+    The boolean counterpart of :func:`validate_storage_dtype`, for the
+    structural question a carrier answers about what it could allocate rather
+    than the refusal it raises about what it was handed. Both read the same
+    accepted set, so what a carrier reports and what it accepts cannot drift.
+
+    Args:
+        dtype: The descriptor to look for.
+        accepted: Descriptors this carrier can store.
+
+    Returns:
+        ``True`` when ``dtype`` is one of the accepted descriptors.
+
+    Examples:
+        >>> from strideweave.carriers.dtype import DType, accepts_storage_dtype
+        >>> accepts_storage_dtype(DType.Int32, (DType.Float32, DType.Int32))
+        True
+    """
+    # Descriptors are registry singletons (SW002): identity, never equality, so
+    # an object with a spoofed __eq__ cannot claim to be storable here.
+    return any(dtype is candidate for candidate in accepted)
+
+
+def storage_zero(dtype: DType) -> object:
+    """Return the value a fresh or unaddressed slot of ``dtype`` holds.
+
+    Concrete simple storage is always representable, so an allocation that has
+    not been written to, and a physical slot no logical index of a layout
+    addresses, both hold that dtype's zero rather than a placeholder object.
+    Legacy opaque storage (``DType.Any``, ``DType.Floating``) stores arbitrary
+    Python objects and has no zero, so it keeps ``None``.
+
+    Args:
+        dtype: The storage dtype whose zero is wanted.
+
+    Returns:
+        ``0.0`` for ``DType.Float32``, ``0`` for ``DType.Int32``, and ``None``
+        for every dtype without a defined stored zero.
+
+    Examples:
+        >>> from strideweave.carriers.dtype import DType, storage_zero
+        >>> storage_zero(DType.Int32)
+        0
+        >>> storage_zero(DType.Floating) is None
+        True
+    """
+    # Descriptors are identity singletons (SW002), and the built-in registry is
+    # installed after this module is imported, so the comparison happens here
+    # rather than in a module-level table.
+    if dtype is DType.Float32:
+        return 0.0
+    if dtype is DType.Int32:
+        return 0
+    return None

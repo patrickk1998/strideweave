@@ -13,6 +13,9 @@ from .carriers import (
     CompoundDType as CompoundDType,
 )
 from .carriers import (
+    DependentCarrier as DependentCarrier,
+)
+from .carriers import (
     DType as DType,
 )
 from .carriers import (
@@ -31,10 +34,19 @@ from .carriers import (
     Level as Level,
 )
 from .carriers import (
+    OperandCapability as OperandCapability,
+)
+from .carriers import (
+    OperationCapability as OperationCapability,
+)
+from .carriers import (
     SimpleDType as SimpleDType,
 )
 from .carriers import (
     SymbolicBits as SymbolicBits,
+)
+from .carriers import (
+    UnsupportedOperationPlan as UnsupportedOperationPlan,
 )
 from .carriers import (
     Whole as Whole,
@@ -73,6 +85,7 @@ _CORE_EXPORTS = [
     "CompoundDType",
     "DType",
     "DTypeCategory",
+    "DependentCarrier",
     "Evictable",
     "FileBacked",
     "Generic",
@@ -80,6 +93,8 @@ _CORE_EXPORTS = [
     "Level",
     "Module",
     "Node",
+    "OperandCapability",
+    "OperationCapability",
     "Parameter",
     "Shape",
     "SimpleDType",
@@ -88,6 +103,7 @@ _CORE_EXPORTS = [
     "Tensor",
     "Tiler",
     "Tree",
+    "UnsupportedOperationPlan",
     "Whole",
     "WholeExtent",
 ]
