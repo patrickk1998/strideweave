@@ -8,7 +8,7 @@ from numbers import Number
 from typing import Any, cast
 
 from ..layout import Layout, Shape, Stride
-from .dtype import DType
+from .dtype import DType, storage_zero
 
 _operation = import_module("strideweave._operation")
 Operation = cast(type[Any], _operation.Operation)
@@ -101,14 +101,21 @@ def _layout_from_modes(shapes: Iterable[Any], strides: Iterable[Any]) -> Layout:
 
 
 def _physical_values_for_layout(
-    layout: Layout, logical_values: Iterable[Any]
+    layout: Layout, logical_values: Iterable[Any], hole: Any = None
 ) -> list[Any]:
+    """Place logical values at their physical slots, filling the holes.
+
+    A layout whose strides leave gaps has physical slots no logical index
+    addresses. Those slots still have to hold something the storage dtype can
+    represent, so concrete storage fills them with that dtype's zero; legacy
+    opaque storage keeps ``None``.
+    """
     values = list(logical_values)
     if len(values) != layout.shape.logical_size:
         raise ValueError("Logical values length must match layout size")
 
     cache = layout._cache
-    physical_values: list[Any] = [None] * cache.cosize
+    physical_values: list[Any] = [hole] * cache.cosize
     for logical_index, value in enumerate(values):
         physical_values[cache.get_index(logical_index)] = value
     return physical_values
@@ -122,7 +129,10 @@ def _tensor_with_layout_like(
 ) -> Any:
     from ..tensor import Tensor
 
-    values = _physical_values_for_layout(layout, logical_values)
+    storage_dtype = target.carrier.dtype() if dtype is None else dtype
+    values = _physical_values_for_layout(
+        layout, logical_values, storage_zero(storage_dtype)
+    )
     if dtype is None:
         carrier = target.carrier.new_like(values)
     else:

@@ -1,5 +1,7 @@
+import ast
 from collections.abc import Callable, Iterable
 from importlib import import_module
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 import pytest
@@ -9,11 +11,14 @@ from strideweave import (
     CPU,
     Carrier,
     DType,
+    Evictable,
+    FileBacked,
     Generic,
     Layout,
     Shape,
     Stride,
 )
+from strideweave.carriers.base import CLOSED_CARRIER_MESSAGE
 from strideweave.tensor import Tensor
 
 
@@ -153,6 +158,121 @@ def test_carrier_dispatch_policy_rejects_cached_dispatched_operation():
     assert first._operation_name == "first"
     assert first._dispatch_carrier_class is CachedDispatchCarrier
     assert first.ctx == {"state": "retained"}
+
+
+# --- The extension boundary --------------------------------------------------
+#
+# `Carrier` is the open extension interface; the shipped concrete
+# implementations are closed. Each of them states its factories, storage
+# normalization, dispatch metadata and capability declarations in terms of its
+# exact class, so a specialization would inherit claims it cannot honor.
+
+
+CLOSED_CARRIERS = (Generic, CPU, FileBacked, Evictable)
+
+
+@pytest.mark.parametrize("carrier_class", CLOSED_CARRIERS)
+def test_a_concrete_carrier_cannot_be_subclassed(carrier_class):
+    with pytest.raises(TypeError, match="closed carrier implementation"):
+        type(f"Custom{carrier_class.__name__}", (carrier_class,), {})
+
+
+def test_a_closed_carrier_states_one_refusal():
+    # Python carriers and the native CPU binding repeat the same wording, so a
+    # user reads one instruction wherever they hit the boundary.
+    messages = []
+    for carrier_class in CLOSED_CARRIERS:
+        with pytest.raises(TypeError) as refusal:
+            type("Custom", (carrier_class,), {})
+        messages.append(str(refusal.value))
+
+    assert messages == [
+        CLOSED_CARRIER_MESSAGE.format(name=carrier_class.__name__)
+        for carrier_class in CLOSED_CARRIERS
+    ]
+
+
+SOURCE_ROOT = Path(__file__).parents[1] / "src"
+
+# The package a user imports each closed carrier from, which is the declaration a
+# type checker reads.
+PUBLIC_CARRIER_MODULES = {
+    Generic: "strideweave.carriers.generic",
+    CPU: "strideweave.carriers.cpu",
+    FileBacked: "strideweave.carriers.file_backed",
+    Evictable: "strideweave.carriers.evictable",
+}
+
+
+def _stub_declaration(module: str, name: str) -> tuple[Path, ast.ClassDef]:
+    """Return the stub and class statement ``module``'s ``name`` resolves to.
+
+    A facade re-exports rather than redeclares, so the search follows the same
+    relative imports a type checker follows from the imported package.
+    """
+    directory = SOURCE_ROOT / Path(*module.split("."))
+    stub = (
+        directory / "__init__.pyi"
+        if directory.is_dir()
+        else directory.with_suffix(".pyi")
+    )
+    assert stub.is_file(), stub
+    tree = ast.parse(stub.read_text(encoding="utf-8"), filename=str(stub))
+
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return stub, node
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and any(
+            alias.name == name for alias in node.names
+        ):
+            assert node.level == 1 and node.module, ast.unparse(node)
+            return _stub_declaration(f"{module}.{node.module}", name)
+    raise AssertionError(f"{stub} declares no {name}")
+
+
+@pytest.mark.parametrize("carrier_class", CLOSED_CARRIERS)
+def test_a_closed_carrier_is_final_on_its_public_import_path(carrier_class):
+    # Runtime closure and the static declaration must agree wherever a user
+    # imports the class from: a facade stub that omits `@final` lets a typed user
+    # write a subclass with no diagnostic and meet the runtime refusal instead.
+    stub, declaration = _stub_declaration(
+        PUBLIC_CARRIER_MODULES[carrier_class], carrier_class.__name__
+    )
+
+    assert "final" in {
+        ast.unparse(decorator) for decorator in declaration.decorator_list
+    }, stub
+
+
+@pytest.mark.parametrize("carrier_class", CLOSED_CARRIERS)
+def test_every_stub_declaring_a_closed_carrier_marks_it_final(carrier_class):
+    # The facade is not the only declaration a checker may read: the native stub
+    # declares CPU too, and every declaration of a closed class must agree.
+    declarations = {
+        stub: node
+        for stub in SOURCE_ROOT.rglob("*.pyi")
+        for node in ast.parse(stub.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.ClassDef) and node.name == carrier_class.__name__
+    }
+
+    assert declarations
+    for stub, declaration in declarations.items():
+        assert "final" in {
+            ast.unparse(decorator) for decorator in declaration.decorator_list
+        }, stub
+
+
+def test_the_carrier_base_stays_open_to_implementation():
+    # Closing the concrete implementations must not close the interface: an
+    # independent carrier still implements storage and dispatch.
+    carrier = DispatchingPythonCarrier([1.0])
+
+    assert isinstance(carrier, Carrier)
+    assert carrier.size() == 1
+    assert carrier.dispatch_op("custom")._dispatch_carrier_class is (
+        DispatchingPythonCarrier
+    )
 
 
 def test_generic_data_dispatch_op_returns_supported_operations():
@@ -360,7 +480,7 @@ def test_generic_data_new_like_preserves_or_overrides_dtype():
 
 def test_generic_data_rejects_invalid_dtype():
     with pytest.raises(ValueError, match="Generic dtype must be"):
-        Generic([1], dtype=DType.Int32)
+        Generic([1], dtype=DType.Int8)
 
     with pytest.raises(TypeError):
         Generic([1], dtype="Floating")  # type: ignore[arg-type]
