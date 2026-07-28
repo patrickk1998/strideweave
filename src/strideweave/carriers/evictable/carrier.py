@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager
-from typing import Any, cast
+from typing import Any, cast, final
 
-from ..base import Carrier
+from ..base import Carrier, reject_carrier_subclass
 from ..dtype import DType
+from ..operation_capability import DependentCarrier, OperationCapability
 from ..operation_helpers import execute_lowered_operation
 
 
@@ -32,7 +33,8 @@ def _owner_access(carrier: Carrier, token: int):
         carrier._end_owner_access(token)
 
 
-class Evictable(Carrier):
+@final
+class Evictable(DependentCarrier):
     """Compose primary and secondary carriers into an evictable memory hierarchy.
 
     The constructor takes exclusive ownership of both tiers. Retained aliases
@@ -42,6 +44,17 @@ class Evictable(Carrier):
     moves the complete physical storage into the secondary tier, while
     ``promote`` restores it to fresh primary-class storage. Both transitions
     bypass move autograd.
+
+    What a hierarchy can execute depends on the carriers it was handed, so
+    Evictable is a ``DependentCarrier``: at the end of construction it freezes
+    the plans its own primary executes and whose results both tiers could
+    store. Two hierarchies of this same class therefore advertise different
+    plans, and a plan only the primary could hold is refused before any work
+    begins rather than producing a result the hierarchy could never evict.
+
+    Evictable is itself the composition pattern a new backend follows, and is a
+    closed implementation: extend StrideWeave with a sibling ``Carrier`` that
+    owns its tiers rather than with a specialization of this one.
 
     Args:
         primary: Live carrier containing the initial values and defining normal
@@ -68,6 +81,9 @@ class Evictable(Carrier):
         >>> carrier.primary.is_mutable()
         False
     """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        reject_carrier_subclass("Evictable")
 
     def __init__(self, primary: Carrier, secondary: Carrier) -> None:
         super().__init__()
@@ -113,6 +129,17 @@ class Evictable(Carrier):
         self._secondary = secondary
         self._secondary_token = secondary_token
         self._evicted = False
+        try:
+            # The last step of construction: the tiers are installed and valid,
+            # so what this hierarchy executes is now decided. A failure here
+            # leaves no usable hierarchy, so the tiers it claimed go back to
+            # their previous owners rather than staying locked to an object
+            # nobody received.
+            self._finalize_dependent_capabilities()
+        except Exception:
+            secondary._relinquish_ownership(secondary_token)
+            primary._relinquish_ownership(primary_token)
+            raise
 
     def __del__(self) -> None:
         for carrier_name, token_name in (
@@ -168,6 +195,39 @@ class Evictable(Carrier):
 
     def _is_mutable(self) -> bool:
         return self._mutable
+
+    def _generate_operation_capabilities(self) -> tuple[OperationCapability, ...]:
+        """Return the plans this hierarchy executes and could keep.
+
+        A hierarchy executes on its promoted primary, so its reach starts as
+        that instance's own reach — asked of the carrier, so a primary that is
+        itself a dependent carrier composes through its snapshot rather than
+        through its class. It is then narrowed by one structural condition: the
+        hierarchy must be able to store the result in *both* tiers, because a
+        result only the primary could hold would be a value it could never
+        evict.
+
+        Nothing here rewrites a plan, chooses a promotion, or inspects a carrier
+        class: the entries are the primary's own, filtered.
+        """
+        return tuple(
+            entry
+            for entry in self._primary.operation_capabilities()
+            if self.supports_storage_dtype(entry.output)
+        )
+
+    def _supports_storage_dtype(self, dtype: DType) -> bool:
+        """Report the dtypes both tiers can store.
+
+        A hierarchy must be able to hold its values in either tier, so it
+        supports the intersection: a dtype only the promoted tier can allocate
+        could not survive an eviction. The answer is structural and asks each
+        tier the same structural question, so residency, ownership, and release
+        do not change it.
+        """
+        return self._primary.supports_storage_dtype(
+            dtype
+        ) and self._secondary.supports_storage_dtype(dtype)
 
     def is_evicted(self) -> bool:
         """Return whether values currently reside in secondary storage.

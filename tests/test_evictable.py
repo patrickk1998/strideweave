@@ -765,3 +765,287 @@ def test_scalar_implicit_backward_uses_evictable_gradient():
     assert tensor.grad is not None
     assert isinstance(tensor.grad.carrier, Evictable)
     assert values(tensor.grad) == [2.0]
+
+
+# --- Capabilities a hierarchy generates for itself ---------------------------
+#
+# What an Evictable can execute depends on the carriers it was handed, so it is
+# a dependent carrier: it freezes the plans its own primary executes and whose
+# results both tiers could store.
+
+
+class _SingleDTypeCarrier(sw.Carrier):
+    """A list-backed carrier that can allocate only the dtype it was built for.
+
+    It overrides no storage-dtype hook, so it gets ``Carrier``'s conservative
+    default. That makes it a secondary tier narrower than any shipped one,
+    which is what distinguishes "the primary can execute this plan" from "this
+    hierarchy could keep the result".
+    """
+
+    def __init__(self, dtype, size=0, *, mutable=True):
+        super().__init__()
+        self._dtype = dtype
+        self._values = [0 if dtype is DType.Int32 else 0.0] * size
+        self._mutable = mutable
+        self.allocations = []
+
+    def size(self):
+        return len(self._values)
+
+    def dtype(self):
+        return self._dtype
+
+    def _is_mutable(self):
+        return self._mutable
+
+    def get_value(self, index):
+        return self._values[index]
+
+    def set_value(self, index, value):
+        self._values[index] = value
+
+    def new_like(self, values, *, mutable=True, dtype=None):
+        materialized = list(values)
+        carrier = _SingleDTypeCarrier(
+            self._dtype if dtype is None else dtype, mutable=mutable
+        )
+        carrier._values = materialized
+        return carrier
+
+    def allocate_like(self, size, *, mutable=True, dtype=None, empty=False):
+        requested = self._dtype if dtype is None else dtype
+        self.allocations.append(requested)
+        return _SingleDTypeCarrier(requested, size, mutable=mutable)
+
+    def scatter(self, to_scatter, scatter_onto, mapping, mapping_offset=0):
+        raise NotImplementedError
+
+
+def cpu_hierarchy(dtype, values=(1, 2, 3, 4)):
+    return Evictable(make_cpu_carrier(list(values), dtype), FileBacked(dtype=dtype))
+
+
+def keepable(primary, secondary):
+    """Return the primary's plans whose result both tiers could store."""
+    return tuple(
+        entry
+        for entry in primary.operation_capabilities()
+        if primary.supports_storage_dtype(entry.output)
+        and secondary.supports_storage_dtype(entry.output)
+    )
+
+
+def test_a_hierarchy_advertises_what_its_primary_executes_and_it_can_keep():
+    primary = make_cpu_carrier([1.0, 2.0, 3.0, 4.0])
+    secondary = FileBacked(dtype=DType.Float32)
+    expected = keepable(primary, secondary)
+
+    hierarchy = Evictable(primary, secondary)
+
+    assert hierarchy.operation_capabilities() == expected
+    assert expected
+    # The class declares nothing: this answer belongs to the instance.
+    assert (
+        sw.carriers.operation_capability.capabilities_for_carrier_class(Evictable) == ()
+    )
+
+
+def test_a_hierarchy_drops_plans_whose_result_it_could_not_evict():
+    # The primary executes exp(Int32) -> Float32, but this secondary can only
+    # store Int32, so the hierarchy could never evict that result and does not
+    # advertise the plan.
+    primary = make_cpu_carrier([1, 2, 3, 4], DType.Int32)
+    hierarchy = Evictable(primary, _SingleDTypeCarrier(DType.Int32, 4))
+
+    outputs = {entry.output for entry in hierarchy.operation_capabilities()}
+
+    assert outputs == {DType.Int32}
+    assert DType.Float32 in {entry.output for entry in primary.operation_capabilities()}
+    assert hierarchy.operation_capabilities("relu")
+    assert hierarchy.operation_capabilities("exp") == ()
+
+
+def test_two_hierarchies_of_one_class_advertise_different_plans():
+    narrow = Evictable(
+        make_cpu_carrier([1, 2, 3, 4], DType.Int32),
+        _SingleDTypeCarrier(DType.Int32, 4),
+    )
+    wide = cpu_hierarchy(DType.Int32)
+
+    assert narrow.operation_capabilities() != wide.operation_capabilities()
+    assert set(narrow.operation_capabilities()) < set(wide.operation_capabilities())
+
+
+def test_a_nested_hierarchy_composes_through_its_primary_instance_snapshot():
+    inner = Evictable(
+        make_cpu_carrier([1, 2, 3, 4], DType.Int32),
+        _SingleDTypeCarrier(DType.Int32, 4),
+    )
+
+    outer = Evictable(inner, _SingleDTypeCarrier(DType.Int32, 4))
+
+    # The outer hierarchy asked its primary, which is itself dependent, so the
+    # inner instance's narrowing carries through without either one inspecting
+    # a carrier class.
+    assert outer.operation_capabilities() == inner.operation_capabilities()
+
+
+def test_a_hierarchy_executes_every_plan_it_advertises():
+    # Advertised support and executable support are one set, through real
+    # tensors: this is what the old empty Evictable declaration got wrong, and
+    # it is why relu on an Int32 hierarchy now runs instead of being reported
+    # as unsupported.
+    hierarchy = cpu_hierarchy(DType.Float32)
+    advertised = hierarchy.operation_capabilities()
+    executed = 0
+
+    for capability in advertised:
+        arguments = []
+        for operand in capability.operands:
+            if operand.role.value == "tensor":
+                carrier = cpu_hierarchy(operand.dtype)
+                layout = (
+                    Layout(Shape([2, 2]), Stride([1, 2]))
+                    if capability.operation in ("reduce", "matmul")
+                    else flat_layout(4)
+                )
+                arguments.append(Tensor(carrier, 0, layout))
+            else:
+                arguments.append(3 if operand.convert_to is DType.Int32 else 0.5)
+        result = getattr(sw, capability.operation)(*arguments)
+        executed += 1
+
+        assert result.dtype() is capability.output
+        assert isinstance(result.carrier, Evictable)
+    assert executed == len(advertised)
+
+
+def test_an_unadvertised_plan_is_refused_before_any_work():
+    secondary = _SingleDTypeCarrier(DType.Int32, 4)
+    hierarchy = Evictable(make_cpu_carrier([1, 2, 3, 4], DType.Int32), secondary)
+    tensor = make_tensor(hierarchy)
+    version = hierarchy.version
+    secondary.allocations.clear()
+
+    with pytest.raises(NotImplementedError, match="Evictable declares no"):
+        sw.exp(tensor)
+
+    # Nothing was lowered, allocated, or computed: the refusal happened at the
+    # hierarchy's own gate, not after its primary produced a result.
+    assert secondary.allocations == []
+    assert hierarchy.version == version
+    assert hierarchy.is_evicted() is False
+
+
+def test_capabilities_are_structural_across_residency_and_release():
+    hierarchy = cpu_hierarchy(DType.Int32)
+    advertised = hierarchy.operation_capabilities()
+
+    hierarchy.evict()
+    evicted = hierarchy.operation_capabilities()
+    hierarchy.promote()
+    promoted = hierarchy.operation_capabilities()
+    hierarchy.release()
+
+    assert evicted == advertised
+    assert promoted == advertised
+    assert hierarchy.operation_capabilities() == advertised
+
+
+def test_results_and_gradients_advertise_their_own_capabilities():
+    tensor = make_tensor(cpu_hierarchy(DType.Float32, (2.0, 3.0, 4.0, 5.0)))
+    expected = evictable_carrier(tensor).operation_capabilities()
+
+    result = sw.mul(tensor, 2)
+    result.backward(make_tensor(cpu_hierarchy(DType.Float32, (1.0, 1.0, 1.0, 1.0))))
+
+    assert evictable_carrier(result).operation_capabilities() == expected
+    assert tensor.grad is not None
+    assert evictable_carrier(tensor.grad).operation_capabilities() == expected
+
+
+def test_a_legacy_opaque_hierarchy_keeps_its_documented_behavior():
+    # Legacy opaque storage is outside simple-dtype planning: this hierarchy
+    # resolves no plan for its own tensors, so the gate does not apply and the
+    # documented legacy path still runs. Its advertised set still describes the
+    # implementation rather than the dtype this instance happens to hold.
+    primary = Generic([1.0, 2.0])
+    secondary = Generic([0.0, 0.0])
+    expected = keepable(primary, secondary)
+    hierarchy = Evictable(primary, secondary)
+    tensor = Tensor(hierarchy, 0, flat_layout(2))
+
+    assert hierarchy.dtype() is DType.Floating
+    assert hierarchy.operation_capabilities() == expected
+
+    result = sw.relu(tensor)
+
+    assert isinstance(result.carrier, Evictable)
+    assert result.dtype() is DType.Floating
+    assert values(result) == [1.0, 2.0]
+
+
+def test_a_failed_capability_generation_leaves_no_owned_tiers():
+    class _Unaskable(_SingleDTypeCarrier):
+        """A tier that cannot answer the structural question generation asks."""
+
+        def _supports_storage_dtype(self, dtype):
+            raise RuntimeError("storage support is unavailable")
+
+    primary = make_cpu_carrier([1.0])
+    secondary = _Unaskable(DType.Float32, 1)
+
+    with pytest.raises(RuntimeError, match="storage support is unavailable"):
+        Evictable(primary, secondary)
+
+    # Generation is the last step of construction, and its failure leaves no
+    # usable hierarchy, so neither tier stays locked to an object nobody got.
+    assert not primary.is_owned()
+    assert not secondary.is_owned()
+    assert primary.is_mutable()
+
+
+@pytest.mark.parametrize(
+    ("operation", "extra_tensor", "message"),
+    [
+        ("relu", True, "relu takes 1 operands, got 2"),
+        ("mul", True, "scalar must be a real Python number"),
+        ("pow", True, "exponent must be a real Python number"),
+        ("add", False, "add takes 2 operands, got 1"),
+    ],
+    ids=["arity", "scalar-position", "exponent-position", "missing-operand"],
+)
+def test_an_operand_shape_the_operation_does_not_accept_is_refused_at_the_gate(
+    operation, extra_tensor, message
+):
+    # A registered operation is always planned, so operands its shape does not
+    # accept are refused by the central resolver at this hierarchy's own gate
+    # rather than passed down to be diagnosed by whichever primary operation
+    # happened to receive them.
+    def narrow_hierarchy():
+        tier = _SingleDTypeCarrier(DType.Int32, 4)
+        return Evictable(make_cpu_carrier([1, 2, 3, 4], DType.Int32), tier), tier
+
+    hierarchy, secondary = narrow_hierarchy()
+    tensor = make_tensor(hierarchy)
+    arguments = (
+        (tensor, make_tensor(narrow_hierarchy()[0])) if extra_tensor else (tensor,)
+    )
+    secondary.allocations.clear()
+
+    with pytest.raises(TypeError, match=message):
+        hierarchy.dispatch_op(operation).forward(*arguments)
+
+    assert secondary.allocations == []
+    assert hierarchy.version == 0
+
+
+def test_an_operation_the_policy_does_not_describe_is_not_planned():
+    # Only a registered operation is planned; anything else keeps whatever the
+    # primary carrier does with it, which for an unknown name is its own
+    # dispatch refusal.
+    hierarchy = cpu_hierarchy(DType.Int32)
+
+    with pytest.raises(NotImplementedError, match="no_such_operation"):
+        hierarchy.dispatch_op("no_such_operation")

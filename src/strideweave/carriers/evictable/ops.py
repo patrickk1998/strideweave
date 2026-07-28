@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+from functools import cache
 from typing import Any
 
+from ..dtype import SimpleDType
 from ..operation_helpers import Operation, execute_lowered_operation
+from ..operation_policy import (
+    OperationPlan,
+    registered_operations,
+    resolve_operation_plan,
+)
 from .carrier import Evictable
+
+
+@cache
+def _planned_operations() -> frozenset[str]:
+    """Return the operation names the central policy resolves plans for."""
+    return frozenset(spec.name for spec in registered_operations())
 
 
 class EvictableOperation(Operation):
@@ -110,10 +123,49 @@ class EvictableOperation(Operation):
 
         return tuple(value for value in inputs if isinstance(value, Tensor))
 
+    def _planned_operation(self, inputs: tuple[Any, ...]) -> OperationPlan | None:
+        """Resolve the logical plan this call runs, or ``None`` for legacy storage.
+
+        The plan is the one the central policy resolves from this operation's
+        name and the *outer* operands, which is what the hierarchy must be able
+        to execute and keep.
+
+        Exactly two things are outside simple-dtype planning and keep their
+        documented behavior: an operation the policy registry does not describe,
+        and legacy opaque operand storage. Everything else is planned, so an
+        operand list the operation's own shape does not accept — the wrong
+        count, a tensor where a weak scalar belongs, a scalar where a tensor
+        belongs — is refused by the central resolver here rather than passed
+        down to be diagnosed by whichever primary operation happens to receive
+        it.
+        """
+        from ...core.tensor import Tensor
+
+        operation = self._primary_operation._operation_name
+        if operation is None or operation not in _planned_operations():
+            return None
+        operands: list[Any] = []
+        for value in inputs:
+            if not isinstance(value, Tensor):
+                operands.append(value)
+                continue
+            dtype = value.carrier.dtype()
+            if not isinstance(dtype, SimpleDType):
+                return None
+            operands.append(dtype)
+        return resolve_operation_plan(operation, *operands)
+
     def _forward(self, *inputs: Any) -> Any:
         from ...core.tensor import Tensor
 
         hierarchy = self._require_compatible(inputs)
+        plan = self._planned_operation(inputs)
+        if plan is not None:
+            # Before any lowering, nested allocation, or kernel work: a plan
+            # this hierarchy does not advertise is refused once, here, rather
+            # than after the primary has produced a result no hierarchy could
+            # hold.
+            hierarchy.require_operation_plan(plan)
         lowered_arguments = tuple(
             self._lower_tensor(value) if isinstance(value, Tensor) else value
             for value in inputs
