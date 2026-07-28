@@ -32,6 +32,12 @@ public:
         return _is_mutable() && (!is_owned() || has_owner_access());
     }
 
+    // Whether this carrier implementation can store `dtype` at all. Structural
+    // and allocation-free: it neither reads nor changes size, mutability,
+    // ownership, residency, release state, or stored values. Defined in
+    // `_carrier.cpp`, where the dtype model is reachable.
+    bool supports_storage_dtype(py::object dtype) const;
+
     bool is_owned() const { return ownership_token_ != 0; }
 
     bool has_owner_access() const {
@@ -141,6 +147,15 @@ protected:
     // Backends implement storage capability here. Public is_mutable() also
     // applies the ownership guard and must not be overridden by carriers.
     virtual bool _is_mutable() const { return false; }
+
+    // Backends widen their accepted allocation dtypes here. The conservative
+    // default claims only what this instance already stores, which is the most
+    // any carrier can be assumed to allocate without saying so. Public
+    // supports_storage_dtype() owns the input validation and must not be
+    // overridden by carriers.
+    virtual bool _supports_storage_dtype(py::object dtype) const {
+        return dtype.is(this->dtype());
+    }
 
     virtual void set_value(Index, py::object) {
         throw std::runtime_error("Carrier is not mutable");

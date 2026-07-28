@@ -1,9 +1,10 @@
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, final
 
 from ..base import Carrier
 from ..dtype import DType
 
+@final
 class CPU(Carrier):
     def __init__(
         self,
