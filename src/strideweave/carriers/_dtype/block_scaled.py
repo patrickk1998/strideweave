@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .contracts import _BLOCK_SCALED_OWNED, _ContractSpec, _declare_contract
 from .model import CompoundDType, DType, SimpleDType, _referenced_structure
+from .representation_rule import LevelExtent
 from .structure import Whole, WholeExtent, _encoded_leaf
 
 
@@ -123,6 +124,10 @@ class BlockScaledDType(CompoundDType, abstract=False):
             name,
             supertype=DType.Any,
             simple_types=(element, *(level.scale for level in levels)),
+            representation_rules=tuple(
+                LevelExtent(position, level.block)
+                for position, level in enumerate(levels)
+            ),
         )
         self._element = element
         self._levels = levels

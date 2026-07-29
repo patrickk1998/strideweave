@@ -282,33 +282,63 @@ std::int32_t sequence_device_component(py::sequence device, std::size_t index) {
     return py::cast<std::int32_t>(device[index]);
 }
 
+py::object representation_module() {
+    return py::module_::import("strideweave.core._representation");
+}
+
+py::object make_tensor_representation(py::object carrier, Index offset,
+                                      py::object layout) {
+    py::object representation = representation_module();
+    py::object dtype = carrier.attr("dtype")();
+    py::object subtensor =
+        representation.attr("Subtensor")(dtype, carrier, py::int_(offset), layout);
+    return representation.attr("TensorRepresentation")(
+        dtype, py::make_tuple(std::move(subtensor)), py::tuple());
+}
+
+struct FromRepresentationTag {};
+
 class Tensor {
 public:
     Tensor(py::object carrier, Index offset, py::object layout)
-        : carrier_(std::move(carrier)), offset_(offset), layout_(std::move(layout)),
-          autograd_ctx_(py::none()), grad_(py::none()), retain_grad_(false) {
-        if (offset_ < 0) {
-            throw py::value_error("Tensor offset must be non-negative");
-        }
+        : Tensor(
+              make_tensor_representation(std::move(carrier), offset, std::move(layout)),
+              FromRepresentationTag{}) {}
 
-        const Index carrier_size = py::cast<Index>(carrier_.attr("size")());
-        const Index storage_size = strideweave::layout_index::cosize(layout_);
-        const bool storage_exceeds_carrier = carrier_size < 0 ||
-                                             offset_ > carrier_size ||
-                                             storage_size > carrier_size - offset_;
-        if (storage_exceeds_carrier) {
-            throw py::value_error("Tensor storage exceeds carrier size");
+    static Tensor from_representation(py::object representation) {
+        py::object expected = representation_module().attr("TensorRepresentation");
+        if (!py::isinstance(representation, expected)) {
+            throw py::type_error(
+                "_from_representation requires a TensorRepresentation");
         }
+        return Tensor(std::move(representation), FromRepresentationTag{});
     }
 
-    py::object carrier() const { return carrier_; }
+    py::object representation() const { return representation_; }
 
-    Index offset() const { return offset_; }
+    py::object carrier() const { return primary().attr("carrier"); }
 
-    py::object layout() const { return layout_; }
+    Index offset() const { return py::cast<Index>(primary().attr("offset")); }
+
+    py::object layout() const { return primary().attr("layout"); }
 
     ::strideweave::carrier::Version version() const {
-        return py::cast<::strideweave::carrier::Version>(carrier_.attr("version"));
+        return py::cast<::strideweave::carrier::Version>(carrier().attr("version"));
+    }
+
+    py::object version_token() const {
+        return representation_.attr("_version_token")();
+    }
+
+    void require_single_subtensor(const std::string& reason) const {
+        if (!py::cast<bool>(representation_.attr("is_single_subtensor"))) {
+            const std::string message =
+                "Multi-subtensor Tensor " + reason +
+                " is not implemented; the operation was rejected before "
+                "changing any constituent carrier";
+            PyErr_SetString(PyExc_NotImplementedError, message.c_str());
+            throw py::error_already_set();
+        }
     }
 
     py::object autograd_ctx() const { return autograd_ctx_; }
@@ -321,6 +351,14 @@ public:
         autograd_ctx_ = std::move(autograd_ctx);
     }
 
+private:
+    Tensor(py::object representation, FromRepresentationTag)
+        : representation_(std::move(representation)), autograd_ctx_(py::none()),
+          grad_(py::none()), retain_grad_(false) {}
+
+    py::object primary() const { return representation_.attr("primary"); }
+
+public:
     py::object grad() const {
         require_differentiable("grad is not available for non-differentiable tensors");
         return grad_;
@@ -341,32 +379,38 @@ public:
     }
 
     py::object get_item(py::object key) const {
+        require_single_subtensor("indexing");
         validate_tensor_key(key);
 
-        return carrier_.attr("__getitem__")(py::int_(carrier_index(key)));
+        return carrier().attr("__getitem__")(py::int_(carrier_index(key)));
     }
 
     void set_item(py::object key, py::object value) const {
+        require_single_subtensor("mutation");
         validate_tensor_key(key);
 
-        carrier_.attr("__setitem__")(py::int_(carrier_index(key)), value);
+        carrier().attr("__setitem__")(py::int_(carrier_index(key)), value);
     }
 
     Index size() const {
-        return py::cast<Index>(layout_.attr("shape").attr("logical_size"));
+        return py::cast<Index>(layout().attr("shape").attr("logical_size"));
     }
 
-    bool is_mutable() const { return py::cast<bool>(carrier_.attr("is_mutable")()); }
+    bool is_mutable() const {
+        return py::cast<bool>(representation_.attr("is_single_subtensor")) &&
+               py::cast<bool>(carrier().attr("is_mutable")());
+    }
 
-    py::object dtype() const { return carrier_.attr("dtype")(); }
+    py::object dtype() const { return representation_.attr("logical_dtype"); }
 
     bool is_differentiable() const { return is_differentiable_dtype(dtype()); }
 
     py::object carrier_type() const {
-        return py::module_::import("builtins").attr("type")(carrier_);
+        return py::module_::import("builtins").attr("type")(carrier());
     }
 
     py::tuple dlpack_device() const {
+        require_single_subtensor("DLPack export");
         DLPackStorageInfo storage = dlpack_storage_info();
         return py::make_tuple(static_cast<std::int32_t>(storage.device.device_type),
                               storage.device.device_id);
@@ -375,6 +419,7 @@ public:
     py::object dlpack(py::object self, py::object stream, py::object max_version,
                       py::object dl_device, py::object copy) const {
         (void)stream;
+        require_single_subtensor("DLPack export");
         if (!copy.is_none() && py::cast<bool>(copy)) {
             throw_buffer_error("DLPack copy exports are not supported");
         }
@@ -390,6 +435,7 @@ public:
     }
 
     void backward(py::object gradient) {
+        require_single_subtensor("backward");
         require_differentiable(
             "backward is not available for non-differentiable tensors");
         py::object effective_gradient =
@@ -533,12 +579,12 @@ private:
     }
 
     Index carrier_index(py::object key) const {
-        const Index layout_index = strideweave::layout_index::get_index(layout_, key);
-        return offset_ + layout_index;
+        const Index layout_index = strideweave::layout_index::get_index(layout(), key);
+        return offset() + layout_index;
     }
 
     DLPackStorageInfo dlpack_storage_info() const {
-        py::dict info = py::cast<py::dict>(carrier_.attr("dlpack_info")());
+        py::dict info = py::cast<py::dict>(carrier().attr("dlpack_info")());
         const auto pointer = py::cast<std::uintptr_t>(info["pointer"]);
         const auto device_type_int = py::cast<std::int32_t>(info["device_type"]);
         const auto device_id = py::cast<std::int32_t>(info["device_id"]);
@@ -578,7 +624,7 @@ private:
                                 DLPackStorageInfo storage,
                                 DLPackDTypeInfo dtype_info) const {
         const strideweave::layout_index::LayoutCache& cache =
-            strideweave::layout_index::cache_from_layout(layout_);
+            strideweave::layout_index::cache_from_layout(layout());
         shape = to_int64_vector(cache.leaf_shapes());
         strides = to_int64_vector(cache.leaf_strides());
 
@@ -588,7 +634,7 @@ private:
         dl_tensor.dtype = dtype_info.dtype;
         dl_tensor.shape = shape.empty() ? nullptr : shape.data();
         dl_tensor.strides = strides.empty() ? nullptr : strides.data();
-        dl_tensor.byte_offset = byte_offset_for(offset_, dtype_info.item_size);
+        dl_tensor.byte_offset = byte_offset_for(offset(), dtype_info.item_size);
     }
 
     py::object make_legacy_dlpack_capsule(py::object self, DLPackStorageInfo storage,
@@ -640,13 +686,14 @@ private:
 
         py::list values;
         values.append(py::int_(1));
-        py::object grad_carrier = carrier_.attr("new_like")(values);
-        return tensor_type()(grad_carrier, py::int_(0), layout_);
+        py::object grad_carrier = carrier().attr("new_like")(values);
+        return tensor_type()(grad_carrier, py::int_(0), layout());
     }
 
     bool is_scalar() const {
-        return py::len(layout_) == 1 && py::cast<bool>(layout_.attr("is_leaf")) &&
-               size() == 1;
+        py::object tensor_layout = layout();
+        return py::len(tensor_layout) == 1 &&
+               py::cast<bool>(tensor_layout.attr("is_leaf")) && size() == 1;
     }
 
     void validate_gradient(py::handle gradient) const {
@@ -654,7 +701,7 @@ private:
             throw py::type_error("Tensor.backward requires a Tensor gradient");
         }
         py::object gradient_layout = gradient.attr("layout");
-        if (!layouts_equal(layout_, gradient_layout)) {
+        if (!layouts_equal(layout(), gradient_layout)) {
             throw py::value_error("Tensor gradient layout must match tensor layout");
         }
     }
@@ -662,7 +709,8 @@ private:
     py::object detached_gradient_copy(py::handle gradient) const {
         validate_gradient(gradient);
 
-        const Index storage_size = strideweave::layout_index::cosize(layout_);
+        py::object tensor_layout = layout();
+        const Index storage_size = strideweave::layout_index::cosize(tensor_layout);
         py::list values;
         for (Index i = 0; i < storage_size; ++i) {
             values.append(py::none());
@@ -671,12 +719,12 @@ private:
         const Index tensor_size = size();
         for (Index i = 0; i < tensor_size; ++i) {
             values[strideweave::layout_index::as_size(
-                strideweave::layout_index::get_index(layout_, py::int_(i)))] =
+                strideweave::layout_index::get_index(tensor_layout, py::int_(i)))] =
                 gradient.attr("__getitem__")(py::int_(i));
         }
 
-        py::object grad_carrier = carrier_.attr("new_like")(values);
-        return tensor_type()(grad_carrier, py::int_(0), layout_);
+        py::object grad_carrier = carrier().attr("new_like")(values);
+        return tensor_type()(grad_carrier, py::int_(0), tensor_layout);
     }
 
     py::object combined_gradient(py::handle accumulated, py::handle addition) const {
@@ -708,9 +756,7 @@ private:
         return autograd_ctx_.is_none() || retain_grad_;
     }
 
-    py::object carrier_;
-    Index offset_;
-    py::object layout_;
+    py::object representation_;
     py::object autograd_ctx_;
     py::object grad_;
     bool retain_grad_;
@@ -724,10 +770,16 @@ PYBIND11_MODULE(_tensor, module) {
     py::class_<Tensor>(module, "Tensor")
         .def(py::init<py::object, Index, py::object>(), py::arg("carrier"),
              py::arg("offset"), py::arg("layout"))
+        .def_static("_from_representation", &Tensor::from_representation,
+                    py::arg("representation"))
+        .def_property_readonly("_representation", &Tensor::representation)
         .def_property_readonly("carrier", &Tensor::carrier)
         .def_property_readonly("offset", &Tensor::offset)
         .def_property_readonly("layout", &Tensor::layout)
         .def_property_readonly("version", &Tensor::version)
+        .def("_version_token", &Tensor::version_token)
+        .def("_require_single_subtensor", &Tensor::require_single_subtensor,
+             py::arg("reason"))
         .def_property("autograd_ctx", &Tensor::autograd_ctx, &Tensor::set_autograd_ctx)
         .def_property("grad", &Tensor::grad, &Tensor::set_grad)
         .def("retain_grad", &Tensor::retain_grad, py::arg("retain") = true)

@@ -210,6 +210,8 @@ class Generic(Carrier):
             raise TypeError("scatter_onto must be a Tensor")
         if not isinstance(mapping, Layout):
             raise TypeError("mapping must be a Layout")
+        to_scatter._require_single_subtensor("scatter")
+        scatter_onto._require_single_subtensor("scatter")
         if scatter_onto.carrier is not self:
             raise ValueError("scatter_onto must be backed by this carrier")
         if mapping.shape != to_scatter.layout.shape:
