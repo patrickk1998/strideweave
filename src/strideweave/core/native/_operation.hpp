@@ -2,7 +2,6 @@
 
 #include <pybind11/pybind11.h>
 
-#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -11,8 +10,6 @@
 namespace py = pybind11;
 
 namespace strideweave::operation {
-
-using Version = std::uint64_t;
 
 inline py::object tensor_type() {
     return py::module_::import("strideweave.tensor").attr("Tensor");
@@ -53,6 +50,7 @@ public:
     virtual ~Operation() = default;
 
     py::object forward(py::args inputs) {
+        require_single_subtensor_inputs(inputs);
         const bool should_store_inputs =
             is_grad_enabled() && has_differentiable_tensor_input(inputs);
         if (should_store_inputs) {
@@ -73,7 +71,10 @@ public:
         return result;
     }
 
-    py::object execute_lowered(py::args inputs) { return execute(inputs); }
+    py::object execute_lowered(py::args inputs) {
+        require_single_subtensor_inputs(inputs);
+        return execute(inputs);
+    }
 
     virtual py::object _forward(py::args inputs) = 0;
     virtual py::object backward(py::object gradient) = 0;
@@ -110,14 +111,13 @@ public:
     void validate_input_versions() const {
         for (std::size_t i = 0; i < py::len(inputs_); ++i) {
             py::object input = py::reinterpret_borrow<py::object>(inputs_[i]);
-            const Version current_version = py::cast<Version>(input.attr("version"));
-            const Version expected_version = py::cast<Version>(input_versions_[i]);
-            if (current_version != expected_version) {
+            py::object current_version = input.attr("_version_token")();
+            py::object expected_version =
+                py::reinterpret_borrow<py::object>(input_versions_[i]);
+            if (!objects_equal(current_version, expected_version)) {
                 throw std::runtime_error(
                     "A tensor needed for gradient computation was modified "
-                    "in-place: expected version " +
-                    std::to_string(expected_version) + ", got version " +
-                    std::to_string(current_version));
+                    "in-place: its representation version token changed");
             }
         }
     }
@@ -156,10 +156,19 @@ private:
         py::tuple versions(tensors.size());
         for (std::size_t i = 0; i < tensors.size(); ++i) {
             stored[i] = tensors[i];
-            versions[i] = tensors[i].attr("version");
+            versions[i] = tensors[i].attr("_version_token")();
         }
         inputs_ = std::move(stored);
         input_versions_ = std::move(versions);
+    }
+
+    void require_single_subtensor_inputs(py::args inputs) {
+        py::object tensor = tensor_type();
+        for (py::handle input : inputs) {
+            if (py::isinstance(input, tensor)) {
+                input.attr("_require_single_subtensor")("operation execution");
+            }
+        }
     }
 
     py::tuple inputs_;

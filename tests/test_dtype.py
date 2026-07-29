@@ -115,6 +115,12 @@ def _structure_leaves(structure: object):
 def test_dtype_public_api_imports():
     assert sw.DType is DType
     assert sw.DTypeCategory is DTypeCategory
+    assert sw.LevelExtent is dtype_module.LevelExtent
+    assert sw.RepresentationRule is dtype_module.RepresentationRule
+    assert (
+        sw.RepresentationValidationContext
+        is dtype_module.RepresentationValidationContext
+    )
     assert sw.SimpleDType is SimpleDType
     assert issubclass(DTypeCategory, DType)
     assert issubclass(SimpleDType, DType)
@@ -969,10 +975,24 @@ def test_ownership_is_layered_over_the_contract_classes():
     # and every class below it in the hierarchy inherits that ownership, both in
     # a class body and through a later assignment on the class.
     layers = {
-        DType: ("_finalized", "_name", "_structure", "_supertype", "name", "value"),
+        DType: (
+            "_finalized",
+            "_name",
+            "_representation_rules",
+            "_structure",
+            "_supertype",
+            "name",
+            "representation_rules",
+            "value",
+        ),
         DTypeCategory: ("_opaque_storage", "is_category", "is_opaque_storage"),
         SimpleDType: ("_bits", "bits", "is_simple"),
-        CompoundDType: ("_simple_types", "is_compound", "num_carriers", "simple_types"),
+        CompoundDType: (
+            "_simple_types",
+            "is_compound",
+            "num_carriers",
+            "simple_types",
+        ),
         BlockScaledDType: ("_element", "bits_per_element", "levels", "num_axes"),
     }
     for contract, members in layers.items():
@@ -1069,7 +1089,17 @@ def _reject_shadowed_instance_member(member: str, contract: int, label: str) -> 
         DType.from_name(name)
 
 
-@pytest.mark.parametrize("member", ["_name", "_structure", "name", "value"])
+@pytest.mark.parametrize(
+    "member",
+    [
+        "_name",
+        "_representation_rules",
+        "_structure",
+        "name",
+        "representation_rules",
+        "value",
+    ],
+)
 def test_root_owned_state_reaching_the_instance_dictionary_is_refused(member):
     # Assignment alone cannot shadow a stored field or a property, but an
     # implementation that writes its own dictionary reaches past that. The rule
@@ -1087,7 +1117,11 @@ def test_layer_owned_state_reaching_the_instance_dictionary_is_refused():
     layers = (
         ("_opaque_storage", "is_opaque_storage"),
         ("_bits", "bits"),
-        ("_simple_types", "simple_types", "num_carriers"),
+        (
+            "_simple_types",
+            "simple_types",
+            "num_carriers",
+        ),
         ("_element", "levels", "num_axes", "bits_per_element"),
     )
     for contract, members in enumerate(layers):
@@ -1335,6 +1369,13 @@ def test_the_canonical_structure_layers_follow_the_contract_mro():
             ("str:E2M1", *DType.E2M1.structure()),
             ("str:E8M0", *DType.E8M0.structure()),
         ),
+        (
+            (
+                "str:strideweave.carriers.dtype",
+                "str:LevelExtent",
+                ("int:0", "int:32"),
+            ),
+        ),
         "str:BlockScaledDType",
         ("str:E2M1", *DType.E2M1.structure()),
         ((("str:E8M0", *DType.E8M0.structure()), "int:32"),),
@@ -1347,6 +1388,7 @@ def test_the_canonical_structure_layers_follow_the_contract_mro():
         ("str:Any", *DType.Any.structure()),
         "str:CompoundDType",
         (("str:Float32", *DType.Float32.structure()),),
+        (),
         ("str:row-major",),
     )
 
@@ -1778,6 +1820,9 @@ def test_no_dtype_constructor_accepts_a_format_mandated_block_size():
         "DType",
         "DTypeCategory",
         "Level",
+        "LevelExtent",
+        "RepresentationRule",
+        "RepresentationValidationContext",
         "SimpleDType",
         "SymbolicBits",
         "WholeExtent",

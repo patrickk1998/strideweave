@@ -350,6 +350,7 @@ inline CPU& cpu_carrier_from_tensor(py::handle tensor, const char* name) {
     if (!py::isinstance(tensor, tensor_type())) {
         throw py::type_error(std::string(name) + " must be a Tensor");
     }
+    tensor.attr("_require_single_subtensor")("native CPU access");
     py::object carrier = tensor.attr("carrier");
     if (!py::isinstance<CPU>(carrier)) {
         throw py::type_error(std::string(name) + " must be backed by a CPU carrier");

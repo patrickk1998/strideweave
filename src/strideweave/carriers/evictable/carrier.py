@@ -460,10 +460,12 @@ class Evictable(DependentCarrier):
         primary = self._require_promoted()
         if not isinstance(scatter_onto, Tensor) or scatter_onto.carrier is not self:
             raise ValueError("scatter_onto must be backed by this carrier object")
+        scatter_onto._require_single_subtensor("scatter")
 
         def lower(tensor: Any, name: str) -> Any:
             if not isinstance(tensor, Tensor):
                 raise TypeError(f"{name} must be a Tensor")
+            tensor._require_single_subtensor("scatter")
             if isinstance(tensor.carrier, Evictable):
                 carrier = tensor.carrier._require_promoted()
                 return Tensor(carrier, tensor.offset, tensor.layout)

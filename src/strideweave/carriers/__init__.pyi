@@ -5,6 +5,9 @@ from .dtype import CompoundDType as CompoundDType
 from .dtype import DType as DType
 from .dtype import DTypeCategory as DTypeCategory
 from .dtype import Level as Level
+from .dtype import LevelExtent as LevelExtent
+from .dtype import RepresentationRule as RepresentationRule
+from .dtype import RepresentationValidationContext as RepresentationValidationContext
 from .dtype import SimpleDType as SimpleDType
 from .dtype import SymbolicBits as SymbolicBits
 from .dtype import Whole as Whole
