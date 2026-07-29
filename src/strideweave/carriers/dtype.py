@@ -16,7 +16,12 @@ descriptors that describe *how one carrier stores it*:
   is composed from several simple-dtype planes. :class:`BlockScaledDType` is the
   block-scaled case: one simple element dtype plus a linear chain of simple
   scale :class:`Level` entries. A compound descriptor is never carrier storage
-  itself; its ``simple_types`` are.
+  itself; its ``simple_types`` are. It may additionally own an immutable
+  sequence of :class:`RepresentationRule` values that add reusable constraints
+  after universal logical-representation validation. The sequence contributes
+  to canonical dtype identity and may be empty. :class:`LevelExtent` is the
+  shared rule for requiring a fixed or :data:`Whole` source-to-target grouping
+  extent on one adjacent level edge.
 - ``DType.Any`` and ``DType.Floating`` additionally carry the legacy *opaque
   storage* disposition, the one way a category is accepted as storage:
   ``Generic`` accepts both for Python-object and width-unspecified numeric
@@ -121,6 +126,11 @@ from ._dtype import model as _model
 from ._dtype.block_scaled import BlockScaledDType, Level, SymbolicBits
 from ._dtype.contracts import _CONTRACT_SPECS, _ContractSpec  # noqa: F401
 from ._dtype.model import CompoundDType, DType, DTypeCategory, SimpleDType
+from ._dtype.representation_rule import (
+    LevelExtent,
+    RepresentationRule,
+    RepresentationValidationContext,
+)
 from ._dtype.storage import (
     accepts_storage_dtype,
     storage_zero,
@@ -143,7 +153,10 @@ for _public_type in (
     CompoundDType,
     WholeExtent,
     Level,
+    LevelExtent,
+    RepresentationValidationContext,
     SymbolicBits,
+    RepresentationRule,
     BlockScaledDType,
 ):
     type.__setattr__(_public_type, "__module__", __name__)
@@ -169,6 +182,9 @@ __all__ = [
     "DType",
     "DTypeCategory",
     "Level",
+    "LevelExtent",
+    "RepresentationRule",
+    "RepresentationValidationContext",
     "SimpleDType",
     "SymbolicBits",
     "Whole",

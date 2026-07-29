@@ -40,6 +40,7 @@ _ROOT_OWNED: Final = frozenset(
         "__setattr__",
         "_finalized",
         "_name",
+        "_representation_rules",
         "_structure",
         "_supertype",
         # The names the model used to dispatch identity policy through. They
@@ -55,6 +56,7 @@ _ROOT_OWNED: Final = frozenset(
         "_validate_finalized",
         "is_subtype_of",
         "name",
+        "representation_rules",
         "structure",
         "supertype",
         "supertypes",
@@ -64,7 +66,12 @@ _ROOT_OWNED: Final = frozenset(
 _CATEGORY_OWNED: Final = frozenset({"_opaque_storage", *_KIND_PREDICATES})
 _SIMPLE_OWNED: Final = frozenset({"_bits", "bits", *_KIND_PREDICATES})
 _COMPOUND_OWNED: Final = frozenset(
-    {"_simple_types", "num_carriers", "simple_types", *_KIND_PREDICATES}
+    {
+        "_simple_types",
+        "num_carriers",
+        "simple_types",
+        *_KIND_PREDICATES,
+    }
 )
 _BLOCK_SCALED_OWNED: Final = frozenset(
     {

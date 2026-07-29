@@ -29,6 +29,7 @@ from .structure import (
 
 if TYPE_CHECKING:
     from .block_scaled import BlockScaledDType
+    from .representation_rule import RepresentationRule
 
 
 _REGISTRY: dict[str, DType] = {}
@@ -421,7 +422,13 @@ class DType(metaclass=_DTypeNamespace):
         True
     """
 
-    __slots__ = ("_finalized", "_name", "_structure", "_supertype")
+    __slots__ = (
+        "_finalized",
+        "_name",
+        "_representation_rules",
+        "_structure",
+        "_supertype",
+    )
 
     Any: ClassVar[DTypeCategory]
     Floating: ClassVar[DTypeCategory]
@@ -468,6 +475,7 @@ class DType(metaclass=_DTypeNamespace):
         # would hash and compare through user code during a commit, so a name
         # that merely behaves like a string never reaches the registry.
         self._name = str.__str__(name)
+        self._representation_rules: tuple[RepresentationRule, ...] = ()
         self._supertype = supertype
 
     @classmethod
@@ -523,6 +531,16 @@ class DType(metaclass=_DTypeNamespace):
     def supertype(self) -> DTypeCategory | None:
         """Return the immediately enclosing category, or ``None`` at the root."""
         return self._supertype
+
+    @property
+    def representation_rules(self) -> tuple[RepresentationRule, ...]:
+        """Return immutable optional logical-representation constraints.
+
+        Non-compound descriptors always return an empty tuple. A
+        :class:`CompoundDType` may populate the tuple during construction, and
+        the compound contract records those rules in canonical dtype identity.
+        """
+        return self._representation_rules
 
     def supertypes(self) -> tuple[DTypeCategory, ...]:
         """Return the enclosing categories, innermost first."""
@@ -857,7 +875,10 @@ class CompoundDType(DType):
     The planes are copied into a tuple this class owns, and ``simple_types`` and
     ``num_carriers`` read that copy, so they cannot be overridden and cannot
     drift afterwards — mutating whatever collection was passed in changes
-    nothing about the registered descriptor.
+    nothing about the registered descriptor. Optional ``representation_rules``
+    are copied and owned on the same terms. Their canonical structures are part
+    of this descriptor's recorded identity, and logical representation
+    validation applies them only after universal checks succeed.
 
     Args:
         name: Unique registered name of the descriptor.
@@ -865,6 +886,9 @@ class CompoundDType(DType):
         simple_types: Ordered planes of the representation, as any iterable of
             registered :class:`SimpleDType` descriptors. At least one is
             required.
+        representation_rules: Ordered immutable constraints applied after
+            universal logical representation validation. The default empty
+            sequence adds no format-specific constraint.
 
     Examples:
         >>> import strideweave as sw
@@ -887,9 +911,11 @@ class CompoundDType(DType):
         *,
         supertype: DTypeCategory | None = None,
         simple_types: Iterable[SimpleDType],
+        representation_rules: Iterable[RepresentationRule] = (),
     ) -> None:
         super().__init__(name, supertype=supertype)
         self._simple_types = _canonical_planes(type(self), simple_types)
+        self._representation_rules = _canonical_rules(type(self), representation_rules)
 
     def is_compound(self) -> bool:
         """Return ``True``: every compound dtype spans several planes."""
@@ -916,6 +942,7 @@ def _compound_layer(dtype: CompoundDType) -> tuple[object, ...]:
     return (
         _encoded_leaf("CompoundDType"),
         tuple(_referenced_structure(plane) for plane in dtype._simple_types),
+        tuple(_rule_structure(rule) for rule in dtype._representation_rules),
     )
 
 
@@ -933,4 +960,12 @@ _declare_contract(
     _ContractSpec(
         _COMPOUND_OWNED, layer=_compound_layer, validate=_compound_validation
     ),
+)
+
+# Import after the descriptor classes exist so the public rule context can use
+# the concrete DType type at runtime without a partially initialized cycle.
+from .representation_rule import (  # noqa: E402
+    RepresentationRule,
+    _canonical_rules,
+    _rule_structure,
 )

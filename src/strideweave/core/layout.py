@@ -537,6 +537,52 @@ class Layout:
         """
         return self._cache.cosize
 
+    def uniform_preimage_extent(self, target_shape: Shape) -> int | None:
+        """Prove a uniform surjection onto a target coordinate space.
+
+        The proof inspects only the hierarchical shape/stride leaves. Positive
+        strides must form a compact mixed-radix enumeration of ``target_shape``;
+        zero-stride modes contribute uniform replication. Singleton modes are
+        ignored because their coordinate is always zero. No logical coordinate
+        is enumerated.
+
+        Args:
+            target_shape: Shape whose flattened coordinate indices form the
+                intended codomain.
+
+        Returns:
+            Number of source coordinates mapping to each target coordinate when
+            the layout is a provably uniform surjection, otherwise ``None``.
+
+        Examples:
+            >>> from strideweave import Layout, Shape, Stride
+            >>> grouping = Layout(Shape([4, 3]), Stride([0, 1]))
+            >>> grouping.uniform_preimage_extent(Shape(3))
+            4
+        """
+        if not isinstance(target_shape, Shape):
+            raise TypeError("target_shape must be a Shape")
+
+        replication = 1
+        positive_modes: list[tuple[int, int]] = []
+        for mode_shape, mode_stride in self.infix():
+            if mode_shape == 1:
+                continue
+            if mode_stride == 0:
+                replication *= mode_shape
+            else:
+                positive_modes.append((mode_stride, mode_shape))
+
+        covered = 1
+        for mode_stride, mode_shape in sorted(positive_modes):
+            if mode_stride != covered:
+                return None
+            covered *= mode_shape
+
+        if covered != target_shape.logical_size:
+            return None
+        return replication
+
     @staticmethod
     def flatten_layout(layout: Layout) -> tuple[Layout, list[Node]]:
         flat = Layout(Shape(), Stride())

@@ -213,6 +213,57 @@ def test_layout_index_and_call_match_static_get_index():
     assert layout(key) == Layout.get_index(layout, key)
 
 
+@pytest.mark.parametrize(
+    ("layout", "target_shape", "extent"),
+    [
+        (Layout(Shape([2, 3]), Stride([1, 2])), Shape(6), 1),
+        (Layout(Shape([2, 3]), Stride([3, 1])), Shape([2, 3]), 1),
+        (
+            Layout(Shape([[2, 3], 4]), Stride([[12, 4], 1])),
+            Shape([2, [3, 4]]),
+            1,
+        ),
+        (
+            Layout(Shape([4, [2, 3]]), Stride([0, [3, 1]])),
+            Shape([2, 3]),
+            4,
+        ),
+        (Layout(Shape([1, 2]), Stride([999, 1])), Shape(2), 1),
+        (Layout(Shape([[2, 3], 4]), Stride([[0, 0], 0])), Shape(1), 24),
+    ],
+)
+def test_layout_proves_uniform_preimage_extent_algebraically(
+    layout, target_shape, extent
+):
+    assert layout.uniform_preimage_extent(target_shape) == extent
+
+
+@pytest.mark.parametrize(
+    ("layout", "target_shape"),
+    [
+        (Layout(Shape([2, 2]), Stride([1, 1])), Shape(3)),
+        (Layout(Shape([2, 2]), Stride([1, 3])), Shape(5)),
+        (Layout(Shape([2, 3]), Stride([1, 2])), Shape(7)),
+    ],
+)
+def test_layout_uniform_preimage_proof_rejects_overlap_holes_and_wrong_codomain(
+    layout, target_shape
+):
+    assert layout.uniform_preimage_extent(target_shape) is None
+
+
+def test_layout_uniform_preimage_proof_is_independent_of_cardinality():
+    billion = 1_000_000_000
+    layout = Layout(Shape([billion, billion]), Stride([0, 1]))
+
+    assert layout.uniform_preimage_extent(Shape(billion)) == billion
+
+
+def test_layout_uniform_preimage_proof_requires_a_shape():
+    with pytest.raises(TypeError, match="target_shape must be a Shape"):
+        Layout(Shape(1), Stride(0)).uniform_preimage_extent(1)  # type: ignore[arg-type]
+
+
 def test_native_get_index_matches_python_get_index():
     flat_layout = Layout(Shape([3, 4]), Stride([2, 10]))
     nested_layout = Layout(Shape([2, [3, 4]]), Stride([1, [10, 100]]))

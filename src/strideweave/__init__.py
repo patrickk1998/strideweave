@@ -34,10 +34,19 @@ from .carriers import (
     Level as Level,
 )
 from .carriers import (
+    LevelExtent as LevelExtent,
+)
+from .carriers import (
     OperandCapability as OperandCapability,
 )
 from .carriers import (
     OperationCapability as OperationCapability,
+)
+from .carriers import (
+    RepresentationRule as RepresentationRule,
+)
+from .carriers import (
+    RepresentationValidationContext as RepresentationValidationContext,
 )
 from .carriers import (
     SimpleDType as SimpleDType,
@@ -91,11 +100,14 @@ _CORE_EXPORTS = [
     "Generic",
     "Layout",
     "Level",
+    "LevelExtent",
     "Module",
     "Node",
     "OperandCapability",
     "OperationCapability",
     "Parameter",
+    "RepresentationRule",
+    "RepresentationValidationContext",
     "Shape",
     "SimpleDType",
     "Stride",

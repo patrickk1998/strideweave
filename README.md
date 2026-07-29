@@ -17,6 +17,11 @@ accelerator carriers.
 ## Core Model
 
 - `Tensor(carrier, offset, layout)` references storage owned by a `Carrier`.
+  This public constructor creates the conventional one-subtensor case of the
+  authoritative internal representation: one logical dtype, an ordered tuple
+  of carrier-backed subtensors, one placement `Layout` per level, and one
+  adjacent `Layout` between each pair of levels. The carrier, offset, and layout
+  properties read subtensor zero rather than parallel fields.
 - `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
   coordinates to physical storage indices.
 - `Tiler` is the public type alias for a read-only sequence of `Layout` values.
@@ -32,6 +37,10 @@ accelerator carriers.
   `Layout(Shape([2, 3]), Stride([1, 4]))` has `size` 6 but `cosize` 10, so it
   needs `CPU(10)`. The `strideweave.friendly` and `strideweave.nn` layers allocate
   through `layout.cosize` for exactly this reason.
+- `layout.uniform_preimage_extent(target_shape)` proves, from the immutable
+  hierarchical shape/stride algebra alone, whether a layout uniformly covers a
+  target coordinate space and returns its replication extent. The proof is
+  rank-bounded and never enumerates logical coordinates.
 - Operations dispatch through `tensor.carrier.dispatch_op(operation_name)`.
   The base `Carrier` method owns the shared dispatch policy: it calls the
   backend `_dispatch_op` factory hook, requires a fresh `Operation`, and tags
@@ -46,7 +55,33 @@ accelerator carriers.
   that operation accepts, invokes it through sealed lowered execution, and wraps
   results and gradients back into the composite representation.
 - Python and native operations inherit from the shared native `Operation` base.
+  `Operation._forward` is a protected implementation hook and must not be
+  invoked directly. Call public `forward`, or use the framework-owned sealed
+  lowered-execution path from a composite adapter, so operation preflight,
+  result validation, profiling, and autograd bookkeeping remain intact. Direct
+  `_forward` calls are unsupported, including for multi-subtensor tensors.
 - Views may use different layouts and offsets while sharing the same carrier.
+- In the generalized representation, placement layout `L_i` maps level
+  coordinate space `c_i` into carrier `i`, while adjacent layout `S_i` maps
+  `c_i` to an integer decoded in `c_(i+1).shape`. Both are ordinary CuTe-style
+  `Layout` values; their structural positions distinguish physical placement
+  from logical grouping. Universal validation checks the logical dtype's
+  storage schema, identity-matched carrier dtypes, exact carrier-class
+  homogeneity, offsets, `cosize` bounds, and adjacent source/target
+  compatibility before any dtype-specific rule runs.
+- Current Tensor operations take a structural one-subtensor fast path. Native
+  CPU access, views, results, movement, scatter, autograd, and DLPack all read
+  carrier, offset, layout, dtype, and version state through that authoritative
+  representation. Autograd snapshots the complete ordered version token of
+  every unique constituent carrier. Internal multi-subtensor representations
+  can be validated, but indexing, mutation, operations, movement, scatter,
+  backward, and DLPack reject them before allocation or carrier mutation until
+  their semantics are implemented.
+- External representation rules annotate `validate` with the public
+  `RepresentationValidationContext` protocol, available from both
+  `strideweave` and `strideweave.carriers.dtype`. Its read-only fields expose
+  the logical dtype, ordered storage dtypes, placement and adjacent layouts,
+  and level shapes only after universal validation succeeds.
 
 For example, this creates a two-mode column-major tensor backed by a Python carrier:
 
@@ -166,7 +201,17 @@ The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
 - `CompoundDType` describes a logical value whose physical representation is
   composed from several simple-dtype planes. It is never carrier storage
   itself; its ordered `simple_types` are the per-plane storage dtypes a
-  multi-plane implementation would use, one carrier per plane.
+  multi-plane implementation would use, one carrier per plane. A compound
+  descriptor may also carry an ordered immutable tuple of
+  `RepresentationRule` values. The rule sequence is copied into descriptor
+  ownership and contributes once to canonical structure and pickle identity;
+  an empty sequence is valid. Rules add reusable representation constraints and
+  run only after the universal representation checks have succeeded.
+  `LevelExtent(level, extent)` is the first reusable rule: an integer extent
+  requires every coordinate in adjacent target level `level + 1` to group
+  exactly that many coordinates from level `level`, while `Whole` requires one
+  target coordinate covering the complete source level. It validates logical
+  grouping only, not physical placement or numerical encoding.
 
 Descriptors describe representation; they do not decide what an operation
 computes in or returns. That policy is specified in
@@ -631,6 +676,10 @@ it — so equivalent whole-scaled formats cannot bypass structural uniqueness.
   which excludes `Whole` levels.
 - `bits_per_element` returns a `float`, or a `SymbolicBits` value with an
   `evaluate(element_count)` method when the final level is `Whole`.
+- `representation_rules` contains one `LevelExtent(i, levels[i].block)` per
+  scale level. The rules are derived from the dtype's existing level chain and
+  use the same generic representation validator available to external compound
+  formats; Tensor validation contains no block-scaled-specific branch.
 
 The registered formats are `MXFP8_E4M3`, `MXFP8_E5M2`, `MXFP6_E3M2`,
 `MXFP6_E2M3`, `MXFP4`, `MXINT8`, and `NVFP4`. Block extents are fixed by each
@@ -978,6 +1027,10 @@ to `Generic`, because the container remains an alias of Generic storage.
 - `FileBacked` supports storage and movement, not direct computation.
 - Evictable tensors must be promoted before access or computation, and binary
   Evictable operations require matching primary and secondary carrier classes.
+- Public compound tensor construction and multi-subtensor indexing, mutation,
+  operations, movement, release orchestration, and DLPack export remain
+  deferred. The internal representation and optional-rule contracts exist so
+  those paths can be added without a parallel public tensor type.
 - `strideweave.nn` covers only `Linear`, elementwise activations, `MSELoss`, and
   `SGD`; there are no buffers, state dictionaries, training/evaluation modes,
   or hooks.
