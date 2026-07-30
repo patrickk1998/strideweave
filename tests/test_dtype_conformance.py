@@ -347,6 +347,20 @@ def gapped_tensor(dtype: DType, layout: Layout, backend: str) -> Tensor:
     return Tensor(carrier, GAPPED_OFFSET, layout)
 
 
+def tensor_with_logical_values(
+    values: tuple[Any, ...],
+    dtype: DType,
+    layout: Layout,
+    backend: str,
+) -> Tensor:
+    """Build a zero-offset tensor by placing values through its layout."""
+    zero = 0.0 if dtype is DType.Float32 else 0
+    physical = [zero] * layout.cosize
+    for logical_index, value in enumerate(values):
+        physical[layout.index(logical_index)] = value
+    return Tensor(BACKENDS[backend](tuple(physical), dtype), 0, layout)
+
+
 GAPPED_INVOCATIONS = {
     "add": lambda tensor: tensor + tensor,
     "sub": lambda tensor: tensor - tensor,
@@ -383,17 +397,189 @@ def test_backends_agree_over_a_layout_with_storage_holes(dtype, operation):
 
 
 @pytest.mark.parametrize("dtype", [DType.Float32, DType.Int32])
-def test_result_storage_holes_hold_the_dtype_zero(dtype):
-    # The result keeps the input's strided layout, so its carrier has holes no
-    # logical index reaches. They must still be representable values.
+def test_binary_pointwise_result_uses_injective_canonical_storage(dtype):
     tensor = gapped_tensor(dtype, GAPPED_ONE_MODE, "generic")
 
     result = tensor + tensor
-    carrier = result.carrier
 
-    assert [carrier[index] for index in range(carrier.size())][1::2] == [
-        0.0 if dtype is DType.Float32 else 0
-    ] * 3
+    assert result.layout == Layout(Shape(4), Stride(1))
+    assert result.layout.is_injective
+    assert result.carrier.size() == result.size()
+
+
+def binary_pointwise_operations() -> tuple[str, ...]:
+    """Enumerate tensor-pair operations whose plans have no accumulation."""
+    tensor_pair = (OperandRole.TENSOR, OperandRole.TENSOR)
+    operations = []
+    for spec in registered_operations():
+        if spec.roles != tensor_pair:
+            continue
+        plans = (
+            resolve_operation_plan(spec.name, lhs_dtype, rhs_dtype)
+            for lhs_dtype, rhs_dtype in product((DType.Float32, DType.Int32), repeat=2)
+        )
+        if all(plan.accumulation is None for plan in plans):
+            operations.append(spec.name)
+    return tuple(operations)
+
+
+BINARY_POINTWISE_OPERATIONS = binary_pointwise_operations()
+
+
+@pytest.mark.parametrize("operation", BINARY_POINTWISE_OPERATIONS)
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+def test_every_registered_binary_pointwise_operation_aligns_broadcast_inputs(
+    operation,
+    backend,
+):
+    lhs_layout = Layout(Shape([2, 3]), Stride([1, 2]))
+    rhs_layout = Layout(Shape([2, 1]), Stride([1, 2]))
+    lhs = tensor_with_logical_values(
+        (2.0, 4.0, 6.0, 8.0, 10.0, 12.0),
+        DType.Float32,
+        lhs_layout,
+        backend,
+    )
+    rhs = tensor_with_logical_values(
+        (2.0, 4.0),
+        DType.Float32,
+        rhs_layout,
+        backend,
+    )
+    compute = {
+        "add": lambda x, y: x + y,
+        "sub": lambda x, y: x - y,
+        "elementwise_mul": lambda x, y: x * y,
+        "div": lambda x, y: x / y,
+    }[operation]
+
+    result = getattr(sw, operation)(lhs, rhs)
+
+    expanded_rhs = (2.0, 4.0, 2.0, 4.0, 2.0, 4.0)
+    expected = tuple(
+        compute(lhs_value, rhs_value)
+        for lhs_value, rhs_value in zip(
+            (2.0, 4.0, 6.0, 8.0, 10.0, 12.0),
+            expanded_rhs,
+            strict=True,
+        )
+    )
+    assert tuple(values_of(result)) == expected
+    assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
+    assert result.layout.is_injective
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+def test_binary_pointwise_alignment_accepts_same_shape_with_different_strides(backend):
+    lhs = tensor_with_logical_values(
+        (1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+        DType.Float32,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+        backend,
+    )
+    rhs = tensor_with_logical_values(
+        (10.0, 20.0, 30.0, 40.0, 50.0, 60.0),
+        DType.Float32,
+        Layout(Shape([2, 3]), Stride([3, 1])),
+        backend,
+    )
+
+    result = sw.elementwise_mul(lhs, rhs)
+
+    assert tuple(values_of(result)) == (10.0, 40.0, 90.0, 160.0, 250.0, 360.0)
+    assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
+    assert result.layout.is_injective
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+def test_binary_pointwise_alignment_broadcasts_at_hierarchy_depth(backend):
+    lhs_layout = Layout(Shape([2, [3, 2]]), Stride([1, [2, 6]]))
+    rhs_layout = Layout(Shape([2, [1, 2]]), Stride([1, [2, 2]]))
+    lhs_values = tuple(float(value) for value in range(1, 13))
+    rhs_values = (10.0, 20.0, 30.0, 40.0)
+    lhs = tensor_with_logical_values(lhs_values, DType.Float32, lhs_layout, backend)
+    rhs = tensor_with_logical_values(rhs_values, DType.Float32, rhs_layout, backend)
+
+    result = sw.add(lhs, rhs)
+
+    expanded_rhs = (
+        10.0,
+        20.0,
+        10.0,
+        20.0,
+        10.0,
+        20.0,
+        30.0,
+        40.0,
+        30.0,
+        40.0,
+        30.0,
+        40.0,
+    )
+    assert tuple(values_of(result)) == tuple(
+        lhs_value + rhs_value
+        for lhs_value, rhs_value in zip(lhs_values, expanded_rhs, strict=True)
+    )
+    assert result.layout == Layout(
+        Shape([2, [3, 2]]),
+        Stride([1, [2, 6]]),
+    )
+    assert result.layout.is_injective
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+def test_binary_pointwise_alignment_refuses_noncongruent_profiles(backend):
+    lhs = tensor_with_logical_values(
+        (1.0, 2.0, 3.0, 4.0),
+        DType.Float32,
+        Layout(Shape([2, 2]), Stride([1, 2])),
+        backend,
+    )
+    rhs = tensor_with_logical_values(
+        (1.0, 2.0, 3.0, 4.0),
+        DType.Float32,
+        Layout(Shape([[2, 2]]), Stride([[1, 2]])),
+        backend,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Tensor shape profiles are not congruent",
+    ) as error:
+        sw.add(lhs, rhs)
+
+    assert str(error.value) == (
+        "Tensor shape profiles are not congruent: "
+        "lhs=(leaf, leaf), rhs=((leaf, leaf)). "
+        "Insert singleton modes with rearrange so both profiles match."
+    )
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+def test_binary_pointwise_alignment_refuses_incompatible_leaf_extents(backend):
+    lhs = tensor_with_logical_values(
+        tuple(float(value) for value in range(6)),
+        DType.Float32,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+        backend,
+    )
+    rhs = tensor_with_logical_values(
+        tuple(float(value) for value in range(8)),
+        DType.Float32,
+        Layout(Shape([2, 4]), Stride([1, 2])),
+        backend,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Tensor extents are not broadcast-compatible",
+    ) as error:
+        sw.add(lhs, rhs)
+
+    assert str(error.value) == (
+        "Tensor extents are not broadcast-compatible at leaf 1 "
+        "within profile (leaf, leaf): lhs=3, rhs=4"
+    )
 
 
 def test_concrete_storage_rejects_a_placeholder_rather_than_storing_nan():

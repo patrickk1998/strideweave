@@ -35,6 +35,11 @@ def _require_same_layout(lhs: Any, rhs: Any) -> None:
         raise ValueError("Tensor layouts must match")
 
 
+def _require_same_shape(lhs: Any, rhs: Any) -> None:
+    if lhs.layout.shape != rhs.layout.shape:
+        raise ValueError("Tensor shapes must match")
+
+
 def _require_layout(tensor: Any, layout: Layout) -> None:
     if tensor.layout != layout:
         raise ValueError("Tensor layouts must match")
@@ -90,10 +95,83 @@ def _canonical_stride_level(shape_level: Any, stride: int) -> tuple[Any, int]:
     return stride_level, next_stride
 
 
-def _canonical_layout_from_modes(*modes: Any) -> Layout:
-    shape = _shape_from_modes(*modes)
+def _canonical_layout_for_shape(shape: Shape) -> Layout:
     stride, _ = _canonical_stride_level(shape.top_level, 1)
     return Layout(shape, Stride(stride))
+
+
+def _canonical_layout_from_modes(*modes: Any) -> Layout:
+    shape = _shape_from_modes(*modes)
+    return _canonical_layout_for_shape(shape)
+
+
+def _format_shape_profile(shape_level: Any) -> str:
+    parts = (
+        "leaf" if isinstance(child, int) else _format_shape_profile(child)
+        for child in shape_level
+    )
+    return f"({', '.join(parts)})"
+
+
+def _align_binary_operands(lhs: Any, rhs: Any) -> tuple[Any, Any, Layout]:
+    """Align two structurally broadcast-compatible tensor operands."""
+    lhs_profile = lhs.layout.profile
+    rhs_profile = rhs.layout.profile
+    if lhs_profile != rhs_profile:
+        lhs_rendered = _format_shape_profile(lhs.layout.shape.top_level)
+        rhs_rendered = _format_shape_profile(rhs.layout.shape.top_level)
+        raise ValueError(
+            "Tensor shape profiles are not congruent: "
+            f"lhs={lhs_rendered}, rhs={rhs_rendered}. "
+            "Insert singleton modes with rearrange so both profiles match."
+        )
+
+    rendered_profile = _format_shape_profile(lhs.layout.shape.top_level)
+
+    def common_level(
+        lhs_level: Any, rhs_level: Any, path: tuple[int, ...]
+    ) -> list[Any]:
+        common: list[Any] = []
+        for index, (lhs_extent, rhs_extent) in enumerate(
+            zip(lhs_level, rhs_level, strict=True)
+        ):
+            leaf_path = (*path, index)
+            if isinstance(lhs_extent, int):
+                if lhs_extent == rhs_extent or rhs_extent == 1:
+                    common.append(lhs_extent)
+                elif lhs_extent == 1:
+                    common.append(rhs_extent)
+                else:
+                    position = ".".join(str(component) for component in leaf_path)
+                    raise ValueError(
+                        "Tensor extents are not broadcast-compatible at leaf "
+                        f"{position} within profile {rendered_profile}: "
+                        f"lhs={lhs_extent}, rhs={rhs_extent}"
+                    )
+                continue
+            common.append(common_level(lhs_extent, rhs_extent, leaf_path))
+        return common
+
+    shape = Shape(
+        common_level(
+            lhs.layout.shape.top_level,
+            rhs.layout.shape.top_level,
+            (),
+        )
+    )
+    lhs_layout = lhs.layout.broadcast_to(shape)
+    rhs_layout = rhs.layout.broadcast_to(shape)
+    aligned_lhs = (
+        lhs
+        if lhs_layout == lhs.layout
+        else lhs.carrier.dispatch_op("broadcast_to").forward(lhs, shape)
+    )
+    aligned_rhs = (
+        rhs
+        if rhs_layout == rhs.layout
+        else rhs.carrier.dispatch_op("broadcast_to").forward(rhs, shape)
+    )
+    return aligned_lhs, aligned_rhs, _canonical_layout_for_shape(shape)
 
 
 def _layout_from_modes(shapes: Iterable[Any], strides: Iterable[Any]) -> Layout:
@@ -143,7 +221,10 @@ def _tensor_with_layout_like(
 def _detached_tensor_like(
     target: Any, values: Iterable[Any], dtype: DType | None = None
 ) -> Any:
-    return _tensor_with_layout_like(target, target.layout, values, dtype)
+    layout = target.layout
+    if not layout.is_injective:
+        layout = _canonical_layout_for_shape(layout.shape)
+    return _tensor_with_layout_like(target, layout, values, dtype)
 
 
 def _zero_tensor_like(target: Any) -> Any:
@@ -158,4 +239,4 @@ def _copy_gradient_for(target: Any, gradient: Any) -> Any:
 def _copy_gradient_to_layout(target: Any, gradient: Any) -> Any:
     if target.size() != gradient.size():
         raise ValueError("Tensor layouts must have the same logical size")
-    return _tensor_with_layout_like(target, target.layout, _logical_values(gradient))
+    return _detached_tensor_like(target, _logical_values(gradient))

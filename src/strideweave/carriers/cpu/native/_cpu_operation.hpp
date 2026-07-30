@@ -66,7 +66,7 @@ public:
             resolve_cpu_plan(executing_carrier_class(tensor), Scalar::kOperation,
                              cpu_dtype_object(tensor_view.carrier->cpu_dtype()));
         CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), plan.output);
+            allocate_cpu_tensor(injective_layout_for(tensor), plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
@@ -83,11 +83,11 @@ public:
     py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
-        require_same_layout(tensor, gradient);
+        require_same_shape(tensor, gradient);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
+        CpuTensorAllocation result = allocate_gradient_for(tensor);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);

@@ -701,34 +701,89 @@ private:
             throw py::type_error("Tensor.backward requires a Tensor gradient");
         }
         py::object gradient_layout = gradient.attr("layout");
-        if (!layouts_equal(layout(), gradient_layout)) {
+        const bool target_is_injective = py::cast<bool>(layout().attr("is_injective"));
+        if (target_is_injective && !layouts_equal(layout(), gradient_layout)) {
             throw py::value_error("Tensor gradient layout must match tensor layout");
+        }
+        if (target_is_injective) {
+            return;
+        }
+        if (!py::cast<bool>(layout().attr("_has_only_broadcast_aliasing"))) {
+            throw py::value_error(
+                "Autograd does not support non-injective layouts whose "
+                "aliasing is not caused only by stride-zero broadcast modes");
+        }
+        if (!layouts_equal(layout().attr("shape"), gradient_layout.attr("shape")) ||
+            !py::cast<bool>(gradient_layout.attr("is_injective"))) {
+            throw py::value_error(
+                "A gradient for a broadcast tensor must have the same shape "
+                "in an injective layout");
         }
     }
 
-    py::object detached_gradient_copy(py::handle gradient) const {
+    py::object copy_gradient_storage(py::handle gradient,
+                                     bool aggregate_aliases) const {
         validate_gradient(gradient);
 
-        py::object tensor_layout = layout();
-        const Index storage_size = strideweave::layout_index::cosize(tensor_layout);
+        const bool target_is_injective = py::cast<bool>(layout().attr("is_injective"));
+        py::object output_layout = layout();
+        if (!target_is_injective) {
+            output_layout = py::reinterpret_borrow<py::object>(gradient.attr("layout"));
+        }
+        const Index storage_size = strideweave::layout_index::cosize(output_layout);
         py::list values;
         for (Index i = 0; i < storage_size; ++i) {
-            values.append(py::none());
+            values.append(py::int_(0));
         }
 
         const Index tensor_size = size();
-        for (Index i = 0; i < tensor_size; ++i) {
-            values[strideweave::layout_index::as_size(
-                strideweave::layout_index::get_index(tensor_layout, py::int_(i)))] =
-                gradient.attr("__getitem__")(py::int_(i));
+        if (aggregate_aliases && !target_is_injective) {
+            std::unordered_map<Index, py::object> totals;
+            for (Index i = 0; i < tensor_size; ++i) {
+                py::object key = py::int_(i);
+                const Index target_index =
+                    strideweave::layout_index::get_index(layout(), key);
+                py::object contribution = gradient.attr("__getitem__")(key);
+                auto found = totals.find(target_index);
+                if (found == totals.end()) {
+                    totals.emplace(target_index, std::move(contribution));
+                } else {
+                    found->second = add_python_objects(found->second, contribution);
+                }
+            }
+            for (Index i = 0; i < tensor_size; ++i) {
+                py::object key = py::int_(i);
+                const Index target_index =
+                    strideweave::layout_index::get_index(layout(), key);
+                const Index output_index =
+                    strideweave::layout_index::get_index(output_layout, key);
+                values[strideweave::layout_index::as_size(output_index)] =
+                    totals.at(target_index);
+            }
+        } else {
+            for (Index i = 0; i < tensor_size; ++i) {
+                py::object key = py::int_(i);
+                const Index output_index =
+                    strideweave::layout_index::get_index(output_layout, key);
+                values[strideweave::layout_index::as_size(output_index)] =
+                    gradient.attr("__getitem__")(key);
+            }
         }
 
         py::object grad_carrier = carrier().attr("new_like")(values);
-        return tensor_type()(grad_carrier, py::int_(0), tensor_layout);
+        return tensor_type()(grad_carrier, py::int_(0), output_layout);
+    }
+
+    py::object detached_gradient_copy(py::handle gradient) const {
+        return copy_gradient_storage(gradient, true);
+    }
+
+    py::object detached_logical_gradient_copy(py::handle gradient) const {
+        return copy_gradient_storage(gradient, false);
     }
 
     py::object combined_gradient(py::handle accumulated, py::handle addition) const {
-        py::object combined = detached_gradient_copy(accumulated);
+        py::object combined = detached_logical_gradient_copy(accumulated);
         for (Index i = 0; i < size(); ++i) {
             py::object key = py::int_(i);
             py::object combined_value = add_python_objects(
@@ -739,15 +794,16 @@ private:
     }
 
     void accumulate_grad(py::handle gradient) {
+        py::object contribution = detached_gradient_copy(gradient);
         if (grad_.is_none()) {
-            grad_ = detached_gradient_copy(gradient);
+            grad_ = std::move(contribution);
             return;
         }
 
         for (Index i = 0; i < size(); ++i) {
             py::object key = py::int_(i);
             py::object accumulated_value = add_python_objects(
-                grad_.attr("__getitem__")(key), gradient.attr("__getitem__")(key));
+                grad_.attr("__getitem__")(key), contribution.attr("__getitem__")(key));
             grad_.attr("__setitem__")(key, accumulated_value);
         }
     }
