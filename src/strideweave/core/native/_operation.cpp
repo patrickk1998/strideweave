@@ -359,6 +359,9 @@ PYBIND11_MODULE(_operation, module) {
                                 py::args inputs) { operation.store_inputs(inputs); })
         .def("inputs", &Operation::inputs)
         .def("input_versions", &Operation::input_versions)
+        .def_property_readonly("_autograd_state_freed",
+                               &Operation::autograd_state_freed)
+        .def("_release_autograd_state", &Operation::release_autograd_state)
         .def("validate_input_versions", &Operation::validate_input_versions);
 
     module.def(
