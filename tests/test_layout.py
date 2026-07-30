@@ -300,6 +300,85 @@ def test_layout_leaf_edge_case():
     assert Layout(Shape(1), Stride(1)).is_leaf
 
 
+def test_layout_profile_describes_hierarchy_independently_of_values():
+    lhs = Layout(Shape([2, [3, 4]]), Stride([1, [2, 6]]))
+    rhs = Layout(Shape([7, [8, 9]]), Stride([11, [13, 17]]))
+    different = Layout(Shape([[2, 3], 4]), Stride([[1, 2], 6]))
+
+    assert lhs.profile == [
+        Node.Leaf,
+        Node.Push,
+        Node.Leaf,
+        Node.Leaf,
+        Node.Pop,
+    ]
+    assert lhs.profile == rhs.profile
+    assert lhs.profile != different.profile
+
+
+@pytest.mark.parametrize(
+    ("layout", "expected"),
+    [
+        (Layout(Shape([2, 3]), Stride([1, 2])), True),
+        (Layout(Shape([2, 3]), Stride([1, 4])), True),
+        (Layout(Shape([4, 2]), Stride([0, 1])), False),
+        (Layout(Shape([2, [4, 3]]), Stride([1, [0, 2]])), False),
+        (Layout(Shape([4, 2]), Stride([1, 1])), False),
+        (Layout(Shape([3, 2]), Stride([2, 3])), True),
+    ],
+)
+def test_layout_is_injective_detects_exact_offset_collisions(layout, expected):
+    assert layout.is_injective is expected
+
+
+def test_layout_broadcast_to_widens_top_level_singleton_leaf():
+    layout = Layout(Shape([2, 1]), Stride([1, 2]))
+
+    assert layout.broadcast_to(Shape([2, 3])) == Layout(Shape([2, 3]), Stride([1, 0]))
+
+
+def test_layout_broadcast_to_widens_nested_singleton_leaf():
+    layout = Layout(Shape([2, [1, 3]]), Stride([1, [2, 2]]))
+
+    assert layout.broadcast_to(Shape([2, [4, 3]])) == Layout(
+        Shape([2, [4, 3]]), Stride([1, [0, 2]])
+    )
+
+
+def test_layout_broadcast_to_preserves_equal_extents_and_strides():
+    layout = Layout(Shape([2, [1, 3]]), Stride([5, [7, 11]]))
+
+    assert layout.broadcast_to(layout.shape) == layout
+
+
+def test_layout_broadcast_to_refuses_non_singleton_extent_change():
+    layout = Layout(Shape([2, 3]), Stride([1, 2]))
+
+    with pytest.raises(ValueError, match="can only widen an extent-1 leaf"):
+        layout.broadcast_to(Shape([2, 4]))
+
+
+def test_layout_broadcast_to_refuses_a_different_shape_profile():
+    layout = Layout(Shape([2, 1, 3]), Stride([1, 2, 2]))
+
+    with pytest.raises(ValueError, match="same shape profile"):
+        layout.broadcast_to(Shape([2, [4, 3]]))
+
+
+def test_layout_broadcast_primitives_document_hierarchical_semantics():
+    for docstring in (
+        Layout.profile.__doc__,
+        Layout.is_injective.__doc__,
+        Layout.broadcast_to.__doc__,
+    ):
+        assert docstring is not None
+        assert "Syntax:" in docstring
+        assert "Semantics:" in docstring
+        assert "Mode assumptions:" in docstring
+        assert "Returns:" in docstring
+        assert "Examples:" in docstring
+
+
 def test_layout_concat():
     assert Layout(Shape([1, 2, 3]), Stride([1, 2, 6])) == Layout.concat(
         Layout(Shape([1, 2]), Stride([1, 2])), Layout(Shape(3), Stride(6))
@@ -627,6 +706,19 @@ def test_layout_complement():
     assert Layout.complement(Layout.leaf(4, 2), 24) == Layout(
         Shape([2, 3]), Stride([1, 8])
     )
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        Layout(Shape([4, 2]), Stride([0, 1])),
+        Layout(Shape([2, [4, 3]]), Stride([1, [0, 2]])),
+        Layout(Shape([4, 2]), Stride([1, 1])),
+    ],
+)
+def test_layout_complement_refuses_non_injective_layouts(layout):
+    with pytest.raises(ValueError, match="overlaps with itself"):
+        Layout.complement(layout, 24)
 
 
 def test_layout_index_rejects_negative_keys():
