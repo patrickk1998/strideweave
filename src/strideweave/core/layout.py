@@ -516,6 +516,210 @@ class Layout:
     def size(self) -> int:
         return self.shape.size
 
+    @staticmethod
+    def _profile_for_shape(shape: Shape) -> list[Node]:
+        def shape_tree(level: _ShapeLevel) -> Tree:
+            return Tree(
+                *(
+                    Node.Leaf if isinstance(element, int) else shape_tree(element)
+                    for element in level
+                )
+            )
+
+        return shape_tree(shape.top_level).recipe
+
+    @property
+    def profile(self) -> list[Node]:
+        """Return the recipe describing this layout's hierarchical shape tree.
+
+        The profile records only leaf positions and nesting. Extents and
+        strides do not contribute, so layouts with the same hierarchy share a
+        profile even when their values differ.
+
+        Syntax:
+            ``Node.Leaf`` marks a leaf, while ``Node.Push`` and ``Node.Pop``
+            delimit a nested mode.
+
+        Semantics:
+            The returned recipe is structural and independent of shape extents
+            and stride values.
+
+        Mode assumptions:
+            Every hierarchical mode is preserved; the profile never flattens
+            or reorders modes.
+
+        Returns:
+            Fresh list containing the layout's structural recipe.
+
+        Examples:
+            >>> from strideweave import Layout, Node, Shape, Stride
+            >>> layout = Layout(Shape([2, [3, 4]]), Stride([1, [2, 6]]))
+            >>> layout.profile
+            [<Node.Leaf: 1>, <Node.Push: 2>, <Node.Leaf: 1>, <Node.Leaf: 1>, <Node.Pop: 3>]
+        """
+
+        return Layout._profile_for_shape(self.shape)
+
+    @property
+    def is_injective(self) -> bool:
+        """Report whether logical coordinates map to distinct physical offsets.
+
+        Syntax:
+            Injectivity is evaluated over the complete hierarchical layout,
+            including leaves nested inside modes.
+
+        Semantics:
+            Returns ``False`` for broadcast modes with extent greater than one
+            and stride zero, and for any other collision such as overlapping
+            non-zero strides. Strided layouts with holes remain injective when
+            all addressed offsets are distinct.
+
+        Mode assumptions:
+            Shape hierarchy affects coordinate structure but not the collision
+            definition; every leaf contributes its extent and stride.
+
+        Returns:
+            ``True`` exactly when no two logical coordinates share an offset.
+
+        Examples:
+            >>> from strideweave import Layout, Shape, Stride
+            >>> Layout(Shape([2, 3]), Stride([1, 4])).is_injective
+            True
+            >>> Layout(Shape([4, 2]), Stride([0, 1])).is_injective
+            False
+        """
+        if self.size > self.cosize:
+            return False
+
+        span = 1
+        for extent, stride in sorted(self.infix(), key=lambda mode: mode[1]):
+            if extent == 1:
+                continue
+            if stride == 0:
+                return False
+            if stride < span:
+                break
+            span += (extent - 1) * stride
+        else:
+            return True
+
+        offsets: set[int] = set()
+        for logical_index in range(self.size):
+            offset = self._cache.get_index(logical_index)
+            if offset in offsets:
+                return False
+            offsets.add(offset)
+        return True
+
+    @property
+    def _has_only_broadcast_aliasing(self) -> bool:
+        if self.is_injective:
+            return False
+
+        def collapse_broadcasts(
+            shape: _ShapeLevel, stride: _StrideLevel
+        ) -> tuple[list[Any], list[Any]]:
+            collapsed_shape: list[Any] = []
+            collapsed_stride: list[Any] = []
+            for extent, stride_value in zip(shape, stride, strict=True):
+                if isinstance(extent, int):
+                    assert isinstance(stride_value, int)
+                    collapsed_shape.append(
+                        1 if stride_value == 0 and extent > 1 else extent
+                    )
+                    collapsed_stride.append(stride_value)
+                    continue
+                assert isinstance(stride_value, _StrideLevel)
+                child_shape, child_stride = collapse_broadcasts(extent, stride_value)
+                collapsed_shape.append(child_shape)
+                collapsed_stride.append(child_stride)
+            return collapsed_shape, collapsed_stride
+
+        shape, stride = collapse_broadcasts(
+            self.shape.top_level,
+            self.stride.top_level,
+        )
+        return Layout(Shape(shape), Stride(stride)).is_injective
+
+    def broadcast_to(self, target: Shape) -> Layout:
+        """Widen singleton leaves to a structurally congruent target shape.
+
+        Syntax:
+            ``target`` uses StrideWeave's hierarchical ``Shape`` syntax and
+            must have the same shape-tree profile as this layout.
+
+        Semantics:
+            A source leaf of extent one may widen to the corresponding target
+            extent by changing only its stride to zero. Equal extents preserve
+            their existing strides. Every other extent change is refused.
+
+        Mode assumptions:
+            Leaves match by their position in the hierarchy. No flattening,
+            rank alignment, insertion, removal, or reordering is performed.
+
+        Args:
+            target: Hierarchical shape to which singleton leaves are widened.
+
+        Returns:
+            New layout with ``target`` as its shape and widened leaves using
+            stride zero.
+
+        Examples:
+            >>> from strideweave import Layout, Shape, Stride
+            >>> layout = Layout(Shape([2, 1]), Stride([1, 2]))
+            >>> layout.broadcast_to(Shape([2, 3]))
+            Layout( Shape<(2, 3)>, Stride<(1, 0)>)
+        """
+        if not isinstance(target, Shape):
+            raise TypeError("Layout broadcast target must be a Shape")
+
+        target_profile = Layout._profile_for_shape(target)
+        if self.profile != target_profile:
+            raise ValueError(
+                "Layout broadcast target must have the same shape profile: "
+                f"{self.profile!r} != {target_profile!r}"
+            )
+
+        def widen(
+            source_shape: _ShapeLevel,
+            source_stride: _StrideLevel,
+            target_shape: _ShapeLevel,
+        ) -> tuple[list[Any], list[Any]]:
+            widened_shape: list[Any] = []
+            widened_stride: list[Any] = []
+            for source_extent, stride, target_extent in zip(
+                source_shape, source_stride, target_shape, strict=True
+            ):
+                if isinstance(source_extent, int):
+                    assert isinstance(stride, int)
+                    assert isinstance(target_extent, int)
+                    if source_extent == target_extent:
+                        widened_shape.append(source_extent)
+                        widened_stride.append(stride)
+                    elif source_extent == 1:
+                        widened_shape.append(target_extent)
+                        widened_stride.append(0)
+                    else:
+                        raise ValueError(
+                            "Layout broadcast can only widen an extent-1 leaf: "
+                            f"{source_extent} cannot become {target_extent}"
+                        )
+                    continue
+
+                assert isinstance(stride, _StrideLevel)
+                assert isinstance(target_extent, _ShapeLevel)
+                child_shape, child_stride = widen(source_extent, stride, target_extent)
+                widened_shape.append(child_shape)
+                widened_stride.append(child_stride)
+            return widened_shape, widened_stride
+
+        shape, stride = widen(
+            self.shape.top_level,
+            self.stride.top_level,
+            target.top_level,
+        )
+        return Layout(Shape(shape), Stride(stride))
+
     @property
     def cosize(self) -> int:
         """Physical storage size required to materialize this layout.
@@ -965,6 +1169,9 @@ class Layout:
 
     @staticmethod
     def complement(A: Layout, cotarget: int) -> Layout:
+        if not A.is_injective:
+            raise ValueError(f"Layout {A}, overlaps with itself")
+
         traversal = sorted(A.infix(), key=lambda x: x[1])
         shape = []
         stride = []

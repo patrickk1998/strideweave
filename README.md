@@ -24,6 +24,14 @@ accelerator carriers.
   properties read subtensor zero rather than parallel fields.
 - `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
   coordinates to physical storage indices.
+- `layout.profile` exposes the shape tree's leaf-and-nesting recipe without its
+  extents or strides. `layout.is_injective` reports whether every logical
+  coordinate maps to a distinct physical offset, including exact detection of
+  stride-zero and overlapping non-zero layouts. `layout.broadcast_to(shape)`
+  widens only extent-one leaves at the same hierarchical positions, setting
+  their strides to zero; it never flattens, rank-aligns, inserts, removes, or
+  reorders modes. Layout complement is undefined for non-injective layouts and
+  refuses them explicitly.
 - `Tiler` is the public type alias for a read-only sequence of `Layout` values.
   Layout composition APIs use tilers to describe one tile per leading
   hierarchical mode: `Layout.compose` accepts a tiler directly, while
