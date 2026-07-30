@@ -1,11 +1,14 @@
 import random
 import string
 from importlib import import_module
+from itertools import product
 from typing import Any, cast
 
 import pytest
+import torch
 
 import strideweave as sw
+import strideweave.functional.api as functional_api
 from strideweave import (
     CPU,
     Generic,
@@ -62,11 +65,39 @@ def require_grad(tensor: Tensor) -> Tensor:
     return tensor.grad
 
 
+def require_torch_grad(tensor: torch.Tensor) -> torch.Tensor:
+    assert tensor.grad is not None
+    return tensor.grad
+
+
 def make_cpu_tensor(values: list[float], layout: Layout) -> Tensor:
     carrier = CPU(len(values))
     for index, value in enumerate(values):
         carrier[index] = value
     return Tensor(carrier, 0, layout)
+
+
+def make_backend_tensor_from_torch(tensor: torch.Tensor, backend: str) -> Tensor:
+    extents = list(tensor.shape)
+    strides = []
+    next_stride = 1
+    for extent in extents:
+        strides.append(next_stride)
+        next_stride *= extent
+    layout = Layout(Shape(extents), Stride(strides))
+    physical = [0.0] * layout.cosize
+    for coordinate in product(*(range(extent) for extent in extents)):
+        physical[layout.index(coordinate)] = tensor[coordinate].item()
+    if backend == "cpu":
+        return make_cpu_tensor(physical, layout)
+    return Tensor(Generic(physical), 0, layout)
+
+
+def coordinate_values(tensor: Tensor, extents: tuple[int, ...]) -> list[Any]:
+    return [
+        tensor[coordinate]
+        for coordinate in product(*(range(extent) for extent in extents))
+    ]
 
 
 def reference_lex(command: str) -> list[tuple[str, str, int, int]]:
@@ -337,6 +368,17 @@ def test_einops_parse_einsum_builds_matmul_rearrange_spec():
     assert spec.lhs_symbol_ids == (("a", 0), ("b", 1))
     assert spec.rhs_symbol_ids == (("c", 0), ("b", 1))
     assert spec.common_symbols == ("b",)
+
+
+def test_einops_parse_einsum_classifies_batch_and_contraction_symbols():
+    spec = parse_einsum("b i k, b j k -> b i j")
+
+    assert spec.union_symbols == ("b", "i", "k", "j")
+    assert spec.batch_symbols == ("b",)
+    assert spec.contraction_symbols == ("k",)
+    assert spec.lhs_union_output == Tree(Node.id(0), Node.id(1), Node.id(2), Node.Leaf)
+    assert spec.rhs_union_output == Tree(Node.id(0), Node.Leaf, Node.id(2), Node.id(1))
+    assert spec.general_output == Tree(Node.id(0), Node.id(1), Node.id(3))
 
 
 def test_einops_parse_einsum_reorders_rhs_inner_to_lhs_shared_order():
@@ -625,6 +667,123 @@ def test_einops_einsum_string_api_matches_manual_dot_products():
     assert isinstance(result.autograd_ctx, RearrangeOperation)
     assert isinstance(
         result.autograd_ctx.inputs()[0].autograd_ctx, GenericMatmulOperation
+    )
+
+
+def test_einops_einsum_no_batch_invokes_matmul_fast_path(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lhs = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    rhs = Tensor(Generic(range(12)), 0, Layout(Shape([4, 3]), Stride([1, 4])))
+    original_matmul = functional_api._matmul_2mode
+    calls = 0
+
+    def observed_matmul(lhs: Tensor, rhs: Tensor) -> Tensor:
+        nonlocal calls
+        calls += 1
+        return original_matmul(lhs, rhs)
+
+    monkeypatch.setattr(functional_api, "_matmul_2mode", observed_matmul)
+
+    einops_einsum(lhs, rhs, "a b, c b -> a c")
+
+    assert calls == 1
+
+
+def test_einops_einsum_batch_symbol_bypasses_matmul_fast_path(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lhs = Tensor(Generic(range(12)), 0, Layout(Shape([2, 2, 3]), Stride([1, 2, 4])))
+    rhs = Tensor(Generic(range(18)), 0, Layout(Shape([2, 3, 3]), Stride([1, 2, 6])))
+    original_matmul = functional_api._matmul_2mode
+    calls = 0
+
+    def observed_matmul(lhs: Tensor, rhs: Tensor) -> Tensor:
+        nonlocal calls
+        calls += 1
+        return original_matmul(lhs, rhs)
+
+    monkeypatch.setattr(functional_api, "_matmul_2mode", observed_matmul)
+
+    einops_einsum(lhs, rhs, "b i k, b j k -> b i j")
+
+    assert calls == 0
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_einops_einsum_batch_symbol_matches_torch_forward_and_backward(
+    backend: str,
+):
+    torch_lhs = torch.arange(1.0, 25.0).reshape(2, 3, 4).requires_grad_()
+    torch_rhs = ((torch.arange(1.0, 41.0).reshape(2, 5, 4) % 7) + 1).requires_grad_()
+    torch_upstream = torch.arange(1.0, 31.0).reshape(2, 3, 5) / 10
+    lhs = make_backend_tensor_from_torch(torch_lhs.detach(), backend)
+    rhs = make_backend_tensor_from_torch(torch_rhs.detach(), backend)
+    upstream = make_backend_tensor_from_torch(torch_upstream, backend)
+
+    result = einops_einsum(lhs, rhs, "b i k, b j k -> b i j")
+    expected = torch.einsum("bik,bjk->bij", torch_lhs, torch_rhs)
+    result.backward(upstream)
+    expected.backward(torch_upstream)
+
+    assert coordinate_values(result, (2, 3, 5)) == pytest.approx(
+        expected.detach().reshape(-1).tolist()
+    )
+    assert coordinate_values(require_grad(lhs), (2, 3, 4)) == pytest.approx(
+        require_torch_grad(torch_lhs).reshape(-1).tolist()
+    )
+    assert coordinate_values(require_grad(rhs), (2, 5, 4)) == pytest.approx(
+        require_torch_grad(torch_rhs).reshape(-1).tolist()
+    )
+
+
+def test_einops_einsum_multiple_batch_symbols_at_different_positions_matches_torch():
+    torch_lhs = torch.arange(1.0, 25.0).reshape(2, 2, 3, 2).requires_grad_()
+    torch_rhs = (
+        (torch.arange(1.0, 25.0).reshape(2, 2, 2, 3) % 11) + 1
+    ).requires_grad_()
+    torch_upstream = torch.arange(1.0, 17.0).reshape(2, 2, 2, 2) / 7
+    lhs = make_backend_tensor_from_torch(torch_lhs.detach(), "generic")
+    rhs = make_backend_tensor_from_torch(torch_rhs.detach(), "generic")
+    upstream = make_backend_tensor_from_torch(torch_upstream, "generic")
+
+    result = einops_einsum(lhs, rhs, "i b k c, b j c k -> b c i j")
+    expected = torch.einsum("ibkc,bjck->bcij", torch_lhs, torch_rhs)
+    result.backward(upstream)
+    expected.backward(torch_upstream)
+
+    assert coordinate_values(result, (2, 2, 2, 2)) == pytest.approx(
+        expected.detach().reshape(-1).tolist()
+    )
+    assert coordinate_values(require_grad(lhs), (2, 2, 3, 2)) == pytest.approx(
+        require_torch_grad(torch_lhs).reshape(-1).tolist()
+    )
+    assert coordinate_values(require_grad(rhs), (2, 2, 2, 3)) == pytest.approx(
+        require_torch_grad(torch_rhs).reshape(-1).tolist()
+    )
+
+
+def test_einops_einsum_batch_only_outer_product_matches_torch():
+    torch_lhs = torch.arange(1.0, 7.0).reshape(2, 3).requires_grad_()
+    torch_rhs = torch.arange(1.0, 9.0).reshape(2, 4).requires_grad_()
+    torch_upstream = torch.arange(1.0, 25.0).reshape(2, 3, 4) / 5
+    lhs = make_backend_tensor_from_torch(torch_lhs.detach(), "generic")
+    rhs = make_backend_tensor_from_torch(torch_rhs.detach(), "generic")
+    upstream = make_backend_tensor_from_torch(torch_upstream, "generic")
+
+    result = einops_einsum(lhs, rhs, "b i, b j -> b i j")
+    expected = torch.einsum("bi,bj->bij", torch_lhs, torch_rhs)
+    result.backward(upstream)
+    expected.backward(torch_upstream)
+
+    assert coordinate_values(result, (2, 3, 4)) == pytest.approx(
+        expected.detach().reshape(-1).tolist()
+    )
+    assert coordinate_values(require_grad(lhs), (2, 3)) == pytest.approx(
+        require_torch_grad(torch_lhs).reshape(-1).tolist()
+    )
+    assert coordinate_values(require_grad(rhs), (2, 4)) == pytest.approx(
+        require_torch_grad(torch_rhs).reshape(-1).tolist()
     )
 
 

@@ -703,8 +703,26 @@ def move(tensor: Any, destination: Any) -> Any:
 def einsum(lhs: Any, rhs: Any, description: str) -> Any:
     """Contract two tensors using a StrideWeave contraction description.
 
-    The string form is parsed by ``strideweave.einops`` and lowered into
-    rearrange, matmul, and final rearrange operations.
+    Shared input symbols omitted from the output are contracted, shared symbols
+    retained in the output are batch dimensions, and one-sided symbols are free
+    dimensions.
+
+    Syntax:
+        ``description`` must be ``"lhs, rhs -> output"``. Every one-sided input
+        symbol must appear exactly once in the output. Shared symbols may be
+        omitted for contraction or retained for batching. Parentheses preserve
+        hierarchical output grouping, and literal ``1`` inserts a singleton.
+
+    Semantics:
+        A description without batch symbols uses rearrange, two-mode matmul, and
+        final rearrange. A description with batch symbols aligns both operands
+        over their union symbol space, multiplies them elementwise, and sums
+        only the shared symbols omitted from the output.
+
+    Mode assumptions:
+        Each input reference describes the corresponding hierarchical layout.
+        Same-named symbols must have equal logical sizes. StrideWeave does not
+        infer flat-layout rank alignment or reorder unspecified dimensions.
 
     Args:
         lhs: Left input tensor.

@@ -870,10 +870,19 @@ have standard flat einops semantics. String forms include:
 transposed = sw.rearrange(tensor, "a b -> b a")
 summed = sw.reduce(tensor, "a (b c) -> a b")
 contracted = sw.einsum(lhs, rhs, "a b, c b -> a c")
+batched = sw.einsum(lhs, rhs, "b i k, b j k -> b i j")
 ```
 
 The native lexer and Python parsers compile these descriptions into layout
-trees and cache successful specifications.
+trees and cache successful specifications. Einsum classifies each shared symbol
+by its output presence: an omitted shared symbol is contracted, while a retained
+shared symbol is a batch dimension. One-sided symbols are free dimensions and
+must appear in the output. A contraction without batch symbols keeps the
+two-mode matmul lowering. Batched contractions align both operands over their
+union symbol space with differentiable singleton broadcasts, multiply
+elementwise, and reduce only omitted shared symbols. This general lowering
+materializes the union-shaped product; it does not currently use a native
+batched-matmul kernel.
 
 ## Operation Profiling
 

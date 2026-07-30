@@ -51,6 +51,13 @@ class EinsumSpec:
     lhs_symbol_ids: tuple[tuple[str, int], ...]
     rhs_symbol_ids: tuple[tuple[str, int], ...]
     common_symbols: tuple[str, ...]
+    union_symbols: tuple[str, ...]
+    contraction_symbols: tuple[str, ...]
+    batch_symbols: tuple[str, ...]
+    lhs_union_output: Tree
+    rhs_union_output: Tree
+    union_selection: Tree
+    general_output: Tree
 
 def lex(command: str) -> list[Token]: ...
 def parse_layout_ref(tokens: Sequence[Token]) -> LayoutReference: ...
