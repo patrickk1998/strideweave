@@ -73,6 +73,17 @@ class UnsupportedData(Carrier):
         raise NotImplementedError("UnsupportedData does not implement scatter")
 
 
+class _LeftGradientOnlyOperation(sw.Operation):
+    def _forward(self, *inputs: Any) -> Tensor:
+        lhs, rhs = inputs
+        assert isinstance(lhs, Tensor)
+        assert isinstance(rhs, Tensor)
+        return Tensor(Generic([0] * rhs.size()), 0, lhs.layout)
+
+    def backward(self, gradient: Tensor) -> tuple[Tensor, None]:
+        return gradient, None
+
+
 def tensor_values(tensor: Tensor) -> list[Any]:
     return [tensor[i] for i in range(tensor.size())]
 
@@ -105,6 +116,7 @@ def require_grad(tensor: Tensor) -> Tensor:
 def test_tensor_public_api_imports():
     assert sw.Tensor is Tensor
     assert sw.GenericViewOperation is GenericViewOperation
+    assert sw.grad is not None
     assert sw.view is not None
 
 
@@ -1009,7 +1021,7 @@ def test_tensor_permute_backward_accumulates_repeated_calls():
     result = sw.permute(tensor, 1, 0)
     gradient = Tensor(Generic([1, 4, 2, 5, 3, 6]), 0, result.layout)
 
-    result.backward(gradient)
+    result.backward(gradient, retain_graph=True)
     result.backward(gradient)
     tensor_grad = require_grad(tensor)
 
@@ -1076,7 +1088,7 @@ def test_tensor_backward_without_gradient_on_scalar_accumulates_repeated_calls()
     tensor = Tensor(Generic([3]), 0, layout)
     result = tensor * 2
 
-    result.backward()
+    result.backward(retain_graph=True)
     result.backward()
     tensor_grad = require_grad(tensor)
 
@@ -1211,7 +1223,7 @@ def test_tensor_backward_accumulates_repeated_calls():
     result = lhs + rhs
     gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
 
-    result.backward(gradient)
+    result.backward(gradient, retain_graph=True)
     result.backward(gradient)
     lhs_grad = require_grad(lhs)
     rhs_grad = require_grad(rhs)
@@ -1229,11 +1241,254 @@ def test_tensor_retained_non_leaf_grad_accumulates_repeated_calls():
     gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
 
     result.retain_grad()
-    result.backward(gradient)
+    result.backward(gradient, retain_graph=True)
     result.backward(gradient)
     result_grad = require_grad(result)
 
     assert tensor_values(result_grad) == [2, 2, 2, 2]
+
+
+def test_tensor_backward_frees_graph_by_default_and_reports_retain_graph():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    result = tensor * 2
+    operation = result.autograd_ctx
+    assert isinstance(operation, sw.Operation)
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+
+    result.backward(gradient)
+
+    assert operation.inputs() == ()
+    assert operation.input_versions() == ()
+    assert operation.ctx == {}
+    assert operation._autograd_state_freed
+    with pytest.raises(
+        RuntimeError,
+        match=r"backward through the graph a second time.*retain_graph=True",
+    ):
+        result.backward(gradient)
+
+
+def test_tensor_backward_releases_saved_tensor_references():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    intermediate = tensor * 2
+    intermediate_reference = weakref.ref(intermediate)
+    result = intermediate * 3
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+
+    del intermediate
+    gc.collect()
+    assert intermediate_reference() is not None
+
+    result.backward(gradient)
+    gc.collect()
+
+    assert intermediate_reference() is None
+
+
+def test_tensor_backward_frees_shared_subgraph_from_either_root():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
+    shared = tensor * 2
+    first = shared * 3
+    second = shared * 4
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+    freed_error = r"backward through the graph a second time.*retain_graph=True"
+
+    first.backward(gradient)
+
+    with pytest.raises(RuntimeError, match=freed_error):
+        first.backward(gradient)
+    with pytest.raises(RuntimeError, match=freed_error):
+        second.backward(gradient)
+
+
+def test_tensor_backward_frees_operations_that_receive_no_gradient():
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = Tensor(Generic([1, 2, 3, 4]), 0, layout) * 2
+    rhs = Tensor(Generic([5, 6, 7, 8]), 0, layout) * 3
+    lhs_operation = lhs.autograd_ctx
+    rhs_operation = rhs.autograd_ctx
+    assert isinstance(lhs_operation, sw.Operation)
+    assert isinstance(rhs_operation, sw.Operation)
+    result = _LeftGradientOnlyOperation().forward(lhs, rhs)
+    gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
+
+    result.backward(gradient)
+
+    assert lhs_operation._autograd_state_freed
+    assert rhs_operation._autograd_state_freed
+    assert rhs_operation.inputs() == ()
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_functional_grad_matches_backward_on_shared_multi_input_graph(backend):
+    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    lhs = tensor_with_storage_for_backend([1.0, 2.0, 3.0, 4.0], layout, backend)
+    rhs = tensor_with_storage_for_backend([5.0, 6.0, 7.0, 8.0], layout, backend)
+    shared = sw.elementwise_mul(lhs, rhs)
+    output = sw.add(shared, shared)
+    cotangent = tensor_with_storage_for_backend(
+        [1.0] * output.layout.cosize,
+        output.layout,
+        backend,
+    )
+
+    lhs_functional, rhs_functional = sw.grad(
+        output,
+        (lhs, rhs),
+        cotangent,
+        retain_graph=True,
+    )
+
+    assert lhs_functional is not None
+    assert rhs_functional is not None
+    assert lhs.grad is None
+    assert rhs.grad is None
+    assert shared.grad is None
+    assert output.grad is None
+
+    output.backward(cotangent)
+
+    assert tensor_values(lhs_functional) == pytest.approx(
+        tensor_values(require_grad(lhs))
+    )
+    assert tensor_values(rhs_functional) == pytest.approx(
+        tensor_values(require_grad(rhs))
+    )
+    assert tensor_values(lhs_functional) == pytest.approx([10.0, 12.0, 14.0, 16.0])
+    assert tensor_values(rhs_functional) == pytest.approx([2.0, 4.0, 6.0, 8.0])
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_functional_grad_batched_basis_cotangents_reconstruct_jacobian(backend):
+    layout = Layout(Shape(2), Stride(1))
+    tensor = tensor_with_storage_for_backend([2.0, 3.0], layout, backend)
+    output = sw.elementwise_mul(tensor, tensor)
+    cotangent_layout = Layout.concat(
+        Layout(Shape(2), Stride(output.layout.cosize)),
+        output.layout,
+    )
+    cotangents = tensor_with_storage_for_backend(
+        [1.0, 0.0, 0.0, 1.0],
+        cotangent_layout,
+        backend,
+    )
+
+    (jacobian,) = sw.grad(output, (tensor,), cotangents, batched=True)
+
+    assert jacobian is not None
+    assert jacobian.layout == Layout(Shape([2, 2]), Stride([2, 1]))
+    assert [[jacobian[batch, column] for column in range(2)] for batch in range(2)] == [
+        [4.0, 0.0],
+        [0.0, 6.0],
+    ]
+    assert tensor.grad is None
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_functional_grad_batched_result_stride_uses_input_cosize(backend):
+    input_layout = Layout(Shape([2, 3]), Stride([1, 4]))
+    tensor = tensor_with_storage_for_backend(
+        [1.0] * input_layout.cosize,
+        input_layout,
+        backend,
+    )
+    output = sw.mul(tensor, 3.0)
+    cotangent_layout = Layout.concat(
+        Layout(Shape(2), Stride(output.layout.cosize)),
+        output.layout,
+    )
+    cotangent_values = [0.0] * cotangent_layout.cosize
+    for batch, value in enumerate((1.0, 2.0)):
+        for i in range(2):
+            for j in range(3):
+                cotangent_values[cotangent_layout.index((batch, i, j))] = value
+    cotangents = tensor_with_storage_for_backend(
+        cotangent_values,
+        cotangent_layout,
+        backend,
+    )
+
+    (gradient,) = sw.grad(output, (tensor,), cotangents, batched=True)
+
+    assert gradient is not None
+    assert input_layout.size == 6
+    assert input_layout.cosize == 10
+    assert gradient.layout == Layout(
+        Shape([2, 2, 3]),
+        Stride([10, 1, 4]),
+    )
+    assert gradient.carrier.size() == 20
+    assert [
+        [gradient[batch, i, j] for i in range(2) for j in range(3)]
+        for batch in range(2)
+    ] == [[3.0] * 6, [6.0] * 6]
+
+
+def test_functional_grad_refuses_batched_cotangent_with_different_trailing_layout():
+    output_layout = Layout(Shape([2, 2]), Stride([1, 2]))
+    tensor = Tensor(Generic([1.0, 2.0, 3.0, 4.0]), 0, output_layout)
+    output = tensor * 2.0
+    wrong_trailing_layout = Layout(Shape([3, 2, 2]), Stride([4, 2, 1]))
+    cotangents = Tensor(Generic([1.0] * 12), 0, wrong_trailing_layout)
+
+    with pytest.raises(
+        ValueError,
+        match=("one prepended leaf batch mode followed by the output layout exactly"),
+    ):
+        sw.grad(output, (tensor,), cotangents, batched=True)
+
+
+def test_functional_grad_reuses_then_frees_graph_once_after_batched_passes():
+    layout = Layout(Shape(2), Stride(1))
+    tensor = Tensor(Generic([2.0, 3.0]), 0, layout)
+    output = tensor * 2.0
+    operation = output.autograd_ctx
+    assert isinstance(operation, sw.Operation)
+    cotangent_layout = Layout.concat(Layout(Shape(3), Stride(2)), output.layout)
+    cotangents = Tensor(Generic([1.0] * 6), 0, cotangent_layout)
+
+    sw.grad(
+        output,
+        (tensor,),
+        cotangents,
+        batched=True,
+        retain_graph=True,
+    )
+    assert not operation._autograd_state_freed
+    assert tensor.grad is None
+
+    sw.grad(output, (tensor,), cotangents, batched=True)
+    assert operation._autograd_state_freed
+    assert tensor.grad is None
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"backward through the graph a second time.*retain_graph=True",
+    ):
+        sw.grad(output, (tensor,), cotangents, batched=True)
+
+
+def test_functional_grad_returns_none_for_unreachable_input():
+    layout = Layout(Shape(2), Stride(1))
+    reachable = Tensor(Generic([2.0, 3.0]), 0, layout)
+    unreachable = Tensor(Generic([4.0, 5.0]), 0, layout)
+    output = reachable * 2.0
+    cotangent = Tensor(Generic([1.0, 1.0]), 0, layout)
+
+    reachable_gradient, unreachable_gradient = sw.grad(
+        output,
+        (reachable, unreachable),
+        cotangent,
+    )
+
+    assert reachable_gradient is not None
+    assert tensor_values(reachable_gradient) == [2.0, 2.0]
+    assert unreachable_gradient is None
+    assert reachable.grad is None
+    assert unreachable.grad is None
 
 
 def test_tensor_backward_only_retains_selected_non_leaf_grads_in_chain():

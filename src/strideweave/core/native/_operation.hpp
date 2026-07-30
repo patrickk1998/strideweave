@@ -45,7 +45,8 @@ class Operation {
 public:
     Operation()
         : ctx_(py::dict()), inputs_(py::tuple()), input_versions_(py::tuple()),
-          is_dispatched_(false), dispatch_carrier_class_(py::none()) {}
+          autograd_state_freed_(false), is_dispatched_(false),
+          dispatch_carrier_class_(py::none()) {}
 
     virtual ~Operation() = default;
 
@@ -81,13 +82,19 @@ public:
 
     py::dict ctx() const { return ctx_; }
 
-    void store_inputs(py::args inputs) {
-        inputs_ = py::reinterpret_borrow<py::tuple>(inputs);
-    }
+    void store_inputs(py::args inputs) { store_tensor_inputs(inputs); }
 
     py::tuple inputs() const { return inputs_; }
 
     py::tuple input_versions() const { return input_versions_; }
+
+    bool autograd_state_freed() const { return autograd_state_freed_; }
+
+    void release_autograd_state() {
+        clear_inputs();
+        ctx_.clear();
+        autograd_state_freed_ = true;
+    }
 
     void set_dispatch_metadata(std::string operation_name, py::object carrier_class) {
         operation_name_ = std::move(operation_name);
@@ -173,6 +180,7 @@ private:
 
     py::tuple inputs_;
     py::tuple input_versions_;
+    bool autograd_state_freed_;
     bool is_dispatched_;
     std::string operation_name_;
     py::object dispatch_carrier_class_;

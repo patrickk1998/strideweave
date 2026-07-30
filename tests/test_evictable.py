@@ -749,11 +749,32 @@ def test_repeated_backward_reuses_state_and_accumulates_gradients():
     tensor = make_tensor(make_cpu_evictable([2.0]))
     result = sw.pow(tensor, 3)
 
-    result.backward(make_tensor(make_cpu_evictable([1.0])))
+    result.backward(
+        make_tensor(make_cpu_evictable([1.0])),
+        retain_graph=True,
+    )
     result.backward(make_tensor(make_cpu_evictable([1.0])))
 
     assert tensor.grad is not None
     assert values(tensor.grad) == pytest.approx([24.0])
+
+
+def test_backward_frees_the_visible_evictable_adapter():
+    tensor = make_tensor(make_cpu_evictable([2.0]))
+    result = sw.pow(tensor, 3)
+    adapter = adapter_for(result)
+    gradient = make_tensor(make_cpu_evictable([1.0]))
+
+    result.backward(gradient)
+
+    assert adapter.inputs() == ()
+    assert adapter.ctx == {}
+    assert adapter._autograd_state_freed
+    with pytest.raises(
+        RuntimeError,
+        match=r"backward through the graph a second time.*retain_graph=True",
+    ):
+        result.backward(make_tensor(make_cpu_evictable([1.0])))
 
 
 def test_scalar_implicit_backward_uses_evictable_gradient():

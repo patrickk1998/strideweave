@@ -938,10 +938,19 @@ the result is differentiable, and at least one tensor input is differentiable.
 Backward traversal is iterative and topological, so shared subgraphs accumulate
 their pending gradients before their operation runs.
 
+- `backward(gradient=None, retain_graph=False)` releases the saved inputs,
+  versions, and operation context for every reached operation after a successful
+  traversal. Calling backward through that graph again raises an error naming
+  `retain_graph=True`; pass that flag on an earlier traversal when the same
+  graph must be reused.
+- Graph nodes remain attached after their saved state is released so a second
+  traversal fails explicitly rather than treating a former result as a leaf.
+  A shared subgraph is released by whichever reachable root traverses it first.
 - Non-scalar tensors require an explicit gradient in `backward(gradient)`.
 - An exact shape `[1]` is a scalar and may call `backward()` with an implicit
   gradient of one.
-- Leaf tensors accumulate `.grad` by default.
+- Leaf tensors accumulate `.grad` by default, including across distinct
+  forward graphs and retained repeated traversals.
 - Non-leaf tensors retain `.grad` only after `retain_grad()`.
 - `no_grad()`, `is_grad_enabled()`, and `set_grad_enabled()` control the
   thread-local graph-building state.
