@@ -1,8 +1,11 @@
+import gc
 import math
+import weakref
 from collections.abc import Iterable
 from typing import Any
 
 import pytest
+import torch
 
 import strideweave as sw
 from strideweave import (
@@ -79,6 +82,19 @@ def tensor_with_logical_values(values: Iterable[Any], layout: Layout) -> Tensor:
     for logical_index, value in enumerate(values):
         physical_values[layout.index(logical_index)] = value
     return Tensor(Generic(physical_values), 0, layout)
+
+
+def tensor_with_storage_for_backend(
+    values: Iterable[float], layout: Layout, backend: str
+) -> Tensor:
+    materialized = list(values)
+    if backend == "generic":
+        carrier = Generic(materialized, dtype=DType.Float32)
+    else:
+        carrier = CPU(len(materialized), dtype=DType.Float32)
+        for index, value in enumerate(materialized):
+            carrier[index] = value
+    return Tensor(carrier, 0, layout)
 
 
 def require_grad(tensor: Tensor) -> Tensor:
@@ -585,12 +601,14 @@ def test_tensor_add_preserves_generic_data_class():
     assert type(result.carrier) is Generic
 
 
-def test_tensor_add_rejects_mismatched_layouts():
+def test_tensor_add_accepts_equal_shapes_with_different_strides():
     lhs = Tensor(Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([1, 2])))
-    rhs = Tensor(Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([2, 1])))
+    rhs = Tensor(Generic([1, 3, 2, 4]), 0, Layout(Shape([2, 2]), Stride([2, 1])))
 
-    with pytest.raises(ValueError, match="Tensor layouts must match"):
-        _ = lhs + rhs
+    result = lhs + rhs
+
+    assert tensor_values(result) == [2, 4, 6, 8]
+    assert result.layout == Layout(Shape([2, 2]), Stride([1, 2]))
 
 
 def test_tensor_add_rejects_non_tensor_operand():
@@ -725,12 +743,14 @@ def test_tensor_pow_scalar_forward_and_backward():
 def test_tensor_elementwise_operations_reject_invalid_inputs():
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
-    mismatched_layout = Tensor(
-        Generic([1, 2, 3, 4]), 0, Layout(Shape([2, 2]), Stride([2, 1]))
+    incompatible_shape = Tensor(
+        Generic([1, 2, 3, 4, 5, 6]),
+        0,
+        Layout(Shape([2, 3]), Stride([1, 2])),
     )
 
-    with pytest.raises(ValueError, match="Tensor layouts must match"):
-        _ = tensor * mismatched_layout
+    with pytest.raises(ValueError, match="not broadcast-compatible"):
+        _ = tensor * incompatible_shape
     with pytest.raises(TypeError):
         _ = tensor / 2
     with pytest.raises(TypeError):
@@ -1258,6 +1278,247 @@ def test_tensor_backward_accumulates_shared_input_contributions():
     assert tensor_values(tensor_grad) == [2, 4, 6, 8]
 
 
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_tensor_backward_sums_top_level_stride_zero_aliases(backend):
+    broadcast = Layout(Shape([4, 2]), Stride([0, 1]))
+    lhs = tensor_with_storage_for_backend([5.0, 7.0], broadcast, backend)
+    rhs = tensor_with_storage_for_backend([2.0, 3.0], broadcast, backend)
+
+    result = sw.elementwise_mul(lhs, rhs)
+    gradient = tensor_with_storage_for_backend(
+        [1.0] * result.layout.cosize,
+        result.layout,
+        backend,
+    )
+    result.backward(gradient)
+    lhs_grad = require_grad(lhs)
+
+    assert lhs_grad.layout == Layout(Shape([4, 2]), Stride([1, 4]))
+    assert lhs_grad.layout.is_injective
+    assert tensor_values(lhs_grad) == pytest.approx([8.0] * 4 + [12.0] * 4)
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_tensor_backward_sums_nested_stride_zero_aliases(backend):
+    inserted = Layout.rearrange(
+        Layout(Shape([2, 3]), Stride([1, 2])),
+        Tree(Node.id(0), Tree(Node.Leaf, Node.id(1))),
+    )
+    broadcast = inserted.broadcast_to(Shape([2, [4, 3]]))
+    tensor = tensor_with_storage_for_backend(
+        [float(value) for value in range(1, 7)],
+        broadcast,
+        backend,
+    )
+
+    result = sw.mul(tensor, 2)
+    gradient = tensor_with_storage_for_backend(
+        [1.0] * result.layout.cosize,
+        result.layout,
+        backend,
+    )
+    result.backward(gradient)
+    tensor_grad = require_grad(tensor)
+
+    assert tensor_grad.layout == Layout(
+        Shape([2, [4, 3]]),
+        Stride([1, [2, 8]]),
+    )
+    assert tensor_grad.layout.is_injective
+    assert tensor_values(tensor_grad) == pytest.approx([8.0] * tensor.size())
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_tensor_backward_refuses_non_broadcast_aliasing(backend):
+    overlapping = Layout(Shape([4, 2]), Stride([1, 1]))
+    tensor = tensor_with_storage_for_backend(
+        [float(value) for value in range(overlapping.cosize)],
+        overlapping,
+        backend,
+    )
+    result = sw.mul(tensor, 2)
+    gradient = tensor_with_storage_for_backend(
+        [1.0] * result.layout.cosize,
+        result.layout,
+        backend,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="aliasing is not caused only by stride-zero broadcast modes",
+    ):
+        result.backward(gradient)
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_broadcast_to_backward_matches_torch_and_restores_input_layout(backend):
+    input_layout = Layout(Shape([1, 3]), Stride([1, 1]))
+    tensor = tensor_with_storage_for_backend([2.0, 5.0, 7.0], input_layout, backend)
+    broadcast = sw.broadcast_to(tensor, Shape([4, 3]))
+    gradient_layout = Layout(Shape([4, 3]), Stride([1, 4]))
+    upstream_values = [0.0] * gradient_layout.cosize
+    torch_upstream = torch.arange(1.0, 13.0).reshape(4, 3)
+    for i in range(4):
+        for j in range(3):
+            upstream_values[gradient_layout.index((i, j))] = torch_upstream[i, j].item()
+    upstream = tensor_with_storage_for_backend(
+        upstream_values,
+        gradient_layout,
+        backend,
+    )
+
+    torch_tensor = torch.tensor([[2.0, 5.0, 7.0]], requires_grad=True)
+    torch_tensor.expand(4, 3).backward(torch_upstream)
+    assert torch_tensor.grad is not None
+    broadcast.backward(upstream)
+    tensor_gradient = require_grad(tensor)
+
+    assert broadcast.carrier is tensor.carrier
+    assert broadcast.layout == Layout(Shape([4, 3]), Stride([0, 1]))
+    assert tensor_gradient.layout == input_layout
+    assert tensor_values(tensor_gradient) == pytest.approx(
+        torch_tensor.grad.reshape(-1).tolist()
+    )
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_broadcast_to_backward_sums_at_hierarchy_depth(backend):
+    input_layout = Layout(
+        Shape([2, [1, 3]]),
+        Stride([1, [2, 2]]),
+    )
+    tensor = tensor_with_storage_for_backend(
+        [float(value) for value in range(1, 7)],
+        input_layout,
+        backend,
+    )
+    broadcast = sw.broadcast_to(tensor, Shape([2, [4, 3]]))
+    gradient_layout = Layout(
+        Shape([2, [4, 3]]),
+        Stride([1, [2, 8]]),
+    )
+    upstream = tensor_with_storage_for_backend(
+        [1.0] * gradient_layout.cosize,
+        gradient_layout,
+        backend,
+    )
+
+    broadcast.backward(upstream)
+    tensor_gradient = require_grad(tensor)
+
+    assert broadcast.layout == Layout(
+        Shape([2, [4, 3]]),
+        Stride([1, [0, 2]]),
+    )
+    assert tensor_gradient.layout == input_layout
+    assert tensor_values(tensor_gradient) == pytest.approx([4.0] * tensor.size())
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_pointwise_alignment_saves_differentiable_broadcast_view(backend):
+    singleton_layout = Layout(Shape([1, 3]), Stride([1, 1]))
+    full_layout = Layout(Shape([4, 3]), Stride([1, 4]))
+    singleton = tensor_with_storage_for_backend(
+        [2.0, 5.0, 7.0],
+        singleton_layout,
+        backend,
+    )
+    full = tensor_with_storage_for_backend(
+        [1.0] * full_layout.cosize,
+        full_layout,
+        backend,
+    )
+
+    result = sw.add(singleton, full)
+    operation = result.autograd_ctx
+    assert isinstance(operation, sw.Operation)
+    aligned_singleton, saved_full = operation.inputs()
+
+    assert isinstance(aligned_singleton.autograd_ctx, sw.BroadcastOperation)
+    assert aligned_singleton.layout == Layout(Shape([4, 3]), Stride([0, 1]))
+    assert saved_full is full
+
+    upstream = tensor_with_storage_for_backend(
+        [1.0] * result.layout.cosize,
+        result.layout,
+        backend,
+    )
+    result.backward(upstream)
+
+    assert require_grad(singleton).layout == singleton_layout
+    assert tensor_values(require_grad(singleton)) == pytest.approx([4.0, 4.0, 4.0])
+    assert tensor_values(require_grad(full)) == pytest.approx([1.0] * full.size())
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_reduce_over_broadcast_mode_matches_torch_forward_and_backward(backend):
+    source_layout = Layout(Shape([2, 1]), Stride([1, 2]))
+    source = tensor_with_storage_for_backend([5.0, 7.0], source_layout, backend)
+    broadcast = sw.broadcast_to(source, Shape([2, 4]))
+
+    result = sw.reduce(broadcast)
+    upstream = tensor_with_storage_for_backend(
+        [2.0, 3.0],
+        result.layout,
+        backend,
+    )
+    result.backward(upstream)
+
+    torch_source = torch.tensor([[5.0], [7.0]], requires_grad=True)
+    torch_result = torch_source.expand(2, 4).sum(dim=1)
+    torch_result.backward(torch.tensor([2.0, 3.0]))
+    assert torch_source.grad is not None
+
+    assert tensor_values(result) == pytest.approx(torch_result.tolist())
+    assert require_grad(source).layout == source_layout
+    assert tensor_values(require_grad(source)) == pytest.approx(
+        torch_source.grad.reshape(-1).tolist()
+    )
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_matmul_broadcast_operand_matches_torch_forward_and_backward(backend):
+    lhs_layout = Layout(Shape([2, 3]), Stride([1, 2]))
+    lhs = tensor_with_storage_for_backend(
+        [1.0, 4.0, 2.0, 5.0, 3.0, 6.0],
+        lhs_layout,
+        backend,
+    )
+    rhs_source_layout = Layout(Shape([1, 3]), Stride([1, 1]))
+    rhs_source = tensor_with_storage_for_backend(
+        [7.0, 8.0, 9.0],
+        rhs_source_layout,
+        backend,
+    )
+    rhs = sw.broadcast_to(rhs_source, Shape([2, 3]))
+
+    result = sw.matmul(lhs, rhs)
+    upstream = tensor_with_storage_for_backend(
+        [1.0, 3.0, 2.0, 4.0],
+        result.layout,
+        backend,
+    )
+    result.backward(upstream)
+
+    torch_lhs = torch.tensor(
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+        requires_grad=True,
+    )
+    torch_rhs_source = torch.tensor([[7.0, 8.0, 9.0]], requires_grad=True)
+    torch_rhs = torch_rhs_source.expand(2, 3)
+    torch_result = torch_lhs @ torch_rhs.T
+    torch_result.backward(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+    assert torch_rhs_source.grad is not None
+
+    assert [result[i, j] for i in range(2) for j in range(2)] == pytest.approx(
+        torch_result.reshape(-1).tolist()
+    )
+    assert require_grad(rhs_source).layout == rhs_source_layout
+    assert tensor_values(require_grad(rhs_source)) == pytest.approx(
+        torch_rhs_source.grad.reshape(-1).tolist()
+    )
+
+
 def test_tensor_backward_rejects_input_modified_in_place_after_forward():
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
@@ -1275,7 +1536,7 @@ def test_tensor_backward_rejects_view_input_modified_through_source_after_forwar
     tensor = Tensor(Generic(list(range(6))), 0, layout)
     view = tensor[1, :]
     result = view * view
-    gradient = tensor_with_logical_values([1, 1, 1], view.layout)
+    gradient = tensor_with_logical_values([1, 1, 1], result.layout)
 
     tensor[1, 0] = 99
 

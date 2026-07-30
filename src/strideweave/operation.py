@@ -38,6 +38,7 @@ from .carriers.move.ops import (
 )
 from .carriers.operation_helpers import Operation
 from .carriers.shared_ops import (
+    BroadcastOperation,
     GenericViewOperation,
     PermuteOperation,
     RearrangeOperation,
@@ -47,6 +48,7 @@ from .functional import __all__ as _functional_all
 from .profiling import Profiler, ProfilerAggregate, ProfilerEvent, profile
 
 _OPERATION_CLASS_EXPORTS = [
+    "BroadcastOperation",
     "CpuToFileBackedMoveOperation",
     "ElementwiseMoveOperation",
     "EvictableOperation",

@@ -522,6 +522,13 @@ inline void require_same_layout(py::handle lhs, py::handle rhs) {
     }
 }
 
+inline void require_same_shape(py::handle lhs, py::handle rhs) {
+    if (!layouts_equal(tensor_layout(lhs).attr("shape"),
+                       tensor_layout(rhs).attr("shape"))) {
+        throw py::value_error("Tensor shapes must match");
+    }
+}
+
 inline void require_layout(py::handle tensor, py::handle layout) {
     if (!layouts_equal(tensor_layout(tensor), layout)) {
         throw py::value_error("Tensor layouts must match");
@@ -567,8 +574,6 @@ inline std::pair<py::object, Index> canonical_stride_level(py::handle shape_leve
 inline py::object canonical_layout_from_modes(std::initializer_list<py::object> modes) {
     py::object layout_module = py::module_::import("strideweave.layout");
     py::object shape_type = layout_module.attr("Shape");
-    py::object stride_type = layout_module.attr("Stride");
-    py::object layout_type = layout_module.attr("Layout");
 
     py::object shape;
     if (modes.size() == 1) {
@@ -581,8 +586,22 @@ inline py::object canonical_layout_from_modes(std::initializer_list<py::object> 
         shape = shape_type(mode_list);
     }
 
+    py::object stride_type = layout_module.attr("Stride");
+    py::object layout_type = layout_module.attr("Layout");
     auto [stride_level, _] = canonical_stride_level(shape.attr("top_level"), 1);
     return layout_type(shape, stride_type(stride_level));
+}
+
+inline py::object injective_layout_for(py::handle target) {
+    py::object layout = tensor_layout(target);
+    if (py::cast<bool>(layout.attr("is_injective"))) {
+        return layout;
+    }
+    py::object shape = layout.attr("shape");
+    py::object stride_type = py::module_::import("strideweave.layout").attr("Stride");
+    py::object layout_type = py::module_::import("strideweave.layout").attr("Layout");
+    auto [stride_level, _] = canonical_stride_level(shape.attr("top_level"), 1);
+    return layout_type(std::move(shape), stride_type(stride_level));
 }
 
 inline py::object make_cpu_carrier(Index size, CpuDType dtype = CpuDType::Float32) {
@@ -622,11 +641,14 @@ inline CpuTensorAllocation allocate_gradient_tensor(py::object layout) {
     return allocate_cpu_tensor(std::move(layout), CpuDType::Float32);
 }
 
+inline CpuTensorAllocation allocate_gradient_for(py::handle target) {
+    return allocate_gradient_tensor(injective_layout_for(target));
+}
+
 inline py::object copy_gradient_for(py::handle target, py::handle gradient) {
-    require_same_layout(target, gradient);
+    require_same_shape(target, gradient);
     CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
-    py::object output_layout = tensor_layout(target);
-    CpuTensorAllocation output = allocate_gradient_tensor(output_layout);
+    CpuTensorAllocation output = allocate_gradient_for(target);
     {
         py::gil_scoped_release release;
         std::vector<Index> key(output.view.leaf_rank(), 0);
@@ -641,10 +663,9 @@ inline py::object copy_gradient_for(py::handle target, py::handle gradient) {
 }
 
 inline py::object copy_negated_gradient_for(py::handle target, py::handle gradient) {
-    require_same_layout(target, gradient);
+    require_same_shape(target, gradient);
     CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
-    py::object output_layout = tensor_layout(target);
-    CpuTensorAllocation output = allocate_gradient_tensor(output_layout);
+    CpuTensorAllocation output = allocate_gradient_for(target);
     {
         py::gil_scoped_release release;
         std::vector<Index> key(output.view.leaf_rank(), 0);

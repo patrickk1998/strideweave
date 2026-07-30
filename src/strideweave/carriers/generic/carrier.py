@@ -229,6 +229,7 @@ class Generic(Carrier):
 
     def _dispatch_op(self, operation_name: str) -> Any:
         from ..shared_ops import (
+            BroadcastOperation,
             GenericViewOperation,
             PermuteOperation,
             RearrangeOperation,
@@ -255,6 +256,7 @@ class Generic(Carrier):
 
         operations = {
             "add": GenericAddOperation,
+            "broadcast_to": BroadcastOperation,
             "div": GenericDivOperation,
             "elu": GenericELUOperation,
             "elementwise_mul": GenericElementwiseMulOperation,

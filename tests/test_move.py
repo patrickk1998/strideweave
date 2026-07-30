@@ -83,6 +83,44 @@ def test_move_roundtrip_through_file_backed_backpropagates_to_cpu_leaf():
     assert tensor_values(tensor.grad) == pytest.approx([10.0, 11.0, 12.0])
 
 
+def test_move_preserves_broadcast_layout_and_backward_sums_through_it():
+    source_layout = Layout(Shape([1, 3]), Stride([1, 1]))
+    source_carrier = CPU(source_layout.cosize, dtype=DType.Float32)
+    source = Tensor(source_carrier, 0, source_layout)
+    for index, value in enumerate([2.0, 5.0, 7.0]):
+        source[index] = value
+    broadcast_layout = Layout(Shape([4, 3]), Stride([0, 1]))
+    broadcast = sw.broadcast_to(source, broadcast_layout.shape)
+
+    file_backed = sw.move(broadcast, make_file_backed())
+    assert file_backed.layout == broadcast_layout
+    assert file_backed.carrier.size() == broadcast_layout.cosize
+    result = sw.move(
+        file_backed,
+        CPU(broadcast_layout.cosize, dtype=DType.Float32),
+    )
+
+    assert result.layout == broadcast_layout
+    assert result.carrier.size() == broadcast_layout.cosize
+    assert [result[i, j] for i in range(4) for j in range(3)] == [
+        2.0,
+        5.0,
+        7.0,
+    ] * 4
+
+    gradient_layout = Layout(Shape([4, 3]), Stride([1, 4]))
+    gradient = Tensor(
+        CPU(gradient_layout.cosize, dtype=DType.Float32), 0, gradient_layout
+    )
+    for index in range(gradient.size()):
+        gradient[index] = 1.0
+    result.backward(gradient)
+
+    assert source.grad is not None
+    assert source.grad.layout == source_layout
+    assert tensor_values(source.grad) == pytest.approx([4.0, 4.0, 4.0])
+
+
 def test_move_records_autograd_context_with_source_input():
     tensor = make_cpu_tensor([1.0, 2.0])
 

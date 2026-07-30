@@ -151,8 +151,26 @@ CpuPlan resolve_binary_plan(py::handle lhs, const char* operation,
                             cpu_dtype_object(rhs_view.carrier->cpu_dtype()));
 }
 
+struct AlignedBinaryOperands {
+    py::object lhs;
+    py::object rhs;
+    py::object result_layout;
+};
+
+AlignedBinaryOperands align_binary_operands(py::object lhs, py::object rhs) {
+    py::tuple aligned = py::cast<py::tuple>(
+        py::module_::import("strideweave.carriers.operation_helpers")
+            .attr("_align_binary_operands")(lhs, rhs));
+    return {
+        py::reinterpret_borrow<py::object>(aligned[0]),
+        py::reinterpret_borrow<py::object>(aligned[1]),
+        py::reinterpret_borrow<py::object>(aligned[2]),
+    };
+}
+
 template <typename FloatOperation, typename IntegerOperation>
-py::object cpu_binary_elementwise_forward(py::args inputs, const char* operation,
+py::object cpu_binary_elementwise_forward(strideweave::operation::Operation& owner,
+                                          py::args inputs, const char* operation,
                                           const char* error_message,
                                           FloatOperation float_operation,
                                           IntegerOperation integer_operation) {
@@ -161,16 +179,24 @@ py::object cpu_binary_elementwise_forward(py::args inputs, const char* operation
     }
     py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
     py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
+    AlignedBinaryOperands aligned =
+        align_binary_operands(std::move(lhs), std::move(rhs));
+    lhs = std::move(aligned.lhs);
+    rhs = std::move(aligned.rhs);
+    if (py::len(owner.inputs()) != 0) {
+        py::tuple aligned_inputs = py::make_tuple(lhs, rhs);
+        owner.store_inputs(py::reinterpret_borrow<py::args>(aligned_inputs));
+    }
     CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
     CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
-    require_same_layout(lhs, rhs);
 
     const CpuPlan plan = resolve_binary_plan(lhs, operation, lhs_view, rhs_view);
-    CpuTensorAllocation result = allocate_cpu_tensor(tensor_layout(lhs), plan.output);
+    CpuTensorAllocation result =
+        allocate_cpu_tensor(std::move(aligned.result_layout), plan.output);
     {
         py::gil_scoped_release release;
-        std::vector<Index> key(lhs_view.leaf_rank(), 0);
-        for (Index i = 0; i < lhs_view.logical_size; ++i) {
+        std::vector<Index> key(result.view.leaf_rank(), 0);
+        for (Index i = 0; i < result.view.logical_size; ++i) {
             if (plan.is_integer()) {
                 write_computed_int(
                     result.view, key,
@@ -183,7 +209,7 @@ py::object cpu_binary_elementwise_forward(py::args inputs, const char* operation
                     key, float_operation(lhs_view.read_float_expanded(key),
                                          rhs_view.read_float_expanded(key)));
             }
-            lhs_view.cache->increment_key(key.data(), key.size());
+            result.view.cache->increment_key(key.data(), key.size());
         }
     }
     return make_tensor(std::move(result.carrier_object),
@@ -194,7 +220,7 @@ class CpuAddOperation : public strideweave::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
         return cpu_binary_elementwise_forward(
-            inputs, "add", "CPU add requires lhs and rhs tensors",
+            *this, inputs, "add", "CPU add requires lhs and rhs tensors",
             [](float lhs, float rhs) { return lhs + rhs; },
             [](long long lhs, long long rhs) { return lhs + rhs; });
     }
@@ -212,7 +238,7 @@ class CpuSubOperation : public strideweave::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
         return cpu_binary_elementwise_forward(
-            inputs, "sub", "CPU subtract requires lhs and rhs tensors",
+            *this, inputs, "sub", "CPU subtract requires lhs and rhs tensors",
             [](float lhs, float rhs) { return lhs - rhs; },
             [](long long lhs, long long rhs) { return lhs - rhs; });
     }
@@ -245,7 +271,7 @@ public:
             plan.is_integer() ? require_int32_scalar(inputs[1], "scalar") : 0;
 
         CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), plan.output);
+            allocate_cpu_tensor(injective_layout_for(tensor), plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
@@ -270,10 +296,10 @@ public:
     py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
-        require_same_layout(tensor, gradient);
+        require_same_shape(tensor, gradient);
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
+        CpuTensorAllocation result = allocate_gradient_for(tensor);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(gradient_view.leaf_rank(), 0);
@@ -295,7 +321,7 @@ class CpuElementwiseMulOperation : public strideweave::operation::Operation {
 public:
     py::object _forward(py::args inputs) override {
         return cpu_binary_elementwise_forward(
-            inputs, "elementwise_mul",
+            *this, inputs, "elementwise_mul",
             "CPU elementwise multiply requires lhs and rhs tensors",
             [](float lhs, float rhs) { return lhs * rhs; },
             [](long long lhs, long long rhs) { return lhs * rhs; });
@@ -305,14 +331,14 @@ public:
         py::tuple input_tensors = inputs();
         py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
-        require_same_layout(lhs, gradient);
-        require_same_layout(rhs, gradient);
+        require_same_shape(lhs, gradient);
+        require_same_shape(rhs, gradient);
         CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
         CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation lhs_result = allocate_gradient_tensor(tensor_layout(lhs));
-        CpuTensorAllocation rhs_result = allocate_gradient_tensor(tensor_layout(rhs));
+        CpuTensorAllocation lhs_result = allocate_gradient_for(lhs);
+        CpuTensorAllocation rhs_result = allocate_gradient_for(rhs);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(lhs_view.leaf_rank(), 0);
@@ -341,23 +367,30 @@ public:
         }
         py::object lhs = py::reinterpret_borrow<py::object>(inputs[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(inputs[1]);
+        AlignedBinaryOperands aligned =
+            align_binary_operands(std::move(lhs), std::move(rhs));
+        lhs = std::move(aligned.lhs);
+        rhs = std::move(aligned.rhs);
+        if (py::len(this->inputs()) != 0) {
+            py::tuple aligned_inputs = py::make_tuple(lhs, rhs);
+            this->store_inputs(py::reinterpret_borrow<py::args>(aligned_inputs));
+        }
         CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
         CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
-        require_same_layout(lhs, rhs);
 
         // Division has no integer path: the plan converts two Int32 operands to
         // Float32 rather than truncating.
         const CpuPlan plan = resolve_binary_plan(lhs, "div", lhs_view, rhs_view);
         CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(lhs), plan.output);
+            allocate_cpu_tensor(std::move(aligned.result_layout), plan.output);
         {
             py::gil_scoped_release release;
-            std::vector<Index> key(lhs_view.leaf_rank(), 0);
-            for (Index i = 0; i < lhs_view.logical_size; ++i) {
+            std::vector<Index> key(result.view.leaf_rank(), 0);
+            for (Index i = 0; i < result.view.logical_size; ++i) {
                 result.view.write_float_expanded(key,
                                                  lhs_view.read_float_expanded(key) /
                                                      rhs_view.read_float_expanded(key));
-                lhs_view.cache->increment_key(key.data(), key.size());
+                result.view.cache->increment_key(key.data(), key.size());
             }
         }
         return make_tensor(std::move(result.carrier_object),
@@ -368,14 +401,14 @@ public:
         py::tuple input_tensors = inputs();
         py::object lhs = py::reinterpret_borrow<py::object>(input_tensors[0]);
         py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
-        require_same_layout(lhs, gradient);
-        require_same_layout(rhs, gradient);
+        require_same_shape(lhs, gradient);
+        require_same_shape(rhs, gradient);
         CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
         CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation lhs_result = allocate_gradient_tensor(tensor_layout(lhs));
-        CpuTensorAllocation rhs_result = allocate_gradient_tensor(tensor_layout(rhs));
+        CpuTensorAllocation lhs_result = allocate_gradient_for(lhs);
+        CpuTensorAllocation rhs_result = allocate_gradient_for(rhs);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(lhs_view.leaf_rank(), 0);
@@ -412,7 +445,7 @@ public:
             resolve_cpu_plan(executing_carrier_class(tensor), "relu",
                              cpu_dtype_object(tensor_view.carrier->cpu_dtype()));
         CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), plan.output);
+            allocate_cpu_tensor(injective_layout_for(tensor), plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
@@ -435,11 +468,11 @@ public:
     py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
-        require_same_layout(tensor, gradient);
+        require_same_shape(tensor, gradient);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
+        CpuTensorAllocation result = allocate_gradient_for(tensor);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
@@ -475,7 +508,7 @@ public:
             plan.is_integer() ? require_int32_scalar(inputs[1], "exponent") : 0;
 
         CpuTensorAllocation result =
-            allocate_cpu_tensor(tensor_layout(tensor), plan.output);
+            allocate_cpu_tensor(injective_layout_for(tensor), plan.output);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
@@ -500,11 +533,11 @@ public:
     py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
-        require_same_layout(tensor, gradient);
+        require_same_shape(tensor, gradient);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
-        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
+        CpuTensorAllocation result = allocate_gradient_for(tensor);
         {
             py::gil_scoped_release release;
             std::vector<Index> key(tensor_view.leaf_rank(), 0);
@@ -587,7 +620,7 @@ public:
 
         const Index n_size = mode_logical_size(tensor_layout(tensor), 0);
         const Index m_size = mode_logical_size(tensor_layout(tensor), 1);
-        CpuTensorAllocation result = allocate_gradient_tensor(tensor_layout(tensor));
+        CpuTensorAllocation result = allocate_gradient_for(tensor);
         {
             py::gil_scoped_release release;
             std::vector<Index> row_key(result.view.leaf_rank(), 0);
@@ -709,8 +742,8 @@ public:
         const Index k_size = mode_logical_size(tensor_layout(lhs), 1);
         const Index m_size = mode_logical_size(tensor_layout(rhs), 0);
 
-        CpuTensorAllocation lhs_result = allocate_gradient_tensor(tensor_layout(lhs));
-        CpuTensorAllocation rhs_result = allocate_gradient_tensor(tensor_layout(rhs));
+        CpuTensorAllocation lhs_result = allocate_gradient_for(lhs);
+        CpuTensorAllocation rhs_result = allocate_gradient_for(rhs);
         {
             py::gil_scoped_release release;
             std::vector<Index> lhs_k_base(lhs_result.view.leaf_rank(), 0);
@@ -861,6 +894,8 @@ void bind_cpu(py::module_& module) {
     register_native_cpu_operation<CpuSoftplusOperation>("softplus");
     register_native_cpu_operation<CpuSubOperation>("sub");
     register_native_cpu_operation<CpuTanhOperation>("tanh");
+    register_python_cpu_operation("broadcast_to", "strideweave.carriers.shared_ops",
+                                  "BroadcastOperation");
     register_python_cpu_operation("permute", "strideweave.carriers.shared_ops",
                                   "PermuteOperation");
     register_python_cpu_operation("rearrange", "strideweave.carriers.shared_ops",

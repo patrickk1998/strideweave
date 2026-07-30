@@ -8,7 +8,7 @@ from importlib import import_module
 from typing import Any, cast, overload
 
 from ..carriers.operation_helpers import _as_tensor
-from ..core.layout import Tree
+from ..core.layout import Shape, Tree
 
 _REDUCE_DESCRIPTION_MISSING = object()
 
@@ -18,6 +18,7 @@ _set_grad_enabled = cast(Callable[[bool], None], _operation.set_grad_enabled)
 
 __all__ = [
     "add",
+    "broadcast_to",
     "div",
     "einsum",
     "elementwise_mul",
@@ -144,11 +145,16 @@ def no_grad() -> Iterator[None]:
 
 
 def add(lhs: Any, rhs: Any) -> Any:
-    """Add two tensors with matching layouts.
+    """Add two structurally broadcast-compatible tensors.
+
+    Shape trees must share a profile. At each leaf, equal extents are matched
+    and an extent of one expands to its peer using stride zero. No rank
+    alignment, flattening, insertion, or reordering is inferred.
 
     Args:
         lhs: Left tensor operand.
-        rhs: Right tensor operand with the same layout and backing carrier.
+        rhs: Right tensor operand on the same backing carrier and with a
+            structurally broadcast-compatible shape.
 
     Returns:
         Tensor containing the elementwise sum.
@@ -166,17 +172,50 @@ def add(lhs: Any, rhs: Any) -> Any:
     return _dispatch_binary("add", lhs, rhs).forward(lhs, rhs)
 
 
+def broadcast_to(tensor: Any, target: Shape) -> Any:
+    """Broadcast singleton leaves to a structurally congruent target shape.
+
+    Forward returns a zero-copy view whose widened leaves have stride zero.
+    Backward sums the incoming cotangent over those widened leaves and restores
+    the input shape and layout. The target must have the same hierarchical
+    profile, and only an input extent of one may widen; no rank alignment,
+    insertion, removal, flattening, or reordering is inferred.
+
+    Args:
+        tensor: Tensor to broadcast.
+        target: Hierarchical target shape with the same profile as the input.
+
+    Returns:
+        Differentiable stride-zero view with shape ``target``.
+
+    Examples:
+        >>> import strideweave as sw
+        >>> layout = sw.Layout(sw.Shape([1, 2]), sw.Stride([1, 1]))
+        >>> x = sw.Tensor(sw.Generic([3.0, 4.0]), 0, layout)
+        >>> y = sw.broadcast_to(x, sw.Shape([3, 2]))
+        >>> [y[i, 1] for i in range(3)]
+        [4.0, 4.0, 4.0]
+    """
+
+    tensor = _as_tensor(tensor, "tensor")
+    if not isinstance(target, Shape):
+        raise TypeError("target must be a Shape")
+    return _dispatch_unary("broadcast_to", tensor).forward(tensor, target)
+
+
 def sub(lhs: Any, rhs: Any) -> Any:
-    """Subtract two tensors with matching layouts.
+    """Subtract two structurally broadcast-compatible tensors.
 
     Subtraction dispatches to the carrier's ``sub`` operation (implemented
     natively for CPU carriers and in Python for Generic carriers). Its autograd
     backward passes the incoming gradient to ``lhs`` and its negation to
-    ``rhs``.
+    ``rhs``. Shape trees must share a profile, and only an extent of one
+    expands to its peer; no rank alignment is inferred.
 
     Args:
         lhs: Left tensor operand.
-        rhs: Right tensor operand with the same layout and backing carrier.
+        rhs: Right tensor operand on the same backing carrier and with a
+            structurally broadcast-compatible shape.
 
     Returns:
         Tensor containing the elementwise difference.
@@ -219,11 +258,15 @@ def neg(tensor: Any) -> Any:
 
 
 def elementwise_mul(lhs: Any, rhs: Any) -> Any:
-    """Multiply two tensors elementwise.
+    """Multiply two structurally broadcast-compatible tensors elementwise.
+
+    Shape trees must share a profile. Equal leaf extents match, and an extent
+    of one expands to its peer using stride zero without rank alignment.
 
     Args:
         lhs: Left tensor operand.
-        rhs: Right tensor operand with the same layout and backing carrier.
+        rhs: Right tensor operand on the same backing carrier and with a
+            structurally broadcast-compatible shape.
 
     Returns:
         Tensor containing elementwise products.
@@ -270,11 +313,15 @@ def mul(tensor: Any, scalar: Any) -> Any:
 
 
 def div(lhs: Any, rhs: Any) -> Any:
-    """Divide two tensors elementwise.
+    """Divide two structurally broadcast-compatible tensors elementwise.
+
+    Shape trees must share a profile. Equal leaf extents match, and an extent
+    of one expands to its peer using stride zero without rank alignment.
 
     Args:
         lhs: Numerator tensor.
-        rhs: Denominator tensor with the same layout and backing carrier.
+        rhs: Denominator tensor on the same backing carrier and with a
+            structurally broadcast-compatible shape.
 
     Returns:
         Tensor containing elementwise quotients.
@@ -540,7 +587,10 @@ def reduce(tensor: Any, description: Any = _REDUCE_DESCRIPTION_MISSING) -> Any:
 
     With no description, the tensor must have two top-level modes and the second
     mode is summed. With a string description, omitted dimensions are reduced
-    through the StrideWeave hierarchical-layout lowering path.
+    through the StrideWeave hierarchical-layout lowering path. A stride-zero
+    reduced mode contributes once per logical coordinate, so reducing an
+    extent-N broadcast mode scales its stored value by N; backward sums through
+    the differentiable broadcast view.
 
     Args:
         tensor: Tensor to reduce.
@@ -573,7 +623,11 @@ def matmul(lhs: Any, rhs: Any) -> Any:
     """Multiply two two-mode tensors.
 
     The first mode of each input is kept, and the second modes must have the
-    same logical size and are contracted with a dot product.
+    same logical size and are contracted with a dot product. Stride-zero modes
+    are supported: a broadcast kept mode repeats rows or columns, while a
+    broadcast contracted mode repeats its stored factor in the dot product.
+    Backward computes logical gradients injectively and sums them through the
+    broadcast view.
 
     Args:
         lhs: Left two-mode tensor.
@@ -608,6 +662,12 @@ def move(tensor: Any, destination: Any) -> Any:
     autograd: gradients flowing into the result are moved back into the
     source carrier during backward, so gradients cross carrier
     boundaries.
+
+    A broadcast tensor keeps its exact stride-zero layout and copies only the
+    layout's physical ``cosize`` span; move does not materialize one storage
+    element per logical coordinate. Backward accepts an injective same-shape
+    cotangent and returns logical values to fresh source-class storage before
+    broadcast reduction.
 
     Logical tensor values are identical regardless of the dispatched
     operation, but storage contents at layout holes may differ: bulk
