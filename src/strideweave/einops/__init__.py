@@ -15,9 +15,10 @@ The tensor operations lower string descriptions into existing layout operations.
 Rearrange reorders, groups, drops singleton dimensions, or inserts literal
 ``1`` dimensions without copying values. Reduce rearranges the tensor into a
 two-mode intermediate ``(kept, reduced)`` layout and sums the second mode.
-The contraction helper rearranges each input into ``(outer, shared_inner)``
-two-mode layouts, uses matmul to contract the shared second mode, and
-rearranges the matmul result to the requested output.
+The contraction helper keeps the two-mode matmul lowering for contractions
+without batch symbols. When a shared symbol is retained in the output, it
+aligns both inputs over their union index space, multiplies elementwise, and
+reduces only the shared symbols omitted from the output.
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ class ReduceSpec:
 
 @dataclass(frozen=True, slots=True)
 class EinsumSpec:
-    """Compiled two-input contraction command lowered through rearrange and matmul."""
+    """Compiled two-input contraction with fast and general lowering metadata."""
 
     lhs_selection: Tree
     rhs_selection: Tree
@@ -95,6 +96,13 @@ class EinsumSpec:
     lhs_symbol_ids: tuple[tuple[str, int], ...]
     rhs_symbol_ids: tuple[tuple[str, int], ...]
     common_symbols: tuple[str, ...]
+    union_symbols: tuple[str, ...]
+    contraction_symbols: tuple[str, ...]
+    batch_symbols: tuple[str, ...]
+    lhs_union_output: Tree
+    rhs_union_output: Tree
+    union_selection: Tree
+    general_output: Tree
 
 
 _einops = import_module("strideweave._einops")
@@ -244,33 +252,34 @@ def parse_reduce(command: str) -> ReduceSpec:
 def parse_einsum(command: str) -> EinsumSpec:
     """Compile a two-input contraction command.
 
-    Shared symbols between the two inputs become the contracted inner dimension,
-    and non-shared symbols are required in the output.
+    Shared symbols omitted from the output become contraction dimensions.
+    Shared symbols retained in the output are batch dimensions, while
+    one-sided symbols are free dimensions and must be retained.
 
     Syntax:
         Contraction descriptions have the form ``"lhs, rhs -> output"``.
-        Symbols that appear on both inputs are shared contraction dimensions and
-        must not appear in the output. Non-shared input symbols must appear
-        exactly once in the output. The output may group dimensions with
-        parentheses and may insert literal ``1`` singleton dimensions.
+        Symbols on both inputs may be omitted for contraction or retained as
+        batch dimensions. Every one-sided input symbol must appear exactly once
+        in the output. The output may group dimensions with parentheses and may
+        insert literal ``1`` singleton dimensions.
 
     Semantics:
-        Each input is rearranged into a two-mode layout ``(outer, shared_inner)``.
-        Shared dimensions are ordered by the left input and must have matching
-        logical sizes on both tensors. The operation then calls matmul, which
-        assumes two-mode tensors and contracts the second top-level mode, before
-        rearranging the result into the requested output layout.
+        With no batch symbols, each input is rearranged into a two-mode layout
+        ``(outer, shared_inner)`` and matmul remains the fast path. With batch
+        symbols, both inputs are aligned over the union symbol space,
+        elementwise-multiplied, and reduced over shared symbols omitted from the
+        output. Shared dimensions must have equal logical sizes.
 
     Args:
         command: Contraction command in ``lhs, rhs -> output`` form.
 
     Returns:
-        Cached contraction spec describing the rearrange and matmul lowering.
+        Cached contraction spec describing both fast and general lowering.
 
     Examples:
         >>> from sw.einops import parse_einsum
         >>> spec = parse_einsum("a b, c b -> a c")
-        >>> spec.common_symbols
+        >>> spec.contraction_symbols
         ('b',)
     """
 
@@ -378,26 +387,30 @@ def reduce(tensor: Any, description: str) -> Any:
 def einsum(lhs: Any, rhs: Any, description: str) -> Any:
     """Contract two tensors using a StrideWeave contraction description.
 
-    Shared input symbols are reduced via matmul after each input is rearranged
-    into outer and shared-inner modes.
+    Shared input symbols omitted from the output are contracted. Shared symbols
+    retained in the output are batch dimensions, and one-sided output symbols
+    are free dimensions broadcast into the other operand.
 
     Syntax:
-        ``description`` must be ``"lhs, rhs -> output"``. Symbols present on
-        both inputs are contracted and must be absent from ``output``. Every
-        non-shared input symbol must appear exactly once in ``output``.
-        Parentheses preserve output grouping, and literal ``1`` inserts
-        singleton output dimensions.
+        ``description`` must be ``"lhs, rhs -> output"``. Every one-sided input
+        symbol must appear exactly once in ``output``. A shared symbol is
+        contracted when omitted and retained as a batch dimension when present.
+        Parentheses preserve output grouping, and literal ``1`` inserts a
+        singleton output dimension.
 
     Semantics:
-        The operation computes dot products over all shared dimensions and
-        returns the non-shared dimensions arranged as requested by ``output``.
+        Symbols are classified uniformly: shared-and-omitted means contraction,
+        shared-and-retained means batch, and one-sided-and-retained means free.
+        Batch/free cases align both tensors over the union index space,
+        multiply elementwise, and sum only contraction dimensions.
 
     Mode assumptions:
-        Each input reference must describe the corresponding tensor layout.
-        Before matmul, each tensor is rearranged into a two-mode layout
-        ``(outer, shared_inner)``. The shared-inner modes are ordered by the left
-        input and must have equal logical sizes. Matmul then contracts the
-        second top-level mode of both intermediates.
+        Each input reference must describe the corresponding hierarchical
+        tensor layout, and same-named symbols must have equal logical sizes.
+        The flat no-batch contraction keeps the two-mode matmul fast path.
+        Batched contractions preserve symbol positions without flattening or
+        implicit rank alignment and use differentiable stride-zero views for
+        one-sided free dimensions.
 
     Args:
         lhs: Left input tensor.
@@ -421,16 +434,36 @@ def einsum(lhs: Any, rhs: Any, description: str) -> Any:
     spec = parse_einsum(description)
     _validate_einsum_shared_symbol_sizes(lhs, rhs, spec)
 
-    from ..functional.api import _matmul_2mode, _rearrange_tree
+    from ..functional.api import (
+        _matmul_2mode,
+        _rearrange_tree,
+        _reduce_second_mode,
+        elementwise_mul,
+    )
 
-    lhs_intermediate = _rearrange_tree(
-        lhs, spec.lhs_rearrange_output, spec.lhs_selection
+    if not spec.batch_symbols:
+        lhs_intermediate = _rearrange_tree(
+            lhs, spec.lhs_rearrange_output, spec.lhs_selection
+        )
+        rhs_intermediate = _rearrange_tree(
+            rhs, spec.rhs_rearrange_output, spec.rhs_selection
+        )
+        result = _matmul_2mode(lhs_intermediate, rhs_intermediate)
+        return _rearrange_tree(result, spec.output, spec.matmul_output_selection)
+
+    lhs_union = _rearrange_tree(lhs, spec.lhs_union_output, spec.lhs_selection)
+    rhs_union = _rearrange_tree(rhs, spec.rhs_union_output, spec.rhs_selection)
+    product = elementwise_mul(lhs_union, rhs_union)
+    if not spec.contraction_symbols:
+        return _rearrange_tree(product, spec.general_output, spec.union_selection)
+
+    union_positions = {symbol: index for index, symbol in enumerate(spec.union_symbols)}
+    contracted = Tree(
+        *(Node.id(union_positions[symbol]) for symbol in spec.contraction_symbols)
     )
-    rhs_intermediate = _rearrange_tree(
-        rhs, spec.rhs_rearrange_output, spec.rhs_selection
-    )
-    result = _matmul_2mode(lhs_intermediate, rhs_intermediate)
-    return _rearrange_tree(result, spec.output, spec.matmul_output_selection)
+    reduction_layout = Tree(spec.general_output, contracted)
+    intermediate = _rearrange_tree(product, reduction_layout, spec.union_selection)
+    return _reduce_second_mode(intermediate)
 
 
 def _parse_rearrange_uncached(command: str) -> RearrangeSpec:
@@ -478,30 +511,79 @@ def _parse_einsum_uncached(command: str) -> EinsumSpec:
             "Contraction command must include at least one shared dimension"
         )
 
+    lhs_symbols = tuple(symbol for symbol, _source_id in lhs_ref.symbol_ids)
+    rhs_symbols = tuple(symbol for symbol, _source_id in rhs_ref.symbol_ids)
+    lhs_symbol_set = set(lhs_symbols)
+    union_symbols = (*lhs_symbols, *(s for s in rhs_symbols if s not in lhs_symbol_set))
+    union_symbol_ids = {symbol: index for index, symbol in enumerate(union_symbols)}
+    general_parser = _OutputParser(tokens[arrow_position + 1 :], union_symbol_ids)
+    general_output = general_parser.parse()
     common_set = set(common_symbols)
-    output_symbol_ids, matmul_output_selection = _einsum_output_symbol_ids(
-        lhs_ref.symbol_ids, rhs_ref.symbol_ids, common_set
-    )
-    output_parser = _OutputParser(tokens[arrow_position + 1 :], output_symbol_ids)
-    output = output_parser.parse()
-    required_output_symbols = set(output_symbol_ids)
-    if output_parser.used_symbols != required_output_symbols:
-        missing = sorted(required_output_symbols - output_parser.used_symbols)
+    required_free_symbols = set(union_symbols) - common_set
+    if not required_free_symbols <= general_parser.used_symbols:
+        missing = sorted(required_free_symbols - general_parser.used_symbols)
         raise ValueError(
             "Einsum output must include every non-shared input symbol: "
             + ", ".join(missing)
         )
 
+    contraction_symbols = tuple(
+        symbol for symbol in common_symbols if symbol not in general_parser.used_symbols
+    )
+    batch_symbols = tuple(
+        symbol for symbol in common_symbols if symbol in general_parser.used_symbols
+    )
+    lhs_ids = dict(lhs_ref.symbol_ids)
+    rhs_ids = dict(rhs_ref.symbol_ids)
+    lhs_union_output = Tree(
+        *(
+            Node.id(lhs_ids[symbol]) if symbol in lhs_ids else Node.Leaf
+            for symbol in union_symbols
+        )
+    )
+    rhs_union_output = Tree(
+        *(
+            Node.id(rhs_ids[symbol]) if symbol in rhs_ids else Node.Leaf
+            for symbol in union_symbols
+        )
+    )
+    union_selection = Tree(*(Node.Leaf for _symbol in union_symbols))
+
+    if not batch_symbols:
+        output_symbol_ids, matmul_output_selection = _einsum_output_symbol_ids(
+            lhs_ref.symbol_ids, rhs_ref.symbol_ids, common_set
+        )
+        output_parser = _OutputParser(tokens[arrow_position + 1 :], output_symbol_ids)
+        output = output_parser.parse()
+    else:
+        output = general_output
+        matmul_output_selection = union_selection
+
     return EinsumSpec(
         lhs_ref.tree,
         rhs_ref.tree,
-        _einsum_input_rearrange_output(lhs_ref.symbol_ids, common_symbols),
-        _einsum_input_rearrange_output(rhs_ref.symbol_ids, common_symbols),
+        (
+            _einsum_input_rearrange_output(lhs_ref.symbol_ids, common_symbols)
+            if not batch_symbols
+            else lhs_union_output
+        ),
+        (
+            _einsum_input_rearrange_output(rhs_ref.symbol_ids, common_symbols)
+            if not batch_symbols
+            else rhs_union_output
+        ),
         matmul_output_selection,
         output,
         lhs_ref.symbol_ids,
         rhs_ref.symbol_ids,
         common_symbols,
+        tuple(union_symbols),
+        contraction_symbols,
+        batch_symbols,
+        lhs_union_output,
+        rhs_union_output,
+        union_selection,
+        general_output,
     )
 
 
