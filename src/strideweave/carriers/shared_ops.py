@@ -5,17 +5,63 @@ from __future__ import annotations
 from operator import index as operator_index
 from typing import Any
 
-from ..layout import Layout, Tree
+from ..layout import Layout, Shape, Tree
 from .operation_helpers import (
     Operation,
     _as_tensor,
+    _canonical_layout_for_shape,
     _copy_gradient_to_layout,
+    _detached_tensor_like,
     _layout_from_modes,
     _mode_shape,
     _mode_stride,
     _require_layout,
     _zero_tensor_like,
 )
+
+
+class BroadcastOperation(Operation):
+    """Autograd operation that widens singleton layout leaves using stride zero."""
+
+    def _forward(self, tensor: Any, target: Shape) -> Any:
+        from ..tensor import Tensor
+
+        tensor = _as_tensor(tensor, "tensor")
+        if not isinstance(target, Shape):
+            raise TypeError("target must be a Shape")
+
+        output_layout = tensor.layout.broadcast_to(target)
+        mapping_layout = _canonical_layout_for_shape(tensor.layout.shape).broadcast_to(
+            target
+        )
+        self.ctx["mapping_layout"] = mapping_layout
+        self.ctx["output_layout"] = output_layout
+        return Tensor(tensor.carrier, tensor.offset, output_layout)
+
+    def backward(self, gradient: Any) -> tuple[Any]:
+        (tensor,) = self.inputs()
+        gradient = _as_tensor(gradient, "gradient")
+        output_layout = self.ctx["output_layout"]
+        if (
+            gradient.layout.shape != output_layout.shape
+            or not gradient.layout.is_injective
+        ):
+            raise ValueError(
+                "Broadcast gradient must have the output shape in an injective layout"
+            )
+
+        mapping_layout = self.ctx["mapping_layout"]
+        totals: list[Any | None] = [None] * tensor.size()
+        for logical_index in range(gradient.size()):
+            input_index = mapping_layout.index(logical_index)
+            contribution = gradient[logical_index]
+            current = totals[input_index]
+            totals[input_index] = (
+                contribution if current is None else current + contribution
+            )
+        if any(total is None for total in totals):
+            raise RuntimeError("Broadcast backward did not cover every input element")
+        return (_detached_tensor_like(tensor, totals),)
 
 
 def _normalize_view_key(key: Any, rank: int) -> tuple[Any, ...]:
@@ -191,6 +237,7 @@ class PermuteOperation(Operation):
 
 
 __all__ = [
+    "BroadcastOperation",
     "GenericViewOperation",
     "PermuteOperation",
     "RearrangeOperation",

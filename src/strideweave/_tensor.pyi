@@ -52,6 +52,19 @@ class Tensor:
         dl_device: tuple[int, int] | None = None,
         copy: bool | None = None,
     ) -> Any: ...
-    def backward(self, gradient: Tensor | None = None) -> None: ...
+    def backward(
+        self, gradient: Tensor | None = None, retain_graph: bool = False
+    ) -> None: ...
     @staticmethod
-    def backwards_traversal(gradient: Tensor, operation: Any | None) -> None: ...
+    def backwards_traversal(
+        gradient: Tensor, operation: Any | None, retain_graph: bool = False
+    ) -> None: ...
+    @staticmethod
+    def _functional_grad(
+        output: Tensor,
+        inputs: tuple[Tensor, ...],
+        cotangents: Tensor,
+        *,
+        batched: bool = False,
+        retain_graph: bool = False,
+    ) -> tuple[Tensor | None, ...]: ...

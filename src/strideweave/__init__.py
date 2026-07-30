@@ -1,5 +1,6 @@
 """Public StrideWeave API for carriers, tensors, layouts, and autograd."""
 
+from .autograd import grad as grad
 from .carriers import (
     CPU as CPU,
 )
@@ -98,6 +99,7 @@ _CORE_EXPORTS = [
     "Evictable",
     "FileBacked",
     "Generic",
+    "grad",
     "Layout",
     "Level",
     "LevelExtent",

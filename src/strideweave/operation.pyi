@@ -4,10 +4,11 @@ from typing import Any, Literal, Self, overload
 
 from ._operation import Operation as Operation
 from .carriers import Carrier
-from .layout import Tree
+from .layout import Shape, Tree
 from .tensor import Tensor
 
 __all__ = [
+    "BroadcastOperation",
     "CpuToFileBackedMoveOperation",
     "ElementwiseMoveOperation",
     "EvictableOperation",
@@ -38,6 +39,7 @@ __all__ = [
     "ProfilerEvent",
     "RearrangeOperation",
     "add",
+    "broadcast_to",
     "div",
     "einsum",
     "elementwise_mul",
@@ -65,6 +67,11 @@ __all__ = [
     "tanh",
     "view",
 ]
+
+class BroadcastOperation(Operation):
+    def _forward(self, *inputs: Any) -> Tensor: ...
+    def forward(self, *inputs: Any) -> Tensor: ...
+    def backward(self, gradient: Tensor) -> tuple[Tensor]: ...
 
 class GenericAddOperation(Operation):
     def _forward(self, *inputs: Any) -> Tensor: ...
@@ -287,6 +294,7 @@ def is_grad_enabled() -> bool: ...
 def set_grad_enabled(enabled: bool) -> None: ...
 def no_grad() -> AbstractContextManager[None]: ...
 def add(lhs: Tensor, rhs: Tensor) -> Tensor: ...
+def broadcast_to(tensor: Tensor, target: Shape) -> Tensor: ...
 def sub(lhs: Tensor, rhs: Tensor) -> Tensor: ...
 def neg(tensor: Tensor) -> Tensor: ...
 def elementwise_mul(lhs: Tensor, rhs: Tensor) -> Tensor: ...
