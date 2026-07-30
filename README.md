@@ -24,6 +24,14 @@ accelerator carriers.
   properties read subtensor zero rather than parallel fields.
 - `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
   coordinates to physical storage indices.
+- `layout.profile` exposes the shape tree's leaf-and-nesting recipe without its
+  extents or strides. `layout.is_injective` reports whether every logical
+  coordinate maps to a distinct physical offset, including exact detection of
+  stride-zero and overlapping non-zero layouts. `layout.broadcast_to(shape)`
+  widens only extent-one leaves at the same hierarchical positions, setting
+  their strides to zero; it never flattens, rank-aligns, inserts, removes, or
+  reorders modes. Layout complement is undefined for non-injective layouts and
+  refuses them explicitly.
 - `Tiler` is the public type alias for a read-only sequence of `Layout` values.
   Layout composition APIs use tilers to describe one tile per leading
   hierarchical mode: `Layout.compose` accepts a tiler directly, while
@@ -808,9 +816,29 @@ The public functional API includes:
   Generic carriers; `neg` is a composition of scalar `mul`);
 - activations: `relu`, `sigmoid`, `tanh`, `gelu`, `silu`, `softplus`, `elu`,
   and `leaky_relu`;
-- layout operations: `view`, `permute`, and `rearrange`;
+- layout operations: `view`, `permute`, `rearrange`, and `broadcast_to`;
 - contractions: `reduce`, `matmul`, and `einsum`;
 - storage movement: `move`.
+
+Binary pointwise operations (`add`, `sub`, `elementwise_mul`, and `div`) align
+operands structurally before dispatch. Their shape trees must share the same
+`Layout.profile`; corresponding leaf extents must be equal or one must be 1.
+Extent-one leaves widen with stride zero at that exact hierarchical position.
+There is no NumPy-style rank alignment, flattening, insertion, removal, or
+reordering. Differing strides are accepted when shapes already match. Results
+use an injective canonical layout over the common logical shape rather than
+inheriting broadcast strides. Each widening is a differentiable zero-copy
+`broadcast_to` view saved as the pointwise operation's input. Its backward pass
+sums the cotangent over every widened leaf and restores the pre-broadcast
+layout, including when the leaf is nested in a hierarchical mode.
+
+Broadcast operands also have defined semantics outside the pointwise class.
+Reducing a stride-zero mode of extent N sums N equal logical reads, so it scales
+the stored value by N. Matmul treats stride-zero kept modes as repeated output
+rows or columns and stride-zero contracted modes as repeated factors in the dot
+product. Both operations compute backward values in injective logical storage;
+the broadcast node, or broadcast-leaf accumulation, then sums contributions
+back to the underlying storage. Generic and CPU follow the same rule.
 
 `Generic` provides Python reference implementations. `CPU` provides native C++
 kernels that use cached expanded layout keys and release the GIL in hot loops.
@@ -842,10 +870,19 @@ have standard flat einops semantics. String forms include:
 transposed = sw.rearrange(tensor, "a b -> b a")
 summed = sw.reduce(tensor, "a (b c) -> a b")
 contracted = sw.einsum(lhs, rhs, "a b, c b -> a c")
+batched = sw.einsum(lhs, rhs, "b i k, b j k -> b i j")
 ```
 
 The native lexer and Python parsers compile these descriptions into layout
-trees and cache successful specifications.
+trees and cache successful specifications. Einsum classifies each shared symbol
+by its output presence: an omitted shared symbol is contracted, while a retained
+shared symbol is a batch dimension. One-sided symbols are free dimensions and
+must appear in the output. A contraction without batch symbols keeps the
+two-mode matmul lowering. Batched contractions align both operands over their
+union symbol space with differentiable singleton broadcasts, multiply
+elementwise, and reduce only omitted shared symbols. This general lowering
+materializes the union-shaped product; it does not currently use a native
+batched-matmul kernel.
 
 ## Operation Profiling
 
@@ -901,10 +938,19 @@ the result is differentiable, and at least one tensor input is differentiable.
 Backward traversal is iterative and topological, so shared subgraphs accumulate
 their pending gradients before their operation runs.
 
+- `backward(gradient=None, retain_graph=False)` releases the saved inputs,
+  versions, and operation context for every reached operation after a successful
+  traversal. Calling backward through that graph again raises an error naming
+  `retain_graph=True`; pass that flag on an earlier traversal when the same
+  graph must be reused.
+- Graph nodes remain attached after their saved state is released so a second
+  traversal fails explicitly rather than treating a former result as a leaf.
+  A shared subgraph is released by whichever reachable root traverses it first.
 - Non-scalar tensors require an explicit gradient in `backward(gradient)`.
 - An exact shape `[1]` is a scalar and may call `backward()` with an implicit
   gradient of one.
-- Leaf tensors accumulate `.grad` by default.
+- Leaf tensors accumulate `.grad` by default, including across distinct
+  forward graphs and retained repeated traversals.
 - Non-leaf tensors retain `.grad` only after `retain_grad()`.
 - `no_grad()`, `is_grad_enabled()`, and `set_grad_enabled()` control the
   thread-local graph-building state.
@@ -914,6 +960,36 @@ their pending gradients before their operation runs.
 
 Views are differentiable. Their backward path scatters gradients into a tensor
 with the original input layout.
+
+Gradient buffers are always injective. When a leaf tensor uses stride-zero
+broadcast modes, `.grad` sums all logical contributions that address the same
+input storage slot and represents each resulting sum in a canonical injective
+layout with the tensor's logical shape. This supports broadcast aliasing at any
+hierarchy depth. Other non-injective layouts, such as overlapping non-zero
+strides, are refused explicitly in autograd rather than producing an
+under-counted gradient.
+
+### Functional gradients
+
+`sw.grad(output, inputs, cotangents, *, batched=False, retain_graph=False)`
+computes vector-Jacobian products without reading or modifying any tensor's
+`.grad` field. It returns one gradient per requested input in positional order;
+an input unreachable from `output` produces `None`. The unbatched form accepts
+one cotangent whose layout exactly matches `output.layout`.
+
+With `batched=True`, one tensor represents K cotangents. Its layout has a
+prepended leaf batch mode followed by modes exactly equal to `output.layout`;
+each batch slice is a zero-copy offset view. Every reachable input produces one
+stacked gradient tensor with a prepended batch mode. That mode's stride is the
+single-gradient layout's `cosize`, not its logical size, so inputs with storage
+holes keep adjacent gradient slices disjoint. The native traversal discovers
+the shared operation topology once, propagates each of the K cotangents through
+it independently, and releases saved graph state only once after the last pass
+unless `retain_graph=True`.
+
+Functional gradients do not build a differentiable backward graph, so there is
+no `create_graph` parameter and double backward or Hessian construction is not
+supported. Forward-mode JVPs are also not implemented.
 
 ## Modules
 
@@ -946,9 +1022,9 @@ each one actually does, rather than a blanket `strideweave.nn` restriction:
   corresponding functional operation, so they carry no hyperparameters and
   inherit its input support: they accept any carrier and layout the underlying
   op accepts (e.g. a one-mode `Generic` tensor), not just CPU `Float32`.
-- `Linear` holds CPU `Float32` parameters and uses matmul plus the ones-column
-  bias trick, so it requires CPU inputs in the flat column-major `[batch,
-  features]` convention below.
+- `Linear` holds CPU `Float32` parameters and uses matmul plus a differentiable
+  stride-zero bias broadcast, so it requires CPU inputs in the flat
+  column-major `[batch, features]` convention below.
 - `MSELoss` is composed from carrier-dispatched operations (`sub`, `pow`,
   reduction), so it works on any carrier that supports them (CPU or Generic);
   it does require the prediction and target to share a flat two-mode layout.
@@ -960,10 +1036,10 @@ Conventions: `Linear` inputs are flat column-major `[batch, features]` tensors
 (`Layout(Shape([rows, cols]), Stride([1, rows]))`) and its weights are
 `[out_features, in_features]`; because matmul contracts the second mode of
 both operands, `x @ weight` yields `[batch, out_features]` directly. There is
-no broadcasting primitive, so `Linear` broadcasts its `[out_features, 1]`
-bias by contracting a constant ones column against it: `ones[batch, 1] @
-bias[out, 1]` produces a tile whose layout matches the matmul output and
-whose backward pass sums the bias gradient over the batch.
+a differentiable broadcasting primitive, so `Linear` permutes its
+`[out_features, 1]` bias to `[1, out_features]` and applies
+`broadcast_to(..., Shape([batch, out_features]))`. The view shares bias
+storage, and its backward pass sums the bias gradient over the batch.
 
 `SGD.step()` mutates parameter storage in place and therefore bumps carrier
 versions: the required per-iteration ordering is forward, `backward()`, then
@@ -995,7 +1071,11 @@ DLPack, and copy or cross-device exports are not implemented.
 `move(tensor, destination)` dispatches on the exact source and destination carrier
 classes. CPU-to-FileBacked and FileBacked-to-CPU moves use native bulk copies;
 unregistered pairs use an elementwise fallback. A successful move releases the
-source carrier, and autograd moves gradients back into fresh source-class storage.
+source carrier, and autograd moves gradients back into fresh source-class
+storage. Moving a broadcast tensor preserves its exact stride-zero layout and
+copies its `cosize` physical span rather than materializing `size` logical
+elements. Its backward consumes an injective same-shape gradient before the
+broadcast node performs the required summation.
 
 Evictable resolves the move registry for each transition and routes move
 operations through the framework-owned sealed lowered-execution path, so
@@ -1020,9 +1100,10 @@ to `Generic`, because the container remains an alias of Generic storage.
 - No CUDA, Metal, or other accelerator carriers.
 - High-level tensor creation lives only in `strideweave.friendly` and is
   CPU-backed; other carriers are constructed from primitives.
-- No general broadcasting system; binary operations require compatible layouts
-  and generally the same backing carrier (`strideweave.nn` composes around
-  this with matmul-based bias broadcasting).
+- Broadcasting is currently structural and limited to binary pointwise
+  operations: shape-tree profiles must match positionally, and only extent-one
+  leaves expand. There is no implicit rank alignment, and reduce, matmul,
+  einsum, and movement remain separate capabilities.
 - DLPack support is export-only and currently CPU-only.
 - `FileBacked` supports storage and movement, not direct computation.
 - Evictable tensors must be promoted before access or computation, and binary

@@ -13,11 +13,13 @@ import random
 from typing import Any
 
 from ..carriers import CPU
-from ..friendly import column_major, mean, ones
+from ..friendly import column_major, mean
 from ..functional import (
+    broadcast_to,
     elu,
     gelu,
     leaky_relu,
+    permute,
     relu,
     sigmoid,
     silu,
@@ -41,11 +43,9 @@ class Linear(Module):
     The weight has shape ``[out_features, in_features]``; because matmul
     contracts the second mode of both operands, ``x[batch, in] @ weight[out,
     in]`` yields ``[batch, out]`` directly. The bias is stored as an
-    ``[out_features, 1]`` parameter and broadcast without a broadcasting
-    primitive by contracting a constant ones column against it:
-    ``ones[batch, 1] @ bias[out, 1]`` produces a ``[batch, out]`` tile whose
-    layout matches the matmul output, and whose backward pass sums the bias
-    gradient over the batch.
+    ``[out_features, 1]`` parameter. It is permuted to ``[1, out_features]``
+    and broadcast as a zero-copy view over the batch; broadcast backward sums
+    the bias gradient over that mode.
 
     Parameters use CPU ``Float32`` storage and are initialized from
     ``uniform(-1/sqrt(in_features), 1/sqrt(in_features))``.
@@ -121,7 +121,8 @@ class Linear(Module):
             )
         result = tensor @ self.weight
         if self.bias is not None:
-            result = result + ones(batch, 1) @ self.bias
+            bias_row = permute(self.bias, 1, 0)
+            result = result + broadcast_to(bias_row, result.layout.shape)
         return result
 
 

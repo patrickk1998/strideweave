@@ -9,13 +9,14 @@ from typing import Any
 from ..dtype import DType
 from ..operation_helpers import (
     Operation,
+    _align_binary_operands,
     _canonical_layout_from_modes,
     _detached_tensor_like,
     _mode_logical_size,
     _mode_shape,
     _require_layout,
     _require_live_tensor,
-    _require_same_layout,
+    _require_same_shape,
     _require_two_mode_tensor,
     _tensor_with_layout_like,
 )
@@ -75,7 +76,7 @@ def _unary_elementwise_operation(
     def backward(self: Any, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
         gradient = _require_live_tensor(gradient, "gradient")
-        _require_same_layout(tensor, gradient)
+        _require_same_shape(tensor, gradient)
 
         saved_values = self.ctx["saved_values"]
         arithmetic = gradient_arithmetic(tensor)
@@ -99,6 +100,7 @@ def _unary_elementwise_operation(
 
 
 def _binary_elementwise_result(
+    owner: Any,
     lhs: Any,
     rhs: Any,
     *,
@@ -113,7 +115,9 @@ def _binary_elementwise_result(
     """
     lhs = _require_live_tensor(lhs, "lhs")
     rhs = _require_live_tensor(rhs, "rhs")
-    _require_same_layout(lhs, rhs)
+    lhs, rhs, result_layout = _align_binary_operands(lhs, rhs)
+    if owner.inputs():
+        owner.store_inputs(lhs, rhs)
 
     if legacy_dtype is None:
         legacy_dtype = _generic_binary_dtype(lhs, rhs)
@@ -125,7 +129,7 @@ def _binary_elementwise_result(
             )
             for i in range(lhs.size())
         ]
-    return _detached_tensor_like(lhs, values, arithmetic.result_dtype)
+    return _tensor_with_layout_like(lhs, result_layout, values, arithmetic.result_dtype)
 
 
 def _gradient_values(
@@ -155,7 +159,7 @@ def _copy_gradient(target: Any, gradient: Any) -> Any:
     ``Int32``, because gradients are floating; the framework only consumes the
     gradients of differentiable operands.
     """
-    _require_same_layout(target, gradient)
+    _require_same_shape(target, gradient)
     arithmetic = gradient_arithmetic(target)
     return _gradient_tensor(
         target, arithmetic, lambda i: arithmetic.convert(gradient[i])
@@ -271,7 +275,7 @@ class GenericAddOperation(Operation):
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
         return _binary_elementwise_result(
-            lhs, rhs, operation="add", compute=lambda x, y: x + y
+            self, lhs, rhs, operation="add", compute=lambda x, y: x + y
         )
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
@@ -285,13 +289,13 @@ class GenericSubOperation(Operation):
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
         return _binary_elementwise_result(
-            lhs, rhs, operation="sub", compute=lambda x, y: x - y
+            self, lhs, rhs, operation="sub", compute=lambda x, y: x - y
         )
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
         gradient = _require_live_tensor(gradient, "gradient")
-        _require_same_layout(rhs, gradient)
+        _require_same_shape(rhs, gradient)
 
         rhs_arithmetic = gradient_arithmetic(rhs)
         return (
@@ -334,7 +338,7 @@ class GenericScalarMulOperation(Operation):
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
         gradient = _require_live_tensor(gradient, "gradient")
-        _require_same_layout(tensor, gradient)
+        _require_same_shape(tensor, gradient)
 
         arithmetic = gradient_arithmetic(tensor)
         scalar = self.ctx["scalar"]
@@ -352,13 +356,18 @@ class GenericElementwiseMulOperation(Operation):
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
         return _binary_elementwise_result(
-            lhs, rhs, operation="elementwise_mul", compute=lambda x, y: x * y
+            self,
+            lhs,
+            rhs,
+            operation="elementwise_mul",
+            compute=lambda x, y: x * y,
         )
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
         gradient = _require_live_tensor(gradient, "gradient")
-        _require_same_layout(lhs, gradient)
+        _require_same_shape(lhs, gradient)
+        _require_same_shape(rhs, gradient)
 
         lhs_arithmetic = gradient_arithmetic(lhs)
         rhs_arithmetic = gradient_arithmetic(rhs)
@@ -392,6 +401,7 @@ class GenericDivOperation(Operation):
         # Division is floating on both paths, so legacy storage reports
         # Floating rather than the operands' promoted category.
         return _binary_elementwise_result(
+            self,
             lhs,
             rhs,
             operation="div",
@@ -402,7 +412,8 @@ class GenericDivOperation(Operation):
     def backward(self, gradient: Any) -> tuple[Any, Any]:
         lhs, rhs = self.inputs()
         gradient = _require_live_tensor(gradient, "gradient")
-        _require_same_layout(lhs, gradient)
+        _require_same_shape(lhs, gradient)
+        _require_same_shape(rhs, gradient)
 
         lhs_arithmetic = gradient_arithmetic(lhs)
         rhs_arithmetic = gradient_arithmetic(rhs)
@@ -449,7 +460,7 @@ class GenericPowOperation(Operation):
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
         gradient = _require_live_tensor(gradient, "gradient")
-        _require_same_layout(tensor, gradient)
+        _require_same_shape(tensor, gradient)
 
         arithmetic = gradient_arithmetic(tensor)
         exponent = self.ctx["exponent"]

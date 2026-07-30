@@ -41,7 +41,7 @@ def set_logical_values(tensor, rows_of_values):
             tensor[i, j] = value
 
 
-def test_bias_tile_layout_matches_matmul_output_layout():
+def test_bias_broadcast_matches_matmul_output_shape_without_copying():
     batch, in_features, out_features = 3, 2, 4
     x = make_cpu_tensor(
         [float(i) for i in range(batch * in_features)],
@@ -51,14 +51,17 @@ def test_bias_tile_layout_matches_matmul_output_layout():
         [float(i) for i in range(out_features * in_features)],
         column_major(out_features, in_features),
     )
-    ones = make_cpu_tensor([1.0] * batch, column_major(batch, 1))
     bias = make_cpu_tensor([10.0, 20.0, 30.0, 40.0], column_major(out_features, 1))
 
     product = x @ weight
-    tile = ones @ bias
+    bias_row = sw.permute(bias, 1, 0)
+    tile = sw.broadcast_to(bias_row, product.layout.shape)
 
-    assert product.layout == tile.layout == column_major(batch, out_features)
+    assert tile.carrier is bias.carrier
+    assert tile.layout == Layout(Shape([batch, out_features]), Stride([0, 1]))
+    assert product.layout == column_major(batch, out_features)
     combined = product + tile
+    assert combined.layout == product.layout
     for i in range(batch):
         for j in range(out_features):
             expected = (

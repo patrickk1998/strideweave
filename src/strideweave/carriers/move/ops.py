@@ -12,10 +12,10 @@ from ..cpu import CPU
 from ..file_backed.carrier import FileBacked
 from ..operation_helpers import (
     Operation,
+    _detached_tensor_like,
     _logical_values,
     _require_live_tensor,
-    _require_same_layout,
-    _tensor_with_layout_like,
+    _require_same_shape,
 )
 
 _move = import_module("strideweave._move")
@@ -102,10 +102,10 @@ class MoveOperation(Operation):
     def backward(self, gradient: Any) -> tuple[Any]:
         (tensor,) = self.inputs()
         gradient = _require_live_tensor(gradient, "gradient")
-        _require_same_layout(tensor, gradient)
-        return (
-            _tensor_with_layout_like(tensor, tensor.layout, _logical_values(gradient)),
-        )
+        _require_same_shape(tensor, gradient)
+        if not gradient.layout.is_injective:
+            raise ValueError("Move backward requires an injective gradient layout")
+        return (_detached_tensor_like(tensor, _logical_values(gradient)),)
 
 
 class ElementwiseMoveOperation(MoveOperation):

@@ -434,7 +434,7 @@ public:
         return make_legacy_dlpack_capsule(std::move(self), storage, dtype_info);
     }
 
-    void backward(py::object gradient) {
+    void backward(py::object gradient, bool retain_graph) {
         require_single_subtensor("backward");
         require_differentiable(
             "backward is not available for non-differentiable tensors");
@@ -443,67 +443,167 @@ public:
         if (should_accumulate_grad()) {
             accumulate_grad(effective_gradient);
         }
-        backwards_traversal(std::move(effective_gradient), autograd_ctx_);
+        backwards_traversal(std::move(effective_gradient), autograd_ctx_, retain_graph);
     }
 
-    static void backwards_traversal(py::object gradient, py::object operation) {
+    static void backwards_traversal(py::object gradient, py::object operation,
+                                    bool retain_graph) {
         if (operation.is_none()) {
             return;
         }
 
-        // Phase 1: discover the reachable operation graph and count, for each
-        // differentiable tensor, the number of reachable operations consuming
-        // it. The counts allow phase 2 to run every operation's backward
-        // exactly once, with the summed gradient of its output, instead of
-        // re-traversing shared subgraphs once per consumer.
-        std::unordered_map<PyObject*, Index> remaining_consumers;
-        std::unordered_set<PyObject*> visited_operations;
+        TraversalGraph graph = discover_graph(operation);
+        propagate_gradient(std::move(gradient), operation, graph, nullptr);
+        if (!retain_graph) {
+            release_graph(graph);
+        }
+    }
+
+    static py::tuple functional_grad(py::object output, py::sequence inputs,
+                                     py::object cotangents, bool batched,
+                                     bool retain_graph) {
+        if (!py::isinstance(output, tensor_type())) {
+            throw py::type_error("grad output must be a Tensor");
+        }
+        Tensor& output_tensor = py::cast<Tensor&>(output);
+        output_tensor.require_single_subtensor("grad");
+        output_tensor.require_differentiable(
+            "grad is not available for non-differentiable outputs");
+
+        std::vector<py::object> requested_inputs;
+        requested_inputs.reserve(static_cast<std::size_t>(py::len(inputs)));
+        std::unordered_set<PyObject*> requested;
+        for (py::handle input_handle : inputs) {
+            if (!py::isinstance(input_handle, tensor_type())) {
+                throw py::type_error("grad inputs must contain only Tensors");
+            }
+            py::object input = py::reinterpret_borrow<py::object>(input_handle);
+            if (!py::cast<bool>(input.attr("is_differentiable")())) {
+                throw py::value_error(
+                    "grad inputs must contain only differentiable Tensors");
+            }
+            requested.insert(input.ptr());
+            requested_inputs.push_back(std::move(input));
+        }
+
+        std::vector<py::object> cotangent_slices =
+            output_tensor.normalize_functional_cotangents(cotangents, batched);
+        py::object operation = output.attr("autograd_ctx");
+        TraversalGraph graph = discover_graph(operation);
+
+        std::vector<std::vector<py::object>> collected_by_input(
+            requested_inputs.size());
+        for (const py::object& cotangent_slice : cotangent_slices) {
+            py::object cotangent = cotangent_slice;
+            GradientMap collected =
+                propagate_gradient(cotangent, operation, graph, &requested);
+            if (requested.find(output.ptr()) != requested.end()) {
+                collected.insert_or_assign(
+                    output.ptr(), output_tensor.detached_gradient_copy(cotangent));
+            }
+            for (std::size_t i = 0; i < requested_inputs.size(); ++i) {
+                auto found = collected.find(requested_inputs[i].ptr());
+                if (found == collected.end()) {
+                    collected_by_input[i].push_back(py::none());
+                } else {
+                    collected_by_input[i].push_back(found->second);
+                }
+            }
+        }
+
+        if (!retain_graph) {
+            release_graph(graph);
+        }
+
+        py::tuple result(requested_inputs.size());
+        for (std::size_t i = 0; i < requested_inputs.size(); ++i) {
+            if (!batched || collected_by_input[i][0].is_none()) {
+                result[i] = collected_by_input[i][0];
+            } else {
+                result[i] = stack_gradients(collected_by_input[i]);
+            }
+        }
+        return result;
+    }
+
+private:
+    using ConsumerMap = std::unordered_map<PyObject*, Index>;
+    using GradientMap = std::unordered_map<PyObject*, py::object>;
+
+    struct TraversalGraph {
+        ConsumerMap consumers;
+        std::vector<py::object> operations;
         std::vector<py::object> keepalive;
+    };
+
+    static TraversalGraph discover_graph(py::handle operation) {
+        TraversalGraph graph;
+        if (operation.is_none()) {
+            return graph;
+        }
+
+        // Phase 1 is topology-only and is deliberately reusable across every
+        // cotangent in a functional batched VJP.
+        std::unordered_set<PyObject*> visited_operations;
         std::vector<py::object> operation_stack;
-        visited_operations.insert(operation.ptr());
-        operation_stack.push_back(operation);
+        py::object root = py::reinterpret_borrow<py::object>(operation);
+        visited_operations.insert(root.ptr());
+        graph.operations.push_back(root);
+        operation_stack.push_back(std::move(root));
         while (!operation_stack.empty()) {
             py::object current = std::move(operation_stack.back());
             operation_stack.pop_back();
             py::sequence inputs =
                 py::reinterpret_borrow<py::sequence>(current.attr("inputs")());
             std::unordered_set<PyObject*> seen_inputs;
-            for (std::size_t i = 0; i < py::len(inputs); ++i) {
-                py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
-                if (!seen_inputs.insert(input.ptr()).second) {
+            for (py::handle input_handle : inputs) {
+                py::object input = py::reinterpret_borrow<py::object>(input_handle);
+                if (!seen_inputs.insert(input.ptr()).second ||
+                    !py::cast<bool>(input.attr("is_differentiable")())) {
                     continue;
                 }
-                if (!py::cast<bool>(input.attr("is_differentiable")())) {
-                    continue;
-                }
-                ++remaining_consumers[input.ptr()];
-                keepalive.push_back(input);
+                ++graph.consumers[input.ptr()];
+                graph.keepalive.push_back(input);
                 py::object input_ctx = input.attr("autograd_ctx");
                 if (!input_ctx.is_none() &&
                     visited_operations.insert(input_ctx.ptr()).second) {
+                    graph.operations.push_back(input_ctx);
                     operation_stack.push_back(std::move(input_ctx));
                 }
             }
-            keepalive.push_back(std::move(current));
+            graph.keepalive.push_back(std::move(current));
+        }
+        return graph;
+    }
+
+    static GradientMap
+    propagate_gradient(py::object gradient, py::handle operation,
+                       const TraversalGraph& graph,
+                       const std::unordered_set<PyObject*>* collector) {
+        GradientMap collected;
+        if (operation.is_none()) {
+            return collected;
         }
 
-        // Phase 2: propagate gradients in topological order. A tensor is
-        // finalized once every consuming operation has reported its
-        // contribution; only then are its gradient accumulated and its own
-        // producing operation scheduled. Operations whose output received no
-        // gradient are still visited (with a none gradient) so that consumer
-        // counts keep decrementing across skipped branches.
-        std::unordered_map<PyObject*, py::object> pending_gradients;
+        ConsumerMap remaining_consumers = graph.consumers;
+        GradientMap pending_gradients;
         std::vector<std::pair<py::object, py::object>> ready;
-        ready.emplace_back(operation, std::move(gradient));
+        ready.emplace_back(py::reinterpret_borrow<py::object>(operation),
+                           std::move(gradient));
         while (!ready.empty()) {
             auto [current, current_gradient] = std::move(ready.back());
             ready.pop_back();
 
             py::sequence inputs =
                 py::reinterpret_borrow<py::sequence>(current.attr("inputs")());
-
             if (!current_gradient.is_none()) {
+                if (py::cast<bool>(current.attr("_autograd_state_freed"))) {
+                    throw std::runtime_error(
+                        "Trying to backward through the graph a second time "
+                        "after its saved tensors have already been freed. "
+                        "Specify retain_graph=True if you need to backward "
+                        "through the graph a second time.");
+                }
                 current.attr("validate_input_versions")();
                 py::object input_gradients_object =
                     current.attr("backward")(current_gradient);
@@ -518,10 +618,8 @@ public:
                     py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
                     py::object input_gradient =
                         py::reinterpret_borrow<py::object>(input_gradients[i]);
-                    if (input_gradient.is_none()) {
-                        continue;
-                    }
-                    if (!py::cast<bool>(input.attr("is_differentiable")())) {
+                    if (input_gradient.is_none() ||
+                        !py::cast<bool>(input.attr("is_differentiable")())) {
                         continue;
                     }
                     Tensor& input_tensor = py::cast<Tensor&>(input);
@@ -538,16 +636,13 @@ public:
             }
 
             std::unordered_set<PyObject*> seen_inputs;
-            for (std::size_t i = 0; i < py::len(inputs); ++i) {
-                py::object input = py::reinterpret_borrow<py::object>(inputs[i]);
+            for (py::handle input_handle : inputs) {
+                py::object input = py::reinterpret_borrow<py::object>(input_handle);
                 if (!seen_inputs.insert(input.ptr()).second) {
                     continue;
                 }
                 auto consumer = remaining_consumers.find(input.ptr());
-                if (consumer == remaining_consumers.end()) {
-                    continue;
-                }
-                if (--consumer->second != 0) {
+                if (consumer == remaining_consumers.end() || --consumer->second != 0) {
                     continue;
                 }
 
@@ -559,8 +654,15 @@ public:
                 }
 
                 Tensor& input_tensor = py::cast<Tensor&>(input);
-                if (!total_gradient.is_none() &&
-                    input_tensor.should_accumulate_grad()) {
+                if (collector != nullptr) {
+                    if (!total_gradient.is_none() &&
+                        collector->find(input.ptr()) != collector->end()) {
+                        collected.insert_or_assign(
+                            input.ptr(),
+                            input_tensor.detached_gradient_copy(total_gradient));
+                    }
+                } else if (!total_gradient.is_none() &&
+                           input_tensor.should_accumulate_grad()) {
                     input_tensor.accumulate_grad(total_gradient);
                 }
                 py::object input_ctx = input.attr("autograd_ctx");
@@ -569,9 +671,97 @@ public:
                 }
             }
         }
+        return collected;
     }
 
-private:
+    static void release_graph(const TraversalGraph& graph) {
+        for (py::handle operation : graph.operations) {
+            operation.attr("_release_autograd_state")();
+        }
+    }
+
+    std::vector<py::object> normalize_functional_cotangents(py::handle cotangents,
+                                                            bool batched) const {
+        if (!py::isinstance(cotangents, tensor_type())) {
+            throw py::type_error("grad cotangents must be a Tensor");
+        }
+        py::object cotangent = py::reinterpret_borrow<py::object>(cotangents);
+        if (!batched) {
+            validate_gradient(cotangent);
+            return {std::move(cotangent)};
+        }
+
+        constexpr const char* layout_error =
+            "A batched cotangent layout must contain one prepended leaf batch "
+            "mode followed by the output layout exactly";
+        py::object cotangent_layout = cotangent.attr("layout");
+        const std::size_t output_modes = static_cast<std::size_t>(py::len(layout()));
+        if (static_cast<std::size_t>(py::len(cotangent_layout)) != output_modes + 1U) {
+            throw py::value_error(layout_error);
+        }
+        py::object batch_layout = cotangent_layout.attr("__getitem__")(py::int_(0));
+        if (!py::cast<bool>(batch_layout.attr("is_leaf"))) {
+            throw py::value_error(layout_error);
+        }
+        for (std::size_t i = 0; i < output_modes; ++i) {
+            py::object cotangent_mode = cotangent_layout.attr("__getitem__")(
+                py::int_(static_cast<Index>(i + 1U)));
+            py::object output_mode =
+                layout().attr("__getitem__")(py::int_(static_cast<Index>(i)));
+            if (!layouts_equal(cotangent_mode, output_mode)) {
+                throw py::value_error(layout_error);
+            }
+        }
+
+        const Index batch_extent =
+            py::cast<Index>(batch_layout.attr("shape").attr("__int__")());
+        const Index batch_stride =
+            py::cast<Index>(batch_layout.attr("stride").attr("__int__")());
+        const Index cotangent_offset = py::cast<Index>(cotangent.attr("offset"));
+        py::object cotangent_carrier = cotangent.attr("carrier");
+        std::vector<py::object> slices;
+        slices.reserve(static_cast<std::size_t>(batch_extent));
+        for (Index i = 0; i < batch_extent; ++i) {
+            py::object slice =
+                tensor_type()(cotangent_carrier,
+                              py::int_(cotangent_offset + i * batch_stride), layout());
+            validate_gradient(slice);
+            slices.push_back(std::move(slice));
+        }
+        return slices;
+    }
+
+    static py::object stack_gradients(const std::vector<py::object>& gradients) {
+        py::object first = gradients.front();
+        py::object slice_layout = first.attr("layout");
+        const Index slice_cosize = strideweave::layout_index::cosize(slice_layout);
+        py::list values;
+        for (const py::object& gradient : gradients) {
+            if (gradient.is_none() ||
+                !layouts_equal(slice_layout, gradient.attr("layout"))) {
+                throw std::runtime_error(
+                    "Batched gradient slices must share one layout");
+            }
+            py::object carrier = gradient.attr("carrier");
+            const Index offset = py::cast<Index>(gradient.attr("offset"));
+            for (Index i = 0; i < slice_cosize; ++i) {
+                values.append(carrier.attr("__getitem__")(py::int_(offset + i)));
+            }
+        }
+
+        py::object carrier = first.attr("carrier").attr("new_like")(values);
+        py::object layout_type =
+            py::module_::import("strideweave.layout").attr("Layout");
+        py::object layout_module = py::module_::import("strideweave.layout");
+        py::object batch_layout = layout_type(
+            layout_module.attr("Shape")(py::int_(static_cast<Index>(gradients.size()))),
+            layout_module.attr("Stride")(py::int_(slice_cosize)));
+        py::object stacked_layout =
+            layout_type.attr("concat")(batch_layout, slice_layout);
+        return tensor_type()(std::move(carrier), py::int_(0),
+                             std::move(stacked_layout));
+    }
+
     void require_differentiable(const char* message) const {
         if (!is_differentiable()) {
             throw std::runtime_error(message);
@@ -701,34 +891,89 @@ private:
             throw py::type_error("Tensor.backward requires a Tensor gradient");
         }
         py::object gradient_layout = gradient.attr("layout");
-        if (!layouts_equal(layout(), gradient_layout)) {
+        const bool target_is_injective = py::cast<bool>(layout().attr("is_injective"));
+        if (target_is_injective && !layouts_equal(layout(), gradient_layout)) {
             throw py::value_error("Tensor gradient layout must match tensor layout");
+        }
+        if (target_is_injective) {
+            return;
+        }
+        if (!py::cast<bool>(layout().attr("_has_only_broadcast_aliasing"))) {
+            throw py::value_error(
+                "Autograd does not support non-injective layouts whose "
+                "aliasing is not caused only by stride-zero broadcast modes");
+        }
+        if (!layouts_equal(layout().attr("shape"), gradient_layout.attr("shape")) ||
+            !py::cast<bool>(gradient_layout.attr("is_injective"))) {
+            throw py::value_error(
+                "A gradient for a broadcast tensor must have the same shape "
+                "in an injective layout");
         }
     }
 
-    py::object detached_gradient_copy(py::handle gradient) const {
+    py::object copy_gradient_storage(py::handle gradient,
+                                     bool aggregate_aliases) const {
         validate_gradient(gradient);
 
-        py::object tensor_layout = layout();
-        const Index storage_size = strideweave::layout_index::cosize(tensor_layout);
+        const bool target_is_injective = py::cast<bool>(layout().attr("is_injective"));
+        py::object output_layout = layout();
+        if (!target_is_injective) {
+            output_layout = py::reinterpret_borrow<py::object>(gradient.attr("layout"));
+        }
+        const Index storage_size = strideweave::layout_index::cosize(output_layout);
         py::list values;
         for (Index i = 0; i < storage_size; ++i) {
-            values.append(py::none());
+            values.append(py::int_(0));
         }
 
         const Index tensor_size = size();
-        for (Index i = 0; i < tensor_size; ++i) {
-            values[strideweave::layout_index::as_size(
-                strideweave::layout_index::get_index(tensor_layout, py::int_(i)))] =
-                gradient.attr("__getitem__")(py::int_(i));
+        if (aggregate_aliases && !target_is_injective) {
+            std::unordered_map<Index, py::object> totals;
+            for (Index i = 0; i < tensor_size; ++i) {
+                py::object key = py::int_(i);
+                const Index target_index =
+                    strideweave::layout_index::get_index(layout(), key);
+                py::object contribution = gradient.attr("__getitem__")(key);
+                auto found = totals.find(target_index);
+                if (found == totals.end()) {
+                    totals.emplace(target_index, std::move(contribution));
+                } else {
+                    found->second = add_python_objects(found->second, contribution);
+                }
+            }
+            for (Index i = 0; i < tensor_size; ++i) {
+                py::object key = py::int_(i);
+                const Index target_index =
+                    strideweave::layout_index::get_index(layout(), key);
+                const Index output_index =
+                    strideweave::layout_index::get_index(output_layout, key);
+                values[strideweave::layout_index::as_size(output_index)] =
+                    totals.at(target_index);
+            }
+        } else {
+            for (Index i = 0; i < tensor_size; ++i) {
+                py::object key = py::int_(i);
+                const Index output_index =
+                    strideweave::layout_index::get_index(output_layout, key);
+                values[strideweave::layout_index::as_size(output_index)] =
+                    gradient.attr("__getitem__")(key);
+            }
         }
 
         py::object grad_carrier = carrier().attr("new_like")(values);
-        return tensor_type()(grad_carrier, py::int_(0), tensor_layout);
+        return tensor_type()(grad_carrier, py::int_(0), output_layout);
+    }
+
+    py::object detached_gradient_copy(py::handle gradient) const {
+        return copy_gradient_storage(gradient, true);
+    }
+
+    py::object detached_logical_gradient_copy(py::handle gradient) const {
+        return copy_gradient_storage(gradient, false);
     }
 
     py::object combined_gradient(py::handle accumulated, py::handle addition) const {
-        py::object combined = detached_gradient_copy(accumulated);
+        py::object combined = detached_logical_gradient_copy(accumulated);
         for (Index i = 0; i < size(); ++i) {
             py::object key = py::int_(i);
             py::object combined_value = add_python_objects(
@@ -739,15 +984,16 @@ private:
     }
 
     void accumulate_grad(py::handle gradient) {
+        py::object contribution = detached_gradient_copy(gradient);
         if (grad_.is_none()) {
-            grad_ = detached_gradient_copy(gradient);
+            grad_ = std::move(contribution);
             return;
         }
 
         for (Index i = 0; i < size(); ++i) {
             py::object key = py::int_(i);
             py::object accumulated_value = add_python_objects(
-                grad_.attr("__getitem__")(key), gradient.attr("__getitem__")(key));
+                grad_.attr("__getitem__")(key), contribution.attr("__getitem__")(key));
             grad_.attr("__setitem__")(key, accumulated_value);
         }
     }
@@ -868,7 +1114,12 @@ PYBIND11_MODULE(_tensor, module) {
             py::arg("stream") = py::none(), py::kw_only(),
             py::arg("max_version") = py::none(), py::arg("dl_device") = py::none(),
             py::arg("copy") = py::none())
-        .def("backward", &Tensor::backward, py::arg("gradient") = py::none())
+        .def("backward", &Tensor::backward, py::arg("gradient") = py::none(),
+             py::arg("retain_graph") = false)
         .def_static("backwards_traversal", &Tensor::backwards_traversal,
-                    py::arg("gradient"), py::arg("operation"));
+                    py::arg("gradient"), py::arg("operation"),
+                    py::arg("retain_graph") = false)
+        .def_static("_functional_grad", &Tensor::functional_grad, py::arg("output"),
+                    py::arg("inputs"), py::arg("cotangents"), py::kw_only(),
+                    py::arg("batched") = false, py::arg("retain_graph") = false);
 }

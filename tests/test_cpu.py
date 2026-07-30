@@ -637,9 +637,9 @@ def test_cpu_elementwise_mul_uses_native_operation_and_backpropagates():
     layout = Layout(Shape([2, 3]), Stride([1, 4]))
     lhs = make_cpu_tensor(range(layout._cache.cosize), layout)
     rhs = make_cpu_tensor(range(10, 10 + layout._cache.cosize), layout)
-    gradient = make_cpu_tensor([1.0] * layout._cache.cosize, layout)
 
     result = lhs * rhs
+    gradient = make_cpu_tensor([1.0] * result.layout.cosize, result.layout)
     result.backward(gradient)
     lhs_grad = require_grad(lhs)
     rhs_grad = require_grad(rhs)
