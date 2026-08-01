@@ -45,6 +45,19 @@ def _require_layout(tensor: Any, layout: Layout) -> None:
         raise ValueError("Tensor layouts must match")
 
 
+def _require_shape_layout(tensor: Any, layout: Layout) -> None:
+    """Require a gradient's logical shape while allowing any valid strides.
+
+    A view can receive a cotangent materialized by another operation with the
+    same hierarchical shape but different strides.  In particular, a
+    stride-zero cotangent is valid when every logical coordinate is the same
+    value, so only the logical shape is part of this contract.  Tensor
+    construction has already validated the gradient's storage bounds.
+    """
+    if tensor.layout.shape != layout.shape:
+        raise ValueError("Tensor gradient shape must match")
+
+
 def _require_two_mode_tensor(tensor: Any, name: str) -> Any:
     tensor = _require_live_tensor(tensor, name)
     if len(tensor.layout) != 2:

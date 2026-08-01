@@ -38,6 +38,7 @@ BUILT_IN_SIMPLE_DTYPES = (
     DType.Float32,
     DType.Int32,
     DType.Int8,
+    DType.Bool,
     DType.E8M0,
     DType.E5M2,
     DType.E4M3,
@@ -145,6 +146,7 @@ def test_built_in_simple_dtypes_declare_exact_bit_widths():
         DType.Float32: 32,
         DType.Int32: 32,
         DType.Int8: 8,
+        DType.Bool: 8,
         DType.E8M0: 8,
         DType.E5M2: 8,
         DType.E4M3: 8,
@@ -1919,12 +1921,14 @@ def test_each_carrier_accepts_exactly_its_documented_dtype_set():
     # categories alongside the concrete simple dtypes it is the reference for,
     # and the narrow simple encodings are accepted nowhere.
     accepted_sets = {
-        "Generic": (DType.Any, DType.Floating, DType.Float32, DType.Int32),
-        "CPU": (DType.Float32, DType.Int32),
+        "Generic": (DType.Any, DType.Floating, DType.Float32, DType.Int32, DType.Bool),
+        "CPU": (DType.Float32, DType.Int32, DType.Bool),
         "FileBacked": (DType.Floating, DType.Float32, DType.Int32),
     }
     builders = {
-        "Generic": lambda dtype: Generic([1], dtype=dtype),
+        "Generic": lambda dtype: Generic(
+            [True] if dtype is DType.Bool else [1], dtype=dtype
+        ),
         "CPU": lambda dtype: CPU(4, dtype=dtype),
         "FileBacked": lambda dtype: FileBacked(dtype=dtype),
     }
@@ -2012,12 +2016,13 @@ def test_a_dtype_lookalike_cannot_impersonate_a_cpu_storage_dtype():
 
 
 def test_cpu_allocation_round_trips_the_canonical_dtype_singletons():
-    for dtype in (DType.Float32, DType.Int32):
+    for dtype in (DType.Float32, DType.Int32, DType.Bool):
         carrier = CPU(4, dtype=dtype)
         assert carrier.dtype() is dtype
         assert carrier.allocate_like(2).dtype() is dtype
         assert carrier.allocate_like(2, dtype=dtype).dtype() is dtype
-        assert carrier.new_like([1]).dtype() is dtype
+        values = [True] if dtype is DType.Bool else [1]
+        assert carrier.new_like(values).dtype() is dtype
     assert CPU(4).dtype() is DType.Float32
     assert CPU(4, dtype=None).dtype() is DType.Float32  # type: ignore[arg-type]
     assert CPU(4, dtype=DType.Float32).allocate_like(2, dtype=DType.Int32).dtype() is (
@@ -2940,8 +2945,8 @@ def test_registry_lookups_keep_their_subclass_type_without_a_cast():
 
 
 STORAGE_SUPPORT_SETS = {
-    "Generic": (DType.Any, DType.Floating, DType.Float32, DType.Int32),
-    "CPU": (DType.Float32, DType.Int32),
+    "Generic": (DType.Any, DType.Floating, DType.Float32, DType.Int32, DType.Bool),
+    "CPU": (DType.Float32, DType.Int32, DType.Bool),
     "FileBacked": (DType.Floating, DType.Float32, DType.Int32),
 }
 STORAGE_CARRIERS = {
@@ -2968,7 +2973,9 @@ def test_a_carrier_reports_exactly_the_dtypes_it_can_store(name):
 @pytest.mark.parametrize("name", STORAGE_SUPPORT_SETS)
 def test_storage_support_agrees_with_what_construction_accepts(name):
     builders = {
-        "Generic": lambda dtype: Generic([1], dtype=dtype),
+        "Generic": lambda dtype: Generic(
+            [True] if dtype is DType.Bool else [1], dtype=dtype
+        ),
         "CPU": lambda dtype: CPU(4, dtype=dtype),
         "FileBacked": lambda dtype: FileBacked(dtype=dtype),
     }
@@ -3001,7 +3008,9 @@ def test_no_carrier_claims_a_category_or_encoding_it_cannot_store(name):
 def test_the_dtype_a_carrier_currently_holds_does_not_narrow_its_answer(name):
     supported = STORAGE_SUPPORT_SETS[name]
     builders = {
-        "Generic": lambda dtype: Generic([1], dtype=dtype),
+        "Generic": lambda dtype: Generic(
+            [True] if dtype is DType.Bool else [1], dtype=dtype
+        ),
         "CPU": lambda dtype: CPU(4, dtype=dtype),
         "FileBacked": lambda dtype: FileBacked(dtype=dtype),
     }

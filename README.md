@@ -67,7 +67,11 @@ accelerator carriers.
   invoked directly. Call public `forward`, or use the framework-owned sealed
   lowered-execution path from a composite adapter, so operation preflight,
   result validation, profiling, and autograd bookkeeping remain intact. Direct
-  `_forward` calls are unsupported, including for multi-subtensor tensors.
+  `_forward` calls are unsupported. The v0 c0 layout views (`permute`, `slice`,
+  `reshape`, `as_strided`, `broadcast_to`, `squeeze`, and
+  `unsqueeze`) are the only operations that may
+  execute on a validated multi-subtensor representation; all other operations
+  retain the one-subtensor preflight.
 - Views may use different layouts and offsets while sharing the same carrier.
 - In the generalized representation, placement layout `L_i` maps level
   coordinate space `c_i` into carrier `i`, while adjacent layout `S_i` maps
@@ -81,10 +85,12 @@ accelerator carriers.
   CPU access, views, results, movement, scatter, autograd, and DLPack all read
   carrier, offset, layout, dtype, and version state through that authoritative
   representation. Autograd snapshots the complete ordered version token of
-  every unique constituent carrier. Internal multi-subtensor representations
-  can be validated, but indexing, mutation, operations, movement, scatter,
-  backward, and DLPack reject them before allocation or carrier mutation until
-  their semantics are implemented.
+  every unique constituent carrier. Validated multi-subtensor representations
+  support only the pure c0 layout views named above: they preserve every
+  carrier, offset, deeper layout, and adjacent level while rebuilding L0/S0
+  and revalidating the complete representation. Coordinate indexing, mutation, arithmetic,
+  movement, scatter, backward, and DLPack still reject them before allocation
+  or carrier mutation until their remaining per-plane semantics are implemented.
 - External representation rules annotate `validate` with the public
   `RepresentationValidationContext` protocol, available from both
   `strideweave` and `strideweave.carriers.dtype`. Its read-only fields expose
@@ -120,11 +126,14 @@ StrideWeave currently provides four carrier implementations:
 
 - `Generic(values, mutable=True, dtype=DType.Floating)` stores Python
   objects. It supports differentiable `Floating` values, non-differentiable
-  arbitrary `Any` values, and the concrete simple dtypes `Float32` and `Int32`,
-  for which it is StrideWeave's behavioral reference implementation.
+  arbitrary `Any` values, and the concrete simple dtypes `Float32`, `Int32`,
+  and `Bool`, for which it is StrideWeave's behavioral reference
+  implementation. Concrete `Bool` values are normalized to Python `bool` and
+  never participate in numeric promotion or autograd.
 - `CPU(size, pointer=None, *, mutable=True, dtype=DType.Float32, empty=False)`
   owns native memory or references a caller-provided address. It supports
-  `Float32` and `Int32`. Owned storage is zero-initialized unless `empty=True`
+  `Float32`, `Int32`, and `Bool` (one byte per Boolean). Owned storage is
+  zero-initialized unless `empty=True`
   opts into unspecified initial values; `empty` never initializes or changes
   caller-owned memory supplied through `pointer`.
 - `FileBacked(filename=None, mutable=True, dtype=DType.Floating)` stores raw
@@ -192,9 +201,9 @@ The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
 
 - `SimpleDType` is one fixed-width scalar encoding rather than a composition
   of subtensors, so a single carrier could store it homogeneously, and each
-  reports an exact `bits` width. `DType.Float32` and
-  `DType.Int32` are the concrete simple storage dtypes carriers support today;
-  the registry also defines the simple encodings `Int8`, `E8M0`, `E5M2`, `E4M3`,
+  reports an exact `bits` width. `DType.Float32`, `DType.Int32`, and
+  `DType.Bool` (8 bits) are the concrete simple storage dtypes carriers support
+  today; the registry also defines the simple encodings `Int8`, `E8M0`, `E5M2`, `E4M3`,
   `E3M2`, `E2M3`, and `E2M1`, which are structural only. Being simple describes
   the encoding, not carrier support.
 - `DTypeCategory` is an abstract relationship with no bit width. `DType.Any` is
@@ -225,19 +234,28 @@ Descriptors describe representation; they do not decide what an operation
 computes in or returns. That policy is specified in
 [`design/SimpleDType-operation-policy.md`](design/SimpleDType-operation-policy.md)
 and implemented by the backend-independent planner in
-`strideweave.carriers.operation_policy`, which resolves promotion, arithmetic,
-accumulation, and result dtype for `Float32` and `Int32` operands. Autograd
-eligibility follows from the result dtype by the same floating-dtype rule the
-tensor layer applies to every tensor, so the plan does not restate it. The
-policy is a deliberately evolvable starting point rather than a compatibility
-promise.
+`strideweave.carriers.operation_policy`, which resolves overload selection,
+promotion, arithmetic, accumulation, and result dtype for the supported simple
+dtype operands. The registry declares each operation once, including overloads
+such as tensor/tensor versus tensor/weak-scalar `mul` and `pow`, mixed-output
+operations such as Float32 predicates returning Bool or index reductions
+returning Int32, and the `dtype_operand_positions` that identify which full
+operation-call arguments participate in dtype planning. Shape, axis, ordering,
+and other execution parameters never enter promotion as accidental weak
+scalars. `select` has a Bool/F32/F32 overload, while `clamp` has four exact
+tensor/weak-real bound overloads; these role signatures are selected centrally.
+Autograd eligibility follows from the result dtype by the same
+floating-dtype rule the tensor layer applies to every tensor, so the plan does
+not restate it. The policy is a deliberately evolvable starting point rather
+than a compatibility promise.
 
 `Generic` executes those plans and is the reference every other backend
 conforms to. Native `CPU` resolves the same plans: each operation asks the
-planner for its promotion, arithmetic, accumulation, and result dtype while the
-GIL is still held, then releases it to run the kernel that plan selected. No
-backend carries a promotion table of its own, so `Float32` and `Int32` results
-agree across carriers by construction rather than by parallel maintenance.
+planner for its overload, promotion, arithmetic, accumulation, and output dtype
+while the GIL is still held, then releases it to run the kernel that plan
+selected. No backend carries a promotion table of its own, so Generic and CPU
+agree on Float32, Int32, and Bool storage/results by construction rather than by
+parallel maintenance.
 
 #### Backend Capabilities
 
@@ -417,6 +435,10 @@ approximating them with Python's own numeric types:
   wrapping. A reduction accumulates exactly and checks only the final sum, so a
   partial sum may legitimately leave `Int32` range. `Int32` tensors are not
   differentiable.
+- `Bool` storage contains only `False` and `True`. Comparisons and
+  `logical_not` produce Bool tensors, which are non-differentiable; Bool is not
+  implicitly promoted into Float32 or Int32 arithmetic. Generic normalizes
+  stored values to Python `bool`, while CPU uses one-byte `0`/`1` storage.
 - Concrete storage is normalized and owned. Values are converted when stored,
   including through `carrier[i] = value` and `scatter`, and the carrier copies
   the supplied sequence, so no caller-held alias can place an unrepresentable
@@ -716,8 +738,8 @@ set of descriptors:
 
 | Carrier | Accepted storage dtypes |
 | --- | --- |
-| `Generic` | `Any`, `Floating` (legacy opaque storage), `Float32`, `Int32` |
-| `CPU` | `Float32`, `Int32` |
+| `Generic` | `Any`, `Floating` (legacy opaque storage), `Float32`, `Int32`, `Bool` |
+| `CPU` | `Float32`, `Int32`, `Bool` |
 | `FileBacked` | `Floating`, `Float32`, `Int32` |
 | `Evictable` | Whatever both composed tiers accept, which must match |
 
@@ -809,18 +831,37 @@ except RuntimeError:
 
 ## Operations
 
-The public functional API includes:
+The public functional API includes the following v0 surface:
 
-- arithmetic: `add`, `sub`, `neg`, `mul`, `elementwise_mul`, `div`, `pow`, and
-  `exp` (`sub` is implemented natively for CPU carriers and in Python for
-  Generic carriers; `neg` is a composition of scalar `mul`);
-- activations: `relu`, `sigmoid`, `tanh`, `gelu`, `silu`, `softplus`, `elu`,
-  and `leaky_relu`;
-- layout operations: `view`, `permute`, `rearrange`, and `broadcast_to`;
-- contractions: `reduce`, `matmul`, and `einsum`;
+- views and layout composition: slice indexing, `as_strided`, `reshape`,
+  `permute`, `rearrange`, `broadcast_to`, `broadcast_in_dim`, `squeeze`, and
+  `unsqueeze`. These are zero-copy layout operations; `flip` and materializing
+  `contiguous`/`copy` remain deferred.
+- unary elementwise operations: `neg`, `abs`, `sign`, `recip`, `sqrt`, `rsqrt`,
+  `exp`, `exp2`, `log`, `log2`, `sin`, `cos`, `erf`, `floor`, `ceil`, and
+  `round`, plus the composite activations `relu`, `sigmoid`, `tanh`, `gelu`,
+  `silu`, `softplus`, `elu`, and `leaky_relu`.
+- binary elementwise operations: `add`, `sub`, `mul`, `elementwise_mul`, `div`,
+  `pow`, `maximum`, `minimum`, and `rem`. `mul` and `pow` also accept the
+  documented weak-scalar overloads.
+- predicates: `eq`, `ne`, `lt`, and `le` return non-differentiable Bool
+  tensors. `gt` and `ge` are argument-swapping composites, and `logical_not`
+  returns Bool.
+- masked selection: `select` consumes a Bool condition and two Float32 value
+  tensors; `clamp` consumes a Float32 tensor with Float32 tensor or weak-real
+  bounds. Both use the shared structural broadcasting rule.
+- reductions and scans: `reduce_sum`, `reduce_prod`, `reduce_max`,
+  `reduce_min`, `argmax`, `argmin`, and inclusive `cumsum`. The former
+  `sw.reduce` name is removed rather than retained as a compatibility alias.
+- contractions and indexing: two-mode `matmul`, layout-described `einsum`,
+  Float32 grouped `conv_general`, Float32/Int32 `gather`, and functional
+  `scatter` and `scatter_add`.
+- selection: `sort` and `topk` return named `(values, indices)` results with
+  Float32 values and Int32 indices.
 - storage movement: `move`.
 
-Binary pointwise operations (`add`, `sub`, `elementwise_mul`, and `div`) align
+Binary pointwise operations (`add`, `sub`, `mul`, `elementwise_mul`, `div`,
+`pow`, `maximum`, `minimum`, `rem`, and the Float32 predicates) align
 operands structurally before dispatch. Their shape trees must share the same
 `Layout.profile`; corresponding leaf extents must be equal or one must be 1.
 Extent-one leaves widen with stride zero at that exact hierarchical position.
@@ -839,6 +880,49 @@ rows or columns and stride-zero contracted modes as repeated factors in the dot
 product. Both operations compute backward values in injective logical storage;
 the broadcast node, or broadcast-leaf accumulation, then sums contributions
 back to the underlying storage. Generic and CPU follow the same rule.
+
+`broadcast_in_dim` is a composite convenience wrapper. It accepts an explicit
+`broadcast_dimensions` sequence naming the target top-level positions occupied
+by the source modes, inserts extent-one modes with `unsqueeze` for omitted
+positions, and finishes with `broadcast_to`. It does not infer rank alignment,
+reorder modes, or insert inside nested modes; callers needing those layouts use
+`rearrange` explicitly first.
+
+`select(condition, on_true, on_false)` aligns all three tensors simultaneously:
+the condition is Bool, both value branches are Float32, and singleton leaves
+widen through differentiable stride-zero views. Pairwise alignment order cannot
+change the common shape. The forward read is masked: only the selected branch is
+read at each coordinate, so an NaN in an unselected branch does not propagate.
+The Bool condition is non-differentiable; backward routes the cotangent to the
+selected branch and zero to the other, then reduces any broadcast views.
+
+`clamp(tensor, lower, upper)` accepts Float32 tensor bounds or weak real scalar
+bounds. Tensor operands use the same simultaneous structural broadcasting, and
+weak scalars are converted to Float32 by the central policy. Its forward and
+backward semantics are exactly the ordered composition
+`minimum(maximum(tensor, lower), upper)`, including NaNs, signed zero,
+infinities, equal-winner splits, and `lower > upper`; no independent bound-order
+validation is performed. Tensor bounds receive staged VJPs, while weak scalar
+bounds do not receive gradients.
+
+Reductions lower a hierarchical description to a two-mode intermediate whose
+second mode is the reduction fiber. `reduce_sum`, `reduce_prod`, `reduce_max`,
+and `reduce_min` return Float32 results; `argmax` and `argmin` return Int32 first-
+winner indices. `cumsum` is an inclusive scan over one explicit top-level mode.
+Fibers must be non-empty, and `keepdims` is composed with `unsqueeze` rather
+than a reduction option.
+
+`conv_general` is a grouped Float32 cross-correlation over arbitrary spatial
+rank. It supports explicit positive strides, non-negative padding, input and
+kernel dilation, feature groups, and top-level dimension-role permutations;
+the kernel is not reversed. `gather` replaces one top-level mode using Int32
+indices. `scatter` requires distinct indices, while `scatter_add` accumulates
+repeated indices in logical order. Both return fresh Float32 tensors.
+
+`sort` and `topk` operate on one top-level mode and return named tuples with
+Float32 values and Int32 source indices. Their ordering and tie behavior are
+defined by the Generic reference and matched by CPU; the internal value/index
+dispatch names are not public operations.
 
 `Generic` provides Python reference implementations. `CPU` provides native C++
 kernels that use cached expanded layout keys and release the GIL in hot loops.
@@ -868,7 +952,7 @@ have standard flat einops semantics. String forms include:
 
 ```python
 transposed = sw.rearrange(tensor, "a b -> b a")
-summed = sw.reduce(tensor, "a (b c) -> a b")
+summed = sw.reduce_sum(tensor, "a (b c) -> a b")
 contracted = sw.einsum(lhs, rhs, "a b, c b -> a c")
 batched = sw.einsum(lhs, rhs, "b i k, b j k -> b i j")
 ```
@@ -1100,18 +1184,32 @@ to `Generic`, because the container remains an alias of Generic storage.
 - No CUDA, Metal, or other accelerator carriers.
 - High-level tensor creation lives only in `strideweave.friendly` and is
   CPU-backed; other carriers are constructed from primitives.
-- Broadcasting is currently structural and limited to binary pointwise
-  operations: shape-tree profiles must match positionally, and only extent-one
-  leaves expand. There is no implicit rank alignment, and reduce, matmul,
-  einsum, and movement remain separate capabilities.
+- Explicit structural views are available through `as_strided`, `reshape`,
+  `permute`, `broadcast_to`, `broadcast_in_dim`, `squeeze`, and `unsqueeze`;
+  slice indexing supplies the corresponding positive-step view. They preserve
+  hierarchy, expand only extent-one leaves where applicable, and never infer
+  rank alignment. Binary pointwise operations additionally perform implicit
+  singleton alignment using differentiable views. Reductions, scans,
+  contractions, convolution, indexing, selection, and movement remain
+  separate capabilities.
+- `as_strided(tensor, shape, stride)` uses `Layout(shape, stride)` as an
+  origin-based logical mapping `B` from output coordinates to flattened input
+  `c_0` ordinals; unlike PyTorch, its stride is not a direct physical-storage
+  reinterpretation. The output placement is the representable composition
+  `Layout.compose(L_0, B)`, and multi-subtensor views compose `S_0` with the
+  same mapping while preserving deeper layouts. The mapping and composed
+  placement must be injective, and `B.cosize` must fit the input logical size.
 - DLPack support is export-only and currently CPU-only.
 - `FileBacked` supports storage and movement, not direct computation.
 - Evictable tensors must be promoted before access or computation, and binary
   Evictable operations require matching primary and secondary carrier classes.
-- Public compound tensor construction and multi-subtensor indexing, mutation,
-  operations, movement, release orchestration, and DLPack export remain
-  deferred. The internal representation and optional-rule contracts exist so
-  those paths can be added without a parallel public tensor type.
+- Public compound tensor construction and multi-subtensor coordinate indexing, mutation,
+  non-view operations, movement, release orchestration, and DLPack export
+  remain deferred. The pure c0 layout views (`permute`, `broadcast_to`,
+  `slice`, `reshape`, `as_strided`, `squeeze`, and `unsqueeze`) are the narrow
+  validated multi-subtensor
+  exception; the internal representation and optional-rule contracts exist so
+  the remaining paths can be added without a parallel public tensor type.
 - `strideweave.nn` covers only `Linear`, elementwise activations, `MSELoss`, and
   `SGD`; there are no buffers, state dictionaries, training/evaluation modes,
   or hooks.

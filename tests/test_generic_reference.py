@@ -196,7 +196,7 @@ def test_int32_reduction_accumulates_exactly_and_checks_only_the_result():
     tensor = generic_tensor([maximum, maximum, -maximum], DType.Int32, layout)
 
     # The partial sum leaves Int32 range but the final sum does not.
-    assert sw.reduce(tensor)[0] == maximum
+    assert sw.reduce_sum(tensor, "a b -> a")[0] == maximum
 
 
 def test_int32_reduction_overflow_is_reported():
@@ -204,7 +204,7 @@ def test_int32_reduction_overflow_is_reported():
     tensor = generic_tensor([2**31 - 1, 1], DType.Int32, layout)
 
     with pytest.raises(OverflowError, match="out of int32 range"):
-        sw.reduce(tensor)
+        sw.reduce_sum(tensor, "a b -> a")
 
 
 # --- Promotion follows the shared plans ------------------------------------
@@ -411,12 +411,154 @@ COMPUTE_REPRESENTATION = {
     Arithmetic.INT32_EXACT_CHECKED: DType.Int32,
     Arithmetic.INT32_EXACT: DType.Int32,
 }
-COMPUTE_ACCUMULATION = {
-    Arithmetic.BINARY32: Accumulation.SEQUENTIAL_BINARY32,
-    Arithmetic.INT32_EXACT_CHECKED: Accumulation.EXACT_INTEGER,
-    Arithmetic.INT32_EXACT: Accumulation.EXACT_INTEGER,
+ACCUMULATING_OPERATIONS = frozenset(
+    {
+        "argmax",
+        "argmin",
+        "conv_general",
+        "cumsum",
+        "matmul",
+        "reduce_max",
+        "reduce_min",
+        "reduce_prod",
+        "reduce_sum",
+        "scatter_add",
+    }
+)
+
+EXPECTED_ACCUMULATIONS = {
+    "argmax": frozenset({Accumulation.ARGMAX}),
+    "argmin": frozenset({Accumulation.ARGMIN}),
+    "conv_general": frozenset({Accumulation.SEQUENTIAL_BINARY32}),
+    "cumsum": frozenset({Accumulation.SEQUENTIAL_BINARY32}),
+    "matmul": frozenset({Accumulation.SEQUENTIAL_BINARY32, Accumulation.EXACT_INTEGER}),
+    "reduce_max": frozenset({Accumulation.MAXIMUM}),
+    "reduce_min": frozenset({Accumulation.MINIMUM}),
+    "reduce_prod": frozenset({Accumulation.SEQUENTIAL_BINARY32_PRODUCT}),
+    "reduce_sum": frozenset(
+        {Accumulation.SEQUENTIAL_BINARY32, Accumulation.EXACT_INTEGER}
+    ),
+    "scatter_add": frozenset({Accumulation.SEQUENTIAL_BINARY32}),
 }
-ACCUMULATING_OPERATIONS = frozenset({"matmul", "reduce"})
+
+
+def _operand_signature(operands):
+    """Return the policy-relevant shape of capability operands."""
+    return tuple(
+        (operand.role, operand.dtype, operand.convert_to) for operand in operands
+    )
+
+
+# These operations deliberately store a logical result in a representation
+# different from their compute arithmetic.  Keep their complete registered
+# shapes explicit so the capability test does not turn into a blanket waiver
+# for arbitrary Bool/Int32 outputs.
+EXPECTED_NON_COMPUTE_OUTPUTS = {
+    "_sort_indices": (
+        DType.Int32,
+        Arithmetic.BINARY32,
+        None,
+        ((OperandRole.TENSOR, DType.Float32, DType.Float32),),
+    ),
+    "_topk_indices": (
+        DType.Int32,
+        Arithmetic.BINARY32,
+        None,
+        ((OperandRole.TENSOR, DType.Float32, DType.Float32),),
+    ),
+    "argmax": (
+        DType.Int32,
+        Arithmetic.BINARY32,
+        Accumulation.ARGMAX,
+        ((OperandRole.TENSOR, DType.Float32, DType.Float32),),
+    ),
+    "argmin": (
+        DType.Int32,
+        Arithmetic.BINARY32,
+        Accumulation.ARGMIN,
+        ((OperandRole.TENSOR, DType.Float32, DType.Float32),),
+    ),
+    "eq": (
+        DType.Bool,
+        Arithmetic.BINARY32,
+        None,
+        (
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+        ),
+    ),
+    "le": (
+        DType.Bool,
+        Arithmetic.BINARY32,
+        None,
+        (
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+        ),
+    ),
+    "logical_not": (
+        DType.Bool,
+        Arithmetic.BINARY32,
+        None,
+        ((OperandRole.TENSOR, DType.Float32, DType.Float32),),
+    ),
+    "lt": (
+        DType.Bool,
+        Arithmetic.BINARY32,
+        None,
+        (
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+        ),
+    ),
+    "ne": (
+        DType.Bool,
+        Arithmetic.BINARY32,
+        None,
+        (
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+        ),
+    ),
+}
+
+EXPECTED_MIXED_CONVERSIONS = {
+    "gather": (
+        Arithmetic.BINARY32,
+        None,
+        (
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+            (OperandRole.TENSOR, DType.Int32, DType.Int32),
+        ),
+    ),
+    "scatter": (
+        Arithmetic.BINARY32,
+        None,
+        (
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+            (OperandRole.TENSOR, DType.Int32, DType.Int32),
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+        ),
+    ),
+    "scatter_add": (
+        Arithmetic.BINARY32,
+        Accumulation.SEQUENTIAL_BINARY32,
+        (
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+            (OperandRole.TENSOR, DType.Int32, DType.Int32),
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+        ),
+    ),
+    "select": (
+        Arithmetic.BINARY32,
+        None,
+        (
+            (OperandRole.TENSOR, DType.Bool, DType.Bool),
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+            (OperandRole.TENSOR, DType.Float32, DType.Float32),
+        ),
+    ),
+}
 
 INCOHERENT_PLANS = {
     # A binary32 computation stored as Int32 is the truncation this boundary
@@ -439,19 +581,19 @@ INCOHERENT_PLANS = {
         Arithmetic.BINARY32,
         DType.Float32,
         accumulation=Accumulation.EXACT_INTEGER,
-        operation="reduce",
+        operation="reduce_sum",
     ),
     "integer-compute-binary32-accumulation": plan_of(
         Arithmetic.INT32_EXACT_CHECKED,
         DType.Int32,
         accumulation=Accumulation.SEQUENTIAL_BINARY32,
-        operation="reduce",
+        operation="reduce_sum",
     ),
     # An operation whose loop combines terms needs an accumulation to combine
     # them with, and one that writes an element per element has nowhere to
     # apply one.
     "reduce-without-accumulation": plan_of(
-        Arithmetic.BINARY32, DType.Float32, operation="reduce"
+        Arithmetic.BINARY32, DType.Float32, operation="reduce_sum"
     ),
     "matmul-without-accumulation": plan_of(
         Arithmetic.INT32_EXACT, DType.Int32, operation="matmul"
@@ -481,11 +623,22 @@ def test_the_predicate_accepts_every_plan_the_policy_resolves_for_generic():
     # Narrowing the predicate must not narrow what Generic supports: every shape
     # the central policy resolves over Generic's storage dtypes is still
     # executable, so nothing in the shipped backend is lost to the tightening.
-    plans = resolvable_plans(CONCRETE_DTYPES)
+    plans = {
+        *resolvable_plans(CONCRETE_DTYPES),
+        resolve_operation_plan("select", DType.Bool, DType.Float32, DType.Float32),
+    }
+    advertised = {
+        plan_of_capability(capability) for capability in generic_capabilities()
+    }
+    declared = {
+        plan_of_capability(capability)
+        for capability in capabilities_for_carrier_class(Generic)
+    }
 
     assert plans
     assert all(executable_plan_shape(plan) for plan in plans)
-    assert len(capabilities_for_carrier_class(Generic)) == len(plans)
+    assert advertised == plans
+    assert declared == plans
 
 
 def test_generic_advertises_no_cross_field_incoherent_capability():
@@ -495,12 +648,32 @@ def test_generic_advertises_no_cross_field_incoherent_capability():
     for capability in generic_capabilities():
         representation = COMPUTE_REPRESENTATION[capability.compute]
 
-        assert capability.output is representation
-        assert all(
-            operand.convert_to is representation for operand in capability.operands
-        )
+        if capability.output is not representation:
+            expected = EXPECTED_NON_COMPUTE_OUTPUTS.get(capability.operation)
+            assert expected is not None
+            assert (
+                capability.output,
+                capability.compute,
+                capability.accumulation,
+                _operand_signature(capability.operands),
+            ) == expected
+        else:
+            expected_mixed = EXPECTED_MIXED_CONVERSIONS.get(capability.operation)
+            if expected_mixed is None:
+                assert all(
+                    operand.convert_to is representation
+                    for operand in capability.operands
+                )
+            else:
+                assert (
+                    capability.compute,
+                    capability.accumulation,
+                    _operand_signature(capability.operands),
+                ) == expected_mixed
         if capability.operation in ACCUMULATING_OPERATIONS:
-            assert capability.accumulation is COMPUTE_ACCUMULATION[capability.compute]
+            assert (
+                capability.accumulation in EXPECTED_ACCUMULATIONS[capability.operation]
+            )
         else:
             assert capability.accumulation is None
 
@@ -517,7 +690,10 @@ def test_a_binary32_reduction_is_never_accumulated_as_exact_integers():
         arithmetic_for_plan(truncating, Generic)
 
     layout = Layout(Shape([1, 2]), Stride([1, 1]))
-    assert sw.reduce(generic_tensor([1.5, 1.5], DType.Float32, layout))[0] == 3.0
+    assert (
+        sw.reduce_sum(generic_tensor([1.5, 1.5], DType.Float32, layout), "a b -> a")[0]
+        == 3.0
+    )
 
 
 def test_a_float32_compute_never_stores_its_result_as_int32():
@@ -564,7 +740,7 @@ def test_the_adapter_checks_an_accumulated_integer_narrowing():
 
 
 def test_the_adapter_takes_its_accumulation_from_the_plan():
-    plan = resolve_operation_plan("reduce", DType.Float32)
+    plan = resolve_operation_plan("reduce_sum", DType.Float32)
     sequential = arithmetic_for_plan(plan, Generic)
 
     # Rounding at every step, not once at the end: 2**24 + 1 + 1 stays at 2**24

@@ -18,6 +18,7 @@ from strideweave import (
     GenericElementwiseMulOperation,
     GenericExpOperation,
     GenericMatmulOperation,
+    GenericNegOperation,
     GenericPowOperation,
     GenericReduceSumOperation,
     GenericScalarMulOperation,
@@ -117,7 +118,7 @@ def test_tensor_public_api_imports():
     assert sw.Tensor is Tensor
     assert sw.GenericViewOperation is GenericViewOperation
     assert sw.grad is not None
-    assert sw.view is not None
+    assert not hasattr(sw, "view")
 
 
 def test_tensor_constructor_exposes_read_only_api():
@@ -305,8 +306,12 @@ def test_tensor_view_rejects_invalid_slices_and_integer_keys():
 
     with pytest.raises(ValueError, match="whole slices are supported for non-leaf"):
         nested_tensor[:, 1:3]
-    with pytest.raises(ValueError, match="View slices do not support steps"):
-        flat_tensor[:, ::2]
+    stepped = flat_tensor[:, ::2]
+    assert stepped.layout == Layout(Shape([5, 5]), Stride([1, 10]))
+    with pytest.raises(ValueError, match="divisible by its step"):
+        flat_tensor[:, 1:6:2]
+    with pytest.raises(ValueError, match="positive step"):
+        flat_tensor[:, ::-1]
     with pytest.raises(ValueError, match="View integer key is out of domain"):
         flat_tensor[5, :]
     with pytest.raises(ValueError, match="View slices must be non-empty"):
@@ -471,7 +476,7 @@ def test_tensor_add_public_api_imports():
     assert sw.div is not None
     assert sw.exp is not None
     assert sw.pow is not None
-    assert sw.reduce is not None
+    assert sw.reduce_sum is not None
     assert sw.matmul is not None
     assert sw.rearrange is not None
     assert sw.permute is not None
@@ -530,7 +535,7 @@ def test_tensor_neg_function_matches_operator_and_backpropagates():
 
     assert tensor_values(result) == [-2, 3]
     assert tensor_values(sw.neg(tensor)) == [-2, 3]
-    assert isinstance(result.autograd_ctx, GenericScalarMulOperation)
+    assert isinstance(result.autograd_ctx, GenericNegOperation)
 
     result.backward(Tensor(Generic([1, 1]), 0, layout))
 
@@ -649,7 +654,7 @@ def test_tensor_add_rejects_unsupported_data_class():
         _ = lhs + rhs
 
 
-def test_tensor_scalar_mul_accepts_any_layout_and_preserves_layout():
+def test_tensor_scalar_mul_accepts_any_layout_and_canonicalizes_result():
     layout = Layout(Shape([2, 3]), Stride([1, 4]))
     tensor = Tensor(Generic(list(range(10))), 0, layout)
 
@@ -657,9 +662,10 @@ def test_tensor_scalar_mul_accepts_any_layout_and_preserves_layout():
     right_result = 3 * tensor
     function_result = sw.mul(tensor, 4)
 
-    assert left_result.layout == layout
-    assert right_result.layout == layout
-    assert function_result.layout == layout
+    canonical_layout = Layout(Shape([2, 3]), Stride([1, 2]))
+    assert left_result.layout == canonical_layout
+    assert right_result.layout == canonical_layout
+    assert function_result.layout == canonical_layout
     assert tensor_values(left_result) == [0, 2, 8, 10, 16, 18]
     assert tensor_values(right_result) == [0, 3, 12, 15, 24, 27]
     assert tensor_values(function_result) == [0, 4, 16, 20, 32, 36]
@@ -670,7 +676,7 @@ def test_tensor_scalar_mul_backward_scales_gradient():
     layout = Layout(Shape([2, 3]), Stride([1, 4]))
     tensor = Tensor(Generic(list(range(10))), 0, layout)
     result = tensor * 5
-    gradient = Tensor(Generic([1] * 10), 0, layout)
+    gradient = Tensor(Generic([1] * result.layout.cosize), 0, result.layout)
 
     result.backward(gradient)
     tensor_grad = require_grad(tensor)
@@ -693,7 +699,7 @@ def test_tensor_elementwise_mul_forward_and_backward():
     rhs = Tensor(Generic([5, 6, 7, 8]), 0, layout)
     gradient = Tensor(Generic([10, 20, 30, 40]), 0, layout)
 
-    result = lhs * rhs
+    result = sw.elementwise_mul(lhs, rhs)
     function_result = sw.elementwise_mul(lhs, rhs)
     result.backward(gradient)
 
@@ -769,31 +775,31 @@ def test_tensor_elementwise_operations_reject_invalid_inputs():
         _ = tensor ** "x"
 
 
-def test_tensor_reduce_sums_second_mode():
+def test_tensor_reduce_sum_sums_second_mode():
     layout = Layout(Shape([2, 3]), Stride([1, 2]))
     tensor = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, layout)
 
-    result = sw.reduce(tensor)
+    result = sw.reduce_sum(tensor, "a b -> a")
 
     assert result.layout == Layout(Shape(2), Stride(1))
     assert tensor_values(result) == [9, 12]
     assert isinstance(result.autograd_ctx, GenericReduceSumOperation)
 
 
-def test_tensor_reduce_preserves_hierarchical_first_mode_with_column_major_layout():
+def test_tensor_reduce_sum_preserves_hierarchical_first_mode_with_column_major_layout():
     layout = Layout(Shape([[2, 2], 3]), Stride([[1, 2], 4]))
     tensor = Tensor(Generic(range(1, 13)), 0, layout)
 
-    result = sw.reduce(tensor)
+    result = sw.reduce_sum(tensor, "(a b) c -> (a b)")
 
-    assert result.layout == Layout(Shape([2, 2]), Stride([1, 2]))
+    assert result.layout == Layout(Shape([[2, 2]]), Stride([[1, 2]]))
     assert tensor_values(result) == [15, 18, 21, 24]
 
 
-def test_tensor_reduce_backward_copies_gradient_over_second_mode():
+def test_tensor_reduce_sum_backward_copies_gradient_over_second_mode():
     layout = Layout(Shape([2, 3]), Stride([1, 2]))
     tensor = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, layout)
-    result = sw.reduce(tensor)
+    result = sw.reduce_sum(tensor, "a b -> a")
     gradient = Tensor(Generic([10, 20]), 0, result.layout)
 
     result.backward(gradient)
@@ -803,11 +809,11 @@ def test_tensor_reduce_backward_copies_gradient_over_second_mode():
     assert type(tensor_grad.carrier) is type(tensor.carrier)
 
 
-def test_tensor_reduce_rejects_non_two_mode_tensor():
+def test_tensor_reduce_sum_primitive_rejects_non_two_mode_tensor():
     one_mode = Tensor(Generic([1, 2]), 0, Layout(Shape(2), Stride(1)))
 
     with pytest.raises(ValueError, match="tensor must have a two-mode layout"):
-        sw.reduce(one_mode)
+        one_mode.carrier.dispatch_op("reduce_sum").forward(one_mode)
 
 
 def test_tensor_matmul_computes_nk_by_mk_to_nm():
@@ -1042,6 +1048,91 @@ def test_tensor_permute_rejects_invalid_orders():
         sw.permute(tensor, 0, 2)
     with pytest.raises(TypeError):
         sw.permute(tensor, non_integer_dim, 1)
+
+
+def test_tensor_unsqueeze_and_squeeze_are_zero_copy_views_with_vjps():
+    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 1, 3]), Stride([1, 2, 2])))
+
+    expanded = sw.unsqueeze(tensor, -1)
+    assert expanded.carrier is tensor.carrier
+    assert expanded.offset == tensor.offset
+    assert expanded.layout == Layout(Shape([2, 1, 3, 1]), Stride([1, 2, 2, 0]))
+
+    gradient = Tensor(Generic(range(6)), 0, expanded.layout)
+    expanded.backward(gradient)
+    assert tensor.grad is not None
+    assert tensor.grad.layout == tensor.layout
+    assert tensor.grad.carrier is not tensor.carrier
+    assert tensor.grad[0] == gradient[0]
+
+    squeezed = sw.squeeze(expanded, -1)
+    assert squeezed.layout == tensor.layout
+    assert squeezed.carrier is tensor.carrier
+
+
+def test_broadcast_in_dim_inserts_only_explicit_missing_modes():
+    tensor = Tensor(Generic([1.0, 2.0]), 0, Layout(Shape(2), Stride(1)))
+
+    result = sw.broadcast_in_dim(tensor, Shape([3, 2]), (1,))
+
+    assert result.layout == Layout(Shape([3, 2]), Stride([0, 1]))
+    assert result.carrier is tensor.carrier
+    gradient = Tensor(
+        Generic([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+        0,
+        Layout(Shape([3, 2]), Stride([1, 3])),
+    )
+    result.backward(gradient)
+    assert tensor.grad is not None
+    assert [tensor.grad[index] for index in range(tensor.grad.size())] == [6.0, 15.0]
+
+    cases = (
+        # Two omitted modes at the beginning.
+        (
+            Shape(2),
+            Stride(1),
+            Shape([3, 4, 2, 5]),
+            (2,),
+            Stride([0, 0, 1, 0]),
+        ),
+        # Two omitted modes in the middle.
+        (
+            Shape([2, 1]),
+            Stride([1, 2]),
+            Shape([2, 3, 4, 5]),
+            (0, 3),
+            Stride([1, 0, 0, 0]),
+        ),
+        # Two omitted modes at the end.
+        (
+            Shape([2, 1]),
+            Stride([1, 2]),
+            Shape([2, 1, 3, 4]),
+            (0, 1),
+            Stride([1, 2, 0, 0]),
+        ),
+    )
+    for source_shape, source_stride, target, dimensions, expected_stride in cases:
+        source = Tensor(
+            Generic([1.0, 2.0]),
+            0,
+            Layout(source_shape, source_stride),
+        )
+        view = sw.broadcast_in_dim(source, target, dimensions)
+        assert view.layout == Layout(target, expected_stride)
+
+
+def test_broadcast_in_dim_rejects_implicit_or_reordered_positions():
+    tensor = Tensor(
+        Generic([1.0, 2.0]),
+        0,
+        Layout(Shape([2, 1]), Stride([1, 2])),
+    )
+
+    with pytest.raises(ValueError, match="one position per source mode"):
+        sw.broadcast_in_dim(tensor, Shape([3, 2]), ())
+    with pytest.raises(ValueError, match="strictly increasing"):
+        sw.broadcast_in_dim(tensor, Shape([2, 3]), (1, 0))
 
 
 def test_tensor_backward_on_leaf_creates_detached_generic_grad():
@@ -1711,7 +1802,7 @@ def test_reduce_over_broadcast_mode_matches_torch_forward_and_backward(backend):
     source = tensor_with_storage_for_backend([5.0, 7.0], source_layout, backend)
     broadcast = sw.broadcast_to(source, Shape([2, 4]))
 
-    result = sw.reduce(broadcast)
+    result = sw.reduce_sum(broadcast, "a b -> a")
     upstream = tensor_with_storage_for_backend(
         [2.0, 3.0],
         result.layout,
@@ -1777,7 +1868,7 @@ def test_matmul_broadcast_operand_matches_torch_forward_and_backward(backend):
 def test_tensor_backward_rejects_input_modified_in_place_after_forward():
     layout = Layout(Shape([2, 2]), Stride([1, 2]))
     tensor = Tensor(Generic([1, 2, 3, 4]), 0, layout)
-    result = tensor * tensor
+    result = sw.elementwise_mul(tensor, tensor)
     gradient = Tensor(Generic([1, 1, 1, 1]), 0, layout)
 
     tensor[0, 0] = 10
@@ -1790,7 +1881,7 @@ def test_tensor_backward_rejects_view_input_modified_through_source_after_forwar
     layout = Layout(Shape([2, 3]), Stride([1, 2]))
     tensor = Tensor(Generic(list(range(6))), 0, layout)
     view = tensor[1, :]
-    result = view * view
+    result = sw.elementwise_mul(view, view)
     gradient = tensor_with_logical_values([1, 1, 1], result.layout)
 
     tensor[1, 0] = 99

@@ -19,6 +19,7 @@ from strideweave.carriers.move import (
     ElementwiseMoveOperation,
     registered_move_operation,
 )
+from strideweave.carriers.operation_policy import registered_operations
 
 
 def flat_layout(size):
@@ -568,7 +569,7 @@ def test_generic_operation_adapter_owns_generic_operation():
 def test_layout_only_operation_reuses_same_evictable_carrier():
     tensor = make_tensor(make_cpu_evictable([1.0, 2.0, 3.0, 4.0]))
 
-    view = sw.view(tensor, (slice(1, 3),))
+    view = tensor[1:3]
 
     assert view.carrier is tensor.carrier
     adapter = adapter_for(view)
@@ -656,7 +657,7 @@ def test_adapter_preserves_generic_ctx_and_cpu_native_state():
         0,
         Layout(Shape([2, 2]), Stride([1, 2])),
     )
-    reduced = sw.reduce(matrix)
+    reduced = sw.reduce_sum(matrix, "a b -> a")
     assert "output_layout" in adapter_for(reduced).primary_operation.ctx
 
 
@@ -857,6 +858,48 @@ def keepable(primary, secondary):
     )
 
 
+def _advertised_operation_spec(name):
+    return next(spec for spec in registered_operations() if spec.name == name)
+
+
+def _invoke_advertised_plan(operation, arguments):
+    """Invoke one advertised plan with its non-dtype API parameters."""
+
+    if operation in {
+        "reduce_sum",
+        "reduce_prod",
+        "reduce_max",
+        "reduce_min",
+        "argmax",
+        "argmin",
+    }:
+        return getattr(sw, operation)(arguments[0], "a b -> a")
+    if operation == "cumsum":
+        return sw.cumsum(arguments[0], 1)
+    if operation == "gather":
+        return sw.gather(arguments[0], arguments[1], 0)
+    if operation in {"scatter", "scatter_add"}:
+        return getattr(sw, operation)(arguments[0], arguments[1], arguments[2], 0)
+    if operation == "conv_general":
+        return sw.conv_general(arguments[0], arguments[1], (1,), ((0, 0),))
+    if operation == "_sort_values" or operation == "_sort_indices":
+        return (
+            arguments[0].carrier.dispatch_op(operation).forward(arguments[0], 1, False)
+        )
+    if operation == "_topk_values" or operation == "_topk_indices":
+        return (
+            arguments[0]
+            .carrier.dispatch_op(operation)
+            .forward(arguments[0], 1, 1, True)
+        )
+
+    # Internal policy specs intentionally have no public getattr target. Every
+    # remaining name is a public operation, so this assertion is a gate against
+    # accidentally bypassing the registry's public/internal distinction.
+    assert _advertised_operation_spec(operation).public
+    return getattr(sw, operation)(*arguments)
+
+
 def test_a_hierarchy_advertises_what_its_primary_executes_and_it_can_keep():
     primary = make_cpu_carrier([1.0, 2.0, 3.0, 4.0])
     secondary = FileBacked(dtype=DType.Float32)
@@ -922,19 +965,62 @@ def test_a_hierarchy_executes_every_plan_it_advertises():
     executed = 0
 
     for capability in advertised:
+        operation = capability.operation
         arguments = []
+        tensor_index = 0
         for operand in capability.operands:
             if operand.role.value == "tensor":
-                carrier = cpu_hierarchy(operand.dtype)
-                layout = (
-                    Layout(Shape([2, 2]), Stride([1, 2]))
-                    if capability.operation in ("reduce", "matmul")
-                    else flat_layout(4)
-                )
+                dtype = operand.dtype
+                assert dtype is not None
+                if operation == "conv_general":
+                    if tensor_index == 0:
+                        carrier = cpu_hierarchy(dtype, (1.5, -2.25, 0.1, 3.0))
+                        layout = Layout(Shape([1, 1, 4]), Stride([1, 1, 1]))
+                    else:
+                        carrier = cpu_hierarchy(dtype, (2.0,))
+                        layout = Layout(Shape([1, 1, 1]), Stride([1, 1, 1]))
+                elif operation in {"gather", "scatter", "scatter_add"} and (
+                    tensor_index == 1
+                ):
+                    carrier = cpu_hierarchy(dtype, (0, 1))
+                    layout = flat_layout(2)
+                elif operation == "select":
+                    values = (
+                        (True, False, True, False)
+                        if dtype is DType.Bool
+                        else (1, 2, 3, 4)
+                    )
+                    carrier = Evictable(
+                        make_cpu_carrier(values, dtype),
+                        CPU(0, dtype=dtype),
+                    )
+                    layout = flat_layout(4)
+                elif operation in {
+                    "reduce_sum",
+                    "reduce_prod",
+                    "reduce_max",
+                    "reduce_min",
+                    "argmax",
+                    "argmin",
+                    "cumsum",
+                    "matmul",
+                    "scatter",
+                    "scatter_add",
+                    "_sort_values",
+                    "_sort_indices",
+                    "_topk_values",
+                    "_topk_indices",
+                }:
+                    carrier = cpu_hierarchy(dtype)
+                    layout = Layout(Shape([2, 2]), Stride([1, 2]))
+                else:
+                    carrier = cpu_hierarchy(dtype)
+                    layout = flat_layout(4)
                 arguments.append(Tensor(carrier, 0, layout))
+                tensor_index += 1
             else:
                 arguments.append(3 if operand.convert_to is DType.Int32 else 0.5)
-        result = getattr(sw, capability.operation)(*arguments)
+        result = _invoke_advertised_plan(operation, arguments)
         executed += 1
 
         assert result.dtype() is capability.output
@@ -1028,17 +1114,17 @@ def test_a_failed_capability_generation_leaves_no_owned_tiers():
 
 
 @pytest.mark.parametrize(
-    ("operation", "extra_tensor", "message"),
+    ("operation", "second_operand", "message"),
     [
-        ("relu", True, "relu takes 1 operands, got 2"),
-        ("mul", True, "scalar must be a real Python number"),
-        ("pow", True, "exponent must be a real Python number"),
-        ("add", False, "add takes 2 operands, got 1"),
+        ("relu", "tensor", "relu takes 1 operands, got 2"),
+        ("mul", "invalid_scalar", "scalar must be a real Python number"),
+        ("pow", "invalid_scalar", "exponent must be a real Python number"),
+        ("add", "missing", "add takes 2 operands, got 1"),
     ],
-    ids=["arity", "scalar-position", "exponent-position", "missing-operand"],
+    ids=["arity", "invalid-mul-scalar", "invalid-exponent-role", "missing-operand"],
 )
 def test_an_operand_shape_the_operation_does_not_accept_is_refused_at_the_gate(
-    operation, extra_tensor, message
+    operation, second_operand, message
 ):
     # A registered operation is always planned, so operands its shape does not
     # accept are refused by the central resolver at this hierarchy's own gate
@@ -1050,9 +1136,12 @@ def test_an_operand_shape_the_operation_does_not_accept_is_refused_at_the_gate(
 
     hierarchy, secondary = narrow_hierarchy()
     tensor = make_tensor(hierarchy)
-    arguments = (
-        (tensor, make_tensor(narrow_hierarchy()[0])) if extra_tensor else (tensor,)
-    )
+    if second_operand == "tensor":
+        arguments = (tensor, make_tensor(narrow_hierarchy()[0]))
+    elif second_operand == "invalid_scalar":
+        arguments = (tensor, "not-a-number")
+    else:
+        arguments = (tensor,)
     secondary.allocations.clear()
 
     with pytest.raises(TypeError, match=message):
