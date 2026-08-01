@@ -435,6 +435,7 @@ class DType(metaclass=_DTypeNamespace):
     Integer: ClassVar[DTypeCategory]
     Float32: ClassVar[SimpleDType]
     Int32: ClassVar[SimpleDType]
+    Bool: ClassVar[SimpleDType]
     Int8: ClassVar[SimpleDType]
     E8M0: ClassVar[SimpleDType]
     E5M2: ClassVar[SimpleDType]

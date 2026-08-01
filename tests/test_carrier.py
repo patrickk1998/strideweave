@@ -115,11 +115,13 @@ def test_data_public_api_imports():
     assert DType.Integer.name == "Integer"
     assert DType.Float32.name == "Float32"
     assert DType.Int32.name == "Int32"
+    assert DType.Bool.name == "Bool"
     # ``value`` is the pre-descriptor compatibility alias for ``name``.
     assert DType.Any.value == "Any"
     assert DType.Floating.value == "Floating"
     assert DType.Float32.value == "Float32"
     assert DType.Int32.value == "Int32"
+    assert DType.Bool.value == "Bool"
 
 
 def test_data_default_dispatch_op_raises_not_implemented():
@@ -279,24 +281,47 @@ def test_generic_data_dispatch_op_returns_supported_operations():
     carrier = Generic([])
     cases = {
         "add": sw.GenericAddOperation,
+        "argmax": sw.GenericArgMaxOperation,
+        "argmin": sw.GenericArgMinOperation,
+        "as_strided": sw.GenericAsStridedOperation,
+        "cumsum": sw.GenericCumsumOperation,
+        "conv_general": sw.GenericConvGeneralOperation,
         "div": sw.GenericDivOperation,
         "elu": sw.GenericELUOperation,
         "elementwise_mul": sw.GenericElementwiseMulOperation,
+        "eq": sw.GenericEqOperation,
         "exp": sw.GenericExpOperation,
         "gelu": sw.GenericGELUOperation,
+        "gather": sw.GenericGatherOperation,
+        "le": sw.GenericLeOperation,
         "leaky_relu": sw.GenericLeakyReLUOperation,
+        "logical_not": sw.GenericLogicalNotOperation,
+        "lt": sw.GenericLtOperation,
         "matmul": sw.GenericMatmulOperation,
         "mul": sw.GenericScalarMulOperation,
+        "ne": sw.GenericNeOperation,
         "permute": sw.PermuteOperation,
         "pow": sw.GenericPowOperation,
         "rearrange": sw.RearrangeOperation,
-        "reduce": sw.GenericReduceSumOperation,
+        "reduce_max": sw.GenericReduceMaxOperation,
+        "reduce_min": sw.GenericReduceMinOperation,
+        "reduce_prod": sw.GenericReduceProdOperation,
+        "reduce_sum": sw.GenericReduceSumOperation,
         "relu": sw.GenericReLUOperation,
+        "scatter": sw.GenericScatterOperation,
+        "scatter_add": sw.GenericScatterAddOperation,
         "sigmoid": sw.GenericSigmoidOperation,
         "silu": sw.GenericSiLUOperation,
         "softplus": sw.GenericSoftplusOperation,
         "sub": sw.GenericSubOperation,
+        "squeeze": sw.SqueezeOperation,
+        "sqrt": sw.GenericSqrtOperation,
+        "_sort_indices": sw.GenericSortIndicesOperation,
+        "_sort_values": sw.GenericSortValuesOperation,
         "tanh": sw.GenericTanhOperation,
+        "_topk_indices": sw.GenericTopKIndicesOperation,
+        "_topk_values": sw.GenericTopKValuesOperation,
+        "unsqueeze": sw.UnsqueezeOperation,
         "view": sw.GenericViewOperation,
     }
 

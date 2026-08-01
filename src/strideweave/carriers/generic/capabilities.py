@@ -17,11 +17,18 @@ resolved exactly as an operation would resolve it at run time.
 
 from __future__ import annotations
 
-from typing import Final
+from itertools import product
+from typing import Any, Final
 
-from ..dtype import SimpleDType
+from ..dtype import DType, SimpleDType
 from ..operation_capability import OperationCapability
-from ..operation_policy import SUPPORTED_TENSOR_DTYPES, resolvable_plans
+from ..operation_policy import (
+    SUPPORTED_TENSOR_DTYPES,
+    WEAK_SCALAR_PROBES,
+    OperandRole,
+    OperationPlan,
+    registered_operations,
+)
 from .execution import executable_plan_shape
 from .numerics import is_concrete_simple_dtype
 
@@ -30,9 +37,56 @@ __all__ = ["generic_capabilities"]
 # The dtypes a declaration may name in a tensor position: those the central
 # policy plans for, narrowed to those Generic actually stores. An encoding a
 # future policy plans but Generic has no storage for produces no capability.
-_TENSOR_DTYPES: Final[tuple[SimpleDType, ...]] = tuple(
+_DEFAULT_TENSOR_DTYPES: Final[tuple[SimpleDType, ...]] = tuple(
     dtype for dtype in SUPPORTED_TENSOR_DTYPES if is_concrete_simple_dtype(dtype)
 )
+
+# Generic additionally stores Bool. It participates only where an overload's
+# registry-owned tensor domain names it explicitly (currently select's
+# condition), never as a locally invented promotion candidate.
+_STORAGE_DTYPES: Final[tuple[SimpleDType, ...]] = (
+    DType.Float32,
+    DType.Int32,
+    DType.Bool,
+)
+
+
+def _resolvable_generic_plans() -> tuple[OperationPlan, ...]:
+    """Enumerate central-registry plans over dtypes Generic can store.
+
+    Overloads without explicit tensor domains use the policy's supported input
+    dtypes. Explicit domains are intersected with Generic storage, allowing
+    registry-declared Bool positions without making Bool a general arithmetic
+    input. Every promotion and output decision remains owned by the overload's
+    resolver.
+    """
+
+    weak_scalars: tuple[Any, ...] = WEAK_SCALAR_PROBES
+    plans: dict[OperationPlan, None] = {}
+    for spec in registered_operations():
+        for overload in spec.overloads:
+            tensor_domain_index = 0
+            candidates: list[tuple[Any, ...]] = []
+            for role in overload.roles:
+                if role is OperandRole.WEAK_SCALAR:
+                    candidates.append(weak_scalars)
+                    continue
+                domains = overload.tensor_domains
+                if domains is None:
+                    candidates.append(_DEFAULT_TENSOR_DTYPES)
+                else:
+                    declared = domains[tensor_domain_index]
+                    candidates.append(
+                        tuple(
+                            dtype
+                            for dtype in _STORAGE_DTYPES
+                            if any(dtype is allowed for allowed in declared)
+                        )
+                    )
+                tensor_domain_index += 1
+            for operands in product(*candidates):
+                plans[overload.rule(*operands)] = None
+    return tuple(plans)
 
 
 def generic_capabilities() -> tuple[OperationCapability, ...]:
@@ -49,6 +103,6 @@ def generic_capabilities() -> tuple[OperationCapability, ...]:
     """
     return tuple(
         OperationCapability.from_plan(plan)
-        for plan in resolvable_plans(_TENSOR_DTYPES)
+        for plan in _resolvable_generic_plans()
         if executable_plan_shape(plan)
     )

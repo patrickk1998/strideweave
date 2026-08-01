@@ -70,10 +70,10 @@ def test_bias_broadcast_matches_matmul_output_shape_without_copying():
             assert combined[i, j] == pytest.approx(expected)
 
 
-def test_reduce_description_yields_exact_scalar_layout():
+def test_reduce_sum_description_yields_exact_scalar_layout():
     tensor = make_cpu_tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], column_major(2, 3))
 
-    total = sw.reduce(tensor, "a b -> 1")
+    total = sw.reduce_sum(tensor, "a b -> 1")
 
     assert total.layout == Layout(Shape(1), Stride(1))
     assert total[0] == pytest.approx(21.0)

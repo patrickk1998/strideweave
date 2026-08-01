@@ -93,8 +93,8 @@ def storage_zero(dtype: DType) -> object:
         dtype: The storage dtype whose zero is wanted.
 
     Returns:
-        ``0.0`` for ``DType.Float32``, ``0`` for ``DType.Int32``, and ``None``
-        for every dtype without a defined stored zero.
+        ``0.0`` for ``DType.Float32``, ``0`` for ``DType.Int32``, ``False`` for
+        ``DType.Bool``, and ``None`` for every dtype without a defined stored zero.
 
     Examples:
         >>> from strideweave.carriers.dtype import DType, storage_zero
@@ -110,4 +110,6 @@ def storage_zero(dtype: DType) -> object:
         return 0.0
     if dtype is DType.Int32:
         return 0
+    if dtype is DType.Bool:
+        return False
     return None

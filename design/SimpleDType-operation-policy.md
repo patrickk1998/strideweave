@@ -34,11 +34,17 @@ constrains the dtype, rounding, and overflow behavior those formulas must exhibi
 
 ### 2.1 In scope: concrete simple dtypes
 
-The planner accepts `SimpleDType` operands only. In v0.1 the supported set is
-exactly the two dtypes carriers store and kernels implement:
+The planner accepts concrete simple dtype operands only. The v0 operation set
+uses the three dtypes carriers store and kernels implement:
 
-- `DType.Float32`
-- `DType.Int32`
+- `DType.Float32` for numeric computation and differentiable results;
+- `DType.Int32` for checked integer storage and index results; and
+- `DType.Bool` for masked conditions and predicate/logical results.
+
+Bool is deliberately a narrow domain: it is not implicitly promoted into
+Float32 or Int32 arithmetic. Ordinary numeric operations reject Bool operands;
+`select` alone consumes a Bool tensor as its condition, while predicates and
+`logical_not` produce Bool results.
 
 ### 2.2 Registered but unsupported simple encodings
 
@@ -57,10 +63,9 @@ legacy disposition explicitly.
 
 `Generic`'s existing `Any`/`Floating` arithmetic is unchanged by this policy and
 continues to run on its own legacy path. A tensor pairing legacy opaque storage
-with concrete `Float32`/`Int32` storage is **not** silently planned: the mixed
-case is a documented legacy behavior, not a promotion result. This is the direct
-answer to the earlier review finding that `Any` must not masquerade as a checked
-integer.
+with concrete simple storage is **not** silently planned: the mixed case is a
+documented legacy behavior, not a promotion result. This is the direct answer to
+the earlier review finding that `Any` must not masquerade as a checked integer.
 
 ### 2.4 Out of scope: compound dtypes
 
@@ -73,7 +78,8 @@ story about what is deferred.
 
 ### 2.5 Out of scope: representation-preserving operations
 
-`view`, `permute`, `rearrange`, and `move` neither promote nor compute. They
+`slice`, `as_strided`, `reshape`, `view`, `permute`, `rearrange`, broadcast
+views, and `move` neither promote nor compute. They
 preserve the operand's dtype exactly, including legacy opaque and (eventually)
 compound dtypes. They are deliberately **not** registered in the operation-policy
 registry: registering them would imply the planner has an opinion about them and
@@ -90,9 +96,10 @@ A tensor operand contributes its carrier storage dtype, matched by identity
 
 ### 3.2 Weak Python scalars
 
-Two operations take a Python scalar rather than a tensor: `mul` (the multiplier)
-and `pow` (the exponent). Such a scalar is *weak*: it has no dtype of its own and
-never forces a width, it only selects between plans.
+Three operations take Python scalars as optional weak operands: `mul` (the
+multiplier), `pow` (the exponent), and `clamp` (either bound). Such a scalar is
+*weak*: it has no dtype of its own and never forces a width; it only selects
+between plans.
 
 Normalization, in order:
 
@@ -120,7 +127,7 @@ backward. Specifically:
 
 ## 4. Arithmetic semantics
 
-The plan names an arithmetic, not merely a width. v0.1 defines exactly three.
+The plan names an arithmetic, not merely a width. v0.2 defines exactly three.
 
 ### 4.1 `BINARY32`
 
@@ -161,7 +168,7 @@ consequence, where a fixed width is a harder constraint.
 ### 4.3 `INT32_EXACT`
 
 Exact integer arithmetic that provably cannot leave `Int32`, so no check is
-required. In v0.1 this is used by `relu` alone, which selects between an existing
+required. In v0.2 this is used by `relu` alone, which selects between an existing
 element and zero and therefore cannot overflow.
 
 ---
@@ -170,7 +177,8 @@ element and zero and therefore cannot overflow.
 
 ### 5.1 Why accumulation is a separate axis
 
-`reduce` and `matmul` combine many terms. Their observable result depends on the
+`reduce_*`, `cumsum`, `matmul`, `conv_general`, and `scatter_add` combine many
+terms. Their observable result depends on the
 *order and width* of that combination, not only on the element arithmetic, and the
 conformance suite must pin it. Elementwise operations combine nothing, so their
 plans carry no accumulation at all.
@@ -203,7 +211,7 @@ consequences are deliberate:
 ## 6. The `OperationPlan` contract
 
 Derived from the distinctions §7's matrix actually makes — no field exists for a
-distinction v0.1 never draws.
+distinction v0.2 never draws.
 
 ```python
 class OperandRole(Enum):
@@ -217,6 +225,11 @@ class Arithmetic(Enum):
 
 class Accumulation(Enum):
     SEQUENTIAL_BINARY32 = "sequential_binary32"  # §5.2
+    SEQUENTIAL_BINARY32_PRODUCT = "sequential_binary32_product"
+    MAXIMUM = "maximum"
+    MINIMUM = "minimum"
+    ARGMAX = "argmax"
+    ARGMIN = "argmin"
     EXACT_INTEGER = "exact_integer"              # §5.2
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +245,19 @@ class OperationPlan:
     compute: Arithmetic
     accumulation: Accumulation | None
     output: SimpleDType
+
+@dataclass(frozen=True, slots=True)
+class OperationOverload:
+    roles: tuple[OperandRole, ...]
+    rule: Callable[..., OperationPlan]
+    tensor_domains: tuple[tuple[SimpleDType, ...], ...] | None = None
+
+@dataclass(frozen=True, slots=True)
+class OperationSpec:
+    name: str
+    overloads: tuple[OperationOverload, ...]
+    public: bool = True
+    dtype_operand_positions: tuple[int, ...] | None = None
 ```
 
 Plans are immutable and hashable, so a backend may cache one per
@@ -248,14 +274,14 @@ Field-by-field justification:
 - **`compute`** — the element arithmetic. Not derivable from `output`: `relu` on
   `Int32` is `INT32_EXACT` while `add` on `Int32` is `INT32_EXACT_CHECKED`, and
   both output `Int32`.
-- **`accumulation`** — `None` for every elementwise entry, set only for `reduce`
-  and `matmul`. A field that is absent for most entries earns its place by
-  distinguishing them.
+- **`accumulation`** — `None` for elementwise, predicate, gather, overwrite,
+  and ordering entries. Reductions, scans, contraction, and additive scatter
+  name their exact ordered combination rule explicitly.
 - **`output`** — the dtype the result carrier reports. Consumed at allocation time,
   and the sole source of the result's storage narrowing; a backend must not
   re-derive it from `compute`.
 
-**A removed field (v0.2):** `differentiable` was a plan field in v0.1, defined as
+**A removed field (v0.2):** `differentiable` was a plan field in v0.2, defined as
 `output is DType.Float32` and justified as a policy claim that a future
 non-differentiable float dtype could separate from the arithmetic. It was removed
 because nothing consumed it: the tensor layer decides differentiability from a
@@ -265,18 +291,30 @@ derivation no backend reads is a drift risk, not a contract. The "diff." column 
 field. If a non-differentiable floating dtype is ever registered, the rule that
 changes is the tensor layer's, and that is where the distinction belongs.
 
-**A deliberately absent field:** there is no separate accumulator *dtype*. In v0.1
+**A deliberately absent field:** there is no separate accumulator *dtype*. In v0.2
 no entry accumulates in a dtype the `Accumulation` value does not already imply,
 so a second dtype field would be unjustified. §12.2 records the alternative.
 
-**A deliberately absent distinction:** `compute` never disagrees with `output`
-about width in v0.1, because there is no mixed-width compute yet. That equality is
-asserted by the fixtures as a *derived observation*, not assumed by the resolver —
-a mixed-precision revision changes the matrix without changing the plan's shape.
+`compute` and `output` are deliberately independent. Predicate plans consume
+binary32 values and store Bool, while arg-reduction and index-result selection
+consume binary32 values and store Int32. Backends therefore validate exact plan
+shapes per operation; they never apply a global `compute == output` shortcut.
+
+The registry contains one `OperationSpec` per dispatch name and one or more
+immutable overloads per spec. Overload signatures are unique and selected by
+the exact tensor/weak-scalar role pattern. Per-overload tensor domains make
+exhaustive capability enumeration precise for Float32-only primitives. Axis,
+shape, ordering flags, and other non-dtype parameters are operation semantics,
+not weak scalars, and never enter the dtype resolver. The optional
+`dtype_operand_positions` field identifies that planned subset of the full
+forward call centrally; without it every call argument is a policy operand and
+an extra argument remains an arity error. Internal single-output
+selection operations are registered with `public=False`; public `sort` and
+`topk` package their value/index calls without pretending a plan has two outputs.
 
 ---
 
-## 7. The v0.1 operation policy matrix
+## 7. The v0.2 operation policy matrix
 
 `F32` = `DType.Float32`, `I32` = `DType.Int32`. "conv." lists non-identity operand
 conversions. Every listed entry is supported; anything not listed is §8's error.
@@ -292,7 +330,7 @@ conversions. Every listed entry is supported; anything not listed is §8's error
 
 ### 7.2 Elementwise binary — `div`
 
-Division is always floating; v0.1 has no integer-division semantics.
+Division is always floating; v0.2 has no integer-division semantics.
 
 | lhs | rhs | conv. | compute | accum. | output | diff. |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -357,7 +395,7 @@ overflow.
 | F32 | — | `BINARY32` | — | F32 | yes |
 | I32 | — | `INT32_EXACT` | — | I32 | no |
 
-### 7.7 Reduction — `reduce` (sum over the second mode)
+### 7.7 Reduction — `reduce_sum` (sum over the second mode)
 
 | input | conv. | compute | accum. | output | diff. |
 | --- | --- | --- | --- | --- | --- |
@@ -381,6 +419,97 @@ The `I32 × I32` element compute is `INT32_EXACT` rather than
 the final narrowed sum is, so checking each product would reject contractions whose
 terms legitimately cancel.
 
+### 7.9 Float32 unary and binary primitives
+
+The v0 Float32-only unary primitives (`neg`, `abs`, `sign`, `recip`, `sqrt`,
+`rsqrt`, `exp2`, `log`, `log2`, `sin`, `cos`, `erf`, `floor`, `ceil`, and
+`round`) resolve one F32 tensor to `BINARY32`, no accumulation, F32 output.
+`maximum`, `minimum`, and `rem` resolve two F32 tensors to the same plan shape.
+Their numerical and VJP semantics are specified in `design/minimal-op-set.md`.
+
+`mul` has tensor-tensor and tensor-weak-scalar overloads. Its tensor pair uses
+the §7.1 promotion matrix; `elementwise_mul` remains the compatibility dispatch
+name for the same tensor-pair policy. `pow` has tensor-tensor,
+tensor-weak-scalar, and weak-scalar-tensor overloads. Tensor-tensor and reverse
+power materialize both operands as F32 and return F32; tensor-weak-scalar keeps
+the existing bounded Int32-preserving branch in §7.4.
+
+### 7.10 Predicates and logical negation
+
+`eq`, `ne`, `lt`, and `le` consume `(F32, F32)` and store Bool.
+`logical_not` consumes F32 and stores Bool. They use `BINARY32` as the operand
+compute semantics, have no accumulation, and their Bool results are
+non-differentiable. No Bool arithmetic or implicit Bool promotion is planned.
+
+### 7.11 Remaining reductions and scan
+
+`reduce_prod`, `reduce_max`, and `reduce_min` consume F32 and return F32 with
+`SEQUENTIAL_BINARY32_PRODUCT`, `MAXIMUM`, and `MINIMUM` respectively. `argmax`
+and `argmin` consume F32, use `ARGMAX`/`ARGMIN`, and return Int32. `cumsum`
+consumes and returns F32 with `SEQUENTIAL_BINARY32`. Operation-specific order,
+NaN, tie, and VJP rules live in `design/minimal-op-set.md`.
+
+### 7.12 Irregular indexing
+
+`gather` resolves `(F32 data, I32 indices) -> F32`. `scatter` and
+`scatter_add` resolve `(F32 base, I32 indices, F32 updates) -> F32`; only
+`scatter_add` declares `SEQUENTIAL_BINARY32`, recording its deterministic
+ordered collision accumulation. Axis and shape arguments are outside dtype
+planning.
+
+### 7.13 Sort and top-k lowering
+
+The internal operations `_sort_values` and `_topk_values` resolve
+`F32 -> F32`; `_sort_indices` and `_topk_indices` resolve `F32 -> I32`. All
+four have `BINARY32` input compute semantics and no accumulation. Their specs
+are non-public; public `sort` and `topk` package corresponding single-output
+operations.
+
+### 7.14 Convolution
+
+`conv_general` resolves two F32 tensor operands to F32 with `BINARY32`
+products and `SEQUENTIAL_BINARY32` accumulation. Dimension numbers, strides,
+dilation, padding, and feature groups are operation semantics outside dtype
+planning. Their exact validation, traversal, and VJP rules live in
+`design/minimal-op-set.md`.
+
+### 7.15 Masked selection and clamp
+
+`select` is a three-tensor overload with the condition fixed to Bool and both
+value operands fixed to Float32:
+
+| condition | on_true | on_false | conv. | compute | accum. | output | diff. |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Bool | F32 | F32 | — | `BINARY32` | — | F32 | yes for value inputs |
+
+The operation's three tensor operands are aligned **simultaneously** through the
+shared structural broadcast rule. Pairwise alignment order is not observable.
+At each common logical coordinate it reads only the selected value branch;
+unselected NaNs therefore do not contaminate the result. The Bool condition is
+non-differentiable. Backward routes the upstream cotangent to the selected value
+branch and zero to the other, then the differentiable broadcast views reduce
+those cotangents to each original value shape.
+
+`clamp` has four overloads, all with a Float32 data tensor and Float32 output:
+
+| data | lower | upper | conversion | compute | accum. | output |
+| --- | --- | --- | --- | --- | --- | --- |
+| F32 | F32 tensor | F32 tensor | — | `BINARY32` | — | F32 |
+| F32 | F32 tensor | weak real | upper→F32 | `BINARY32` | — | F32 |
+| F32 | weak real | F32 tensor | lower→F32 | `BINARY32` | — | F32 |
+| F32 | weak real | weak real | bounds→F32 | `BINARY32` | — | F32 |
+
+Weak bounds are normalized by the common weak-scalar rules and do not receive
+gradients. Tensor bounds use the same simultaneous structural broadcasting as
+`select`. Forward and backward are defined as the ordered stages
+`middle = maximum(data, lower)` followed by `result = minimum(middle, upper)`;
+the implementation must not add a separate bound-order check. This preserves
+the specified NaN, signed-zero, infinity, and `lower > upper` behavior. Its VJP
+first applies the `minimum` VJP to `(middle, upper, g)`, then the `maximum` VJP
+to `(data, lower, grad_middle)`, including equal-winner splits and NaN
+gradients at each stage. A fused kernel is conforming only when it is
+observationally identical to these two stages.
+
 ---
 
 ## 8. Errors
@@ -393,8 +522,9 @@ back to a guessed plan.
 | Unregistered operation name | `NotImplementedError` | resolution |
 | Operand is not a `DType` | `TypeError` | resolution |
 | Operand is `Any`, `Floating`, or `Integer` | `TypeError`, naming the legacy opaque disposition and that legacy `Generic` arithmetic is a separate path (§2.3) | resolution |
+| Bool appears in an ordinary numeric operand position | `TypeError`; Bool is accepted only by the `select` condition overload and is never implicitly promoted | resolution |
 | Operand is a `CompoundDType` | `NotImplementedError`, naming the deferred per-plane capability (§2.4) | resolution |
-| Operand is a registered but unimplemented `SimpleDType` | `NotImplementedError`, naming the supported set (§2.2) | resolution |
+| Operand is a registered but unimplemented `SimpleDType` | `NotImplementedError`, naming the supported operation-specific domains (§2.2) | resolution |
 | Weak scalar is not a supported Python number | `TypeError` | resolution |
 | Weak integer outside `Int32` range in an integer plan | `OverflowError` | resolution |
 | Exact integer result outside `Int32` range | `OverflowError` | execution |
@@ -422,6 +552,11 @@ The policy fixes the dtype and rounding of backward, not the gradient formulas.
 - IEEE singularities propagate in backward exactly as in forward (§4.1): a
   division-by-zero backward, a zero-base `pow` backward, and a `pow` backward with
   a negative exponent all produce IEEE values rather than exceptions.
+- `select` carries gradients only through the selected Float32 value branch;
+  its Bool condition and any unselected value are non-differentiable for that
+  invocation. `clamp` follows the staged `minimum`-then-`maximum` VJP in §7.15,
+  including equal-winner splitting and NaN propagation. Weak scalar bounds do
+  not receive gradients.
 
 These five rules are precisely the earlier review's confirmed backward findings,
 promoted from bug fixes to policy so a backend cannot regress them quietly.
@@ -440,7 +575,7 @@ The resolver is the single executable statement of this policy. It follows that:
    disagree and both satisfy the rule, the rule is underspecified and this
    document must be amended.
 3. **Coverage is enumerated, not sampled.** The operation registry lists every
-   planned operation with its operand roles, so the conformance suite can
+   planned operation with all operand-role overloads and dtype domains, so the conformance suite can
    enumerate registered coverage exhaustively and compare it against explicit
    expected-plan fixtures. An operation added without a fixture fails the
    enumeration rather than passing silently.
@@ -456,6 +591,13 @@ The resolver is the single executable statement of this policy. It follows that:
    plan and never selects one. The entries execution is accepted against are the
    entries capability introspection reports, so a backend cannot advertise a
    shape it would refuse or run one it never declared.
+6. **Selection capabilities are exact and shared.** Generic and CPU advertise
+   the Bool/F32/F32 `select` plan and every clamp overload (F32 data with tensor
+   and/or weak-real bounds) with F32 output. Both backends must align all tensor
+   operands simultaneously, read only the selected `select` branch, and make
+   `clamp` observationally equivalent to its ordered `maximum`/`minimum`
+   stages; no backend may silently widen Bool or replace a weak bound with an
+   integer plan.
 
 ---
 
@@ -490,7 +632,7 @@ deliberately rather than by accident. The defensible alternative is to reject
 is the kind of accident a central policy exists to prevent. Deferred because it is
 a user-visible break with no current demand.
 
-**12.2 No accumulator dtype field.** Justified in §6 for v0.1. Mixed-precision
+**12.2 No accumulator dtype field.** Justified in §6 for v0.2. Mixed-precision
 accumulation (bf16 storage, fp32 accumulate) is the obvious future case that
 splits `Accumulation` into a rule plus a dtype. Adding the field then is a
 mechanical widening of the plan; adding it now would be an unused dimension.
@@ -500,7 +642,7 @@ truncating nor flooring integer division is offered, because picking one silentl
 is worse than not offering one. A future explicit `floor_div` operation is the
 expected resolution, not a change to `div`.
 
-**12.4 Mixed-width compute is unrepresented.** Every v0.1 entry computes at the
+**12.4 Mixed-width compute is unrepresented.** Every v0.2 entry computes at the
 output width. The plan shape anticipates the split (§6) but the matrix does not
 exercise it.
 

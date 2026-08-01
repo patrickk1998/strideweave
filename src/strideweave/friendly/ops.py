@@ -11,7 +11,7 @@ from __future__ import annotations
 from string import ascii_lowercase
 from typing import Any
 
-from ..functional import mul, reduce
+from ..functional import mul, reduce_sum
 
 
 def _require_flat_modes(tensor: Any, name: str) -> int:
@@ -46,7 +46,7 @@ def sum(tensor: Any) -> Any:  # noqa: A001 - mirrors the PyTorch name
     if modes > len(ascii_lowercase):
         raise ValueError("tensor has too many modes to reduce")
     description = " ".join(ascii_lowercase[:modes]) + " -> 1"
-    return reduce(tensor, description)
+    return reduce_sum(tensor, description)
 
 
 def mean(tensor: Any) -> Any:
