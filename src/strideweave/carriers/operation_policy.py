@@ -3,8 +3,8 @@
 This module is the single executable statement of the policy specified in
 ``design/SimpleDType-operation-policy.md``. For one operation and its operand
 dtypes it decides which operands are converted, what arithmetic runs, how terms
-combine, what dtype the result carries, and whether that result may participate
-in autograd. ``Generic``, native ``CPU``, and future accelerator carriers
+combine, and what dtype the result carries. Autograd participation follows from
+the tensor layer's floating-dtype rule. ``Generic``, native ``CPU``, and future accelerator carriers
 resolve a plan here and execute it; a backend never carries a promotion table of
 its own.
 
@@ -44,6 +44,7 @@ __all__ = [
     "Arithmetic",
     "OperandPlan",
     "OperandRole",
+    "OperationOverload",
     "OperationPlan",
     "OperationSpec",
     "WeakScalarKind",
@@ -103,12 +104,20 @@ class Accumulation(Enum):
     ``SEQUENTIAL_BINARY32`` initializes to ``+0.0`` and adds each term in
     ascending logical index order, rounding in binary32 at every step; the order
     is normative, so pairwise or blocked summation does not conform.
-    ``EXACT_INTEGER`` accumulates exactly over the integers and checks only the
-    final narrowing into ``Int32``, so an intermediate partial sum may leave
-    ``Int32`` range.
+    ``SEQUENTIAL_BINARY32_PRODUCT`` is the corresponding ordered product.
+    ``MAXIMUM`` and ``MINIMUM`` apply the operation's pinned Float32 NaN and
+    signed-zero rules in logical order. ``ARGMAX`` and ``ARGMIN`` additionally
+    retain the first winning logical ordinal. ``EXACT_INTEGER`` accumulates
+    exactly over the integers and checks only the final narrowing into
+    ``Int32``, so an intermediate partial sum may leave ``Int32`` range.
     """
 
     SEQUENTIAL_BINARY32 = "sequential_binary32"
+    SEQUENTIAL_BINARY32_PRODUCT = "sequential_binary32_product"
+    MAXIMUM = "maximum"
+    MINIMUM = "minimum"
+    ARGMAX = "argmax"
+    ARGMIN = "argmin"
     EXACT_INTEGER = "exact_integer"
 
 
@@ -153,18 +162,112 @@ class OperationPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class OperationOverload:
+    """One positional operand-role signature and its plan resolver.
+
+    An operation may expose several overloads under one dispatch name.  The
+    overload owns only dtype-policy operands: tensor positions receive their
+    storage :class:`DType`, and weak-scalar positions receive the Python scalar
+    value.  Shape, axis, ordering, and other non-dtype parameters remain the
+    operation implementation's responsibility and are not smuggled into the
+    promotion policy as weak scalars.
+
+    Args:
+        roles: Positional roles accepted by this overload.
+        rule: Resolver that returns the exact plan for those operands.
+        tensor_domains: Optional allowed dtype domain for each tensor role, in
+            tensor-role order. ``None`` uses the caller-provided enumeration
+            domain. Runtime validation remains the resolver's responsibility;
+            these domains make exhaustive capability enumeration precise for
+            overloads that intentionally accept only part of that domain.
+    """
+
+    roles: tuple[OperandRole, ...]
+    rule: Callable[..., OperationPlan]
+    tensor_domains: tuple[tuple[SimpleDType, ...], ...] | None = None
+
+    def __post_init__(self) -> None:
+        tensor_count = sum(role is OperandRole.TENSOR for role in self.roles)
+        if self.tensor_domains is not None and len(self.tensor_domains) != tensor_count:
+            raise ValueError(
+                "tensor_domains must contain one dtype domain per tensor role"
+            )
+        if self.tensor_domains is not None and any(
+            not domain for domain in self.tensor_domains
+        ):
+            raise ValueError("a tensor dtype domain must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
 class OperationSpec:
-    """One registered operation and the operand roles it takes.
+    """One registered operation and all dtype-policy overloads it accepts.
 
     Args:
         name: Operation name, matching the ``dispatch_op`` name.
-        roles: The role of each operand position.
-        rule: Resolver for this operation's plan.
+        overloads: Non-empty immutable overload sequence. Role signatures must
+            be unique so overload selection and exhaustive plan enumeration are
+            deterministic.
+        public: Whether the dispatch name itself is a public single-result
+            function. Internal value/index operations may be planned while a
+            public wrapper packages several single-result calls.
+        dtype_operand_positions: Positions in the operation's full forward-call
+            argument list that participate in dtype planning. ``None`` means
+            every forward argument is a policy operand. This distinguishes
+            axis, shape, ordering, and convolution configuration arguments from
+            genuine weak-scalar operands without duplicating that knowledge in
+            carrier adapters.
     """
 
     name: str
-    roles: tuple[OperandRole, ...]
-    rule: Callable[..., OperationPlan]
+    overloads: tuple[OperationOverload, ...]
+    public: bool = True
+    dtype_operand_positions: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.overloads:
+            raise ValueError("an operation spec must declare at least one overload")
+        signatures = tuple(overload.roles for overload in self.overloads)
+        if len(set(signatures)) != len(signatures):
+            raise ValueError(
+                f"operation {self.name!r} declares one operand-role signature twice"
+            )
+        if self.dtype_operand_positions is not None:
+            if any(position < 0 for position in self.dtype_operand_positions):
+                raise ValueError("dtype operand positions must be non-negative")
+            if tuple(sorted(set(self.dtype_operand_positions))) != (
+                self.dtype_operand_positions
+            ):
+                raise ValueError(
+                    "dtype operand positions must be unique and increasing"
+                )
+            arities = {len(overload.roles) for overload in self.overloads}
+            if arities != {len(self.dtype_operand_positions)}:
+                raise ValueError(
+                    "dtype operand positions must match every overload arity"
+                )
+
+    @property
+    def roles(self) -> tuple[OperandRole, ...]:
+        """Return the sole overload's roles for single-overload compatibility.
+
+        Consumers that enumerate the registry must iterate :attr:`overloads`.
+        This property keeps the established single-overload API explicit while
+        refusing to silently hide additional overloads.
+        """
+        if len(self.overloads) != 1:
+            raise AttributeError(
+                f"operation {self.name!r} has multiple overloads; iterate overloads"
+            )
+        return self.overloads[0].roles
+
+    @property
+    def rule(self) -> Callable[..., OperationPlan]:
+        """Return the sole overload's resolver for compatibility."""
+        if len(self.overloads) != 1:
+            raise AttributeError(
+                f"operation {self.name!r} has multiple overloads; iterate overloads"
+            )
+        return self.overloads[0].rule
 
 
 # The concrete simple dtypes carriers store and kernels implement today.
@@ -210,6 +313,30 @@ def _require_tensor_dtype(value: object, name: str) -> SimpleDType:
             "supported simple dtypes are DType.Float32 and DType.Int32"
         )
     return value
+
+
+def _require_float32_tensor_dtype(value: object, name: str) -> SimpleDType:
+    """Require the concrete Float32 tensor domain used by v0 primitives."""
+    dtype = _require_tensor_dtype(value, name)
+    if dtype is not DType.Float32:
+        raise TypeError(f"{name} must be DType.Float32")
+    return dtype
+
+
+def _require_int32_tensor_dtype(value: object, name: str) -> SimpleDType:
+    """Require the concrete Int32 tensor domain used for logical indices."""
+    dtype = _require_tensor_dtype(value, name)
+    if dtype is not DType.Int32:
+        raise TypeError(f"{name} must be DType.Int32")
+    return dtype
+
+
+def _require_bool_tensor_dtype(value: object, name: str) -> SimpleDType:
+    """Require the concrete Bool tensor domain used by masked selection."""
+    if value is DType.Bool:
+        return DType.Bool
+    _require_tensor_dtype(value, name)
+    raise TypeError(f"{name} must be DType.Bool")
 
 
 def _normalize_weak_scalar(value: object, name: str) -> WeakScalarKind:
@@ -308,6 +435,171 @@ def _resolve_div(lhs_dtype: object, rhs_dtype: object) -> OperationPlan:
     )
 
 
+def _resolve_float32_unary(operation: str, tensor_dtype: object) -> OperationPlan:
+    tensor = _require_float32_tensor_dtype(tensor_dtype, "tensor_dtype")
+    return _plan(
+        operation,
+        (_tensor_operand(tensor, DType.Float32),),
+        compute=Arithmetic.BINARY32,
+        output=DType.Float32,
+    )
+
+
+def _resolve_float32_binary(
+    operation: str, lhs_dtype: object, rhs_dtype: object
+) -> OperationPlan:
+    lhs = _require_float32_tensor_dtype(lhs_dtype, "lhs_dtype")
+    rhs = _require_float32_tensor_dtype(rhs_dtype, "rhs_dtype")
+    return _plan(
+        operation,
+        (_tensor_operand(lhs, DType.Float32), _tensor_operand(rhs, DType.Float32)),
+        compute=Arithmetic.BINARY32,
+        output=DType.Float32,
+    )
+
+
+def _resolve_float32_predicate(
+    operation: str, lhs_dtype: object, rhs_dtype: object
+) -> OperationPlan:
+    lhs = _require_float32_tensor_dtype(lhs_dtype, "lhs_dtype")
+    rhs = _require_float32_tensor_dtype(rhs_dtype, "rhs_dtype")
+    return _plan(
+        operation,
+        (_tensor_operand(lhs, DType.Float32), _tensor_operand(rhs, DType.Float32)),
+        compute=Arithmetic.BINARY32,
+        output=DType.Bool,
+    )
+
+
+def _resolve_logical_not(tensor_dtype: object) -> OperationPlan:
+    tensor = _require_float32_tensor_dtype(tensor_dtype, "tensor_dtype")
+    return _plan(
+        "logical_not",
+        (_tensor_operand(tensor, DType.Float32),),
+        compute=Arithmetic.BINARY32,
+        output=DType.Bool,
+    )
+
+
+def _resolve_float32_reduction(
+    operation: str,
+    tensor_dtype: object,
+    accumulation: Accumulation,
+    *,
+    output: SimpleDType = DType.Float32,
+) -> OperationPlan:
+    tensor = _require_float32_tensor_dtype(tensor_dtype, "tensor_dtype")
+    return _plan(
+        operation,
+        (_tensor_operand(tensor, DType.Float32),),
+        compute=Arithmetic.BINARY32,
+        accumulation=accumulation,
+        output=output,
+    )
+
+
+def _resolve_float32_selection(
+    operation: str,
+    tensor_dtype: object,
+    *,
+    output: SimpleDType,
+) -> OperationPlan:
+    tensor = _require_float32_tensor_dtype(tensor_dtype, "tensor_dtype")
+    return _plan(
+        operation,
+        (_tensor_operand(tensor, DType.Float32),),
+        compute=Arithmetic.BINARY32,
+        output=output,
+    )
+
+
+def _resolve_gather(data_dtype: object, indices_dtype: object) -> OperationPlan:
+    data = _require_float32_tensor_dtype(data_dtype, "data_dtype")
+    indices = _require_int32_tensor_dtype(indices_dtype, "indices_dtype")
+    return _plan(
+        "gather",
+        (
+            _tensor_operand(data, DType.Float32),
+            _tensor_operand(indices, DType.Int32),
+        ),
+        compute=Arithmetic.BINARY32,
+        output=DType.Float32,
+    )
+
+
+def _resolve_scatter(
+    operation: str,
+    base_dtype: object,
+    indices_dtype: object,
+    updates_dtype: object,
+) -> OperationPlan:
+    base = _require_float32_tensor_dtype(base_dtype, "base_dtype")
+    indices = _require_int32_tensor_dtype(indices_dtype, "indices_dtype")
+    updates = _require_float32_tensor_dtype(updates_dtype, "updates_dtype")
+    return _plan(
+        operation,
+        (
+            _tensor_operand(base, DType.Float32),
+            _tensor_operand(indices, DType.Int32),
+            _tensor_operand(updates, DType.Float32),
+        ),
+        compute=Arithmetic.BINARY32,
+        accumulation=(
+            Accumulation.SEQUENTIAL_BINARY32 if operation == "scatter_add" else None
+        ),
+        output=DType.Float32,
+    )
+
+
+def _resolve_select(
+    condition_dtype: object,
+    on_true_dtype: object,
+    on_false_dtype: object,
+) -> OperationPlan:
+    condition = _require_bool_tensor_dtype(condition_dtype, "condition_dtype")
+    on_true = _require_float32_tensor_dtype(on_true_dtype, "on_true_dtype")
+    on_false = _require_float32_tensor_dtype(on_false_dtype, "on_false_dtype")
+    return _plan(
+        "select",
+        (
+            _tensor_operand(condition, DType.Bool),
+            _tensor_operand(on_true, DType.Float32),
+            _tensor_operand(on_false, DType.Float32),
+        ),
+        compute=Arithmetic.BINARY32,
+        output=DType.Float32,
+    )
+
+
+def _resolve_clamp(
+    tensor_dtype: object,
+    lower: object,
+    upper: object,
+    *,
+    lower_role: OperandRole,
+    upper_role: OperandRole,
+) -> OperationPlan:
+    tensor = _require_float32_tensor_dtype(tensor_dtype, "tensor_dtype")
+
+    def bound_operand(value: object, role: OperandRole, name: str) -> OperandPlan:
+        if role is OperandRole.TENSOR:
+            dtype = _require_float32_tensor_dtype(value, f"{name}_dtype")
+            return _tensor_operand(dtype, DType.Float32)
+        _normalize_weak_scalar(value, name)
+        return _weak_scalar_operand(DType.Float32)
+
+    return _plan(
+        "clamp",
+        (
+            _tensor_operand(tensor, DType.Float32),
+            bound_operand(lower, lower_role, "lower"),
+            bound_operand(upper, upper_role, "upper"),
+        ),
+        compute=Arithmetic.BINARY32,
+        output=DType.Float32,
+    )
+
+
 def _resolve_mul(tensor_dtype: object, scalar: object) -> OperationPlan:
     """Resolve ``mul``, a tensor scaled by a weak Python scalar."""
     tensor = _require_tensor_dtype(tensor_dtype, "tensor_dtype")
@@ -363,6 +655,36 @@ def _resolve_pow(tensor_dtype: object, exponent: object) -> OperationPlan:
     )
 
 
+def _resolve_tensor_pow(base_dtype: object, exponent_dtype: object) -> OperationPlan:
+    """Resolve tensor-tensor power through the Float32 v0 primitive."""
+    base = _require_tensor_dtype(base_dtype, "base_dtype")
+    exponent = _require_tensor_dtype(exponent_dtype, "exponent_dtype")
+    return _plan(
+        "pow",
+        (
+            _tensor_operand(base, DType.Float32),
+            _tensor_operand(exponent, DType.Float32),
+        ),
+        compute=Arithmetic.BINARY32,
+        output=DType.Float32,
+    )
+
+
+def _resolve_reverse_pow(base: object, exponent_dtype: object) -> OperationPlan:
+    """Resolve a weak scalar base raised to a tensor exponent."""
+    _normalize_weak_scalar(base, "base")
+    exponent = _require_tensor_dtype(exponent_dtype, "exponent_dtype")
+    return _plan(
+        "pow",
+        (
+            _weak_scalar_operand(DType.Float32),
+            _tensor_operand(exponent, DType.Float32),
+        ),
+        compute=Arithmetic.BINARY32,
+        output=DType.Float32,
+    )
+
+
 def _resolve_floating_activation(operation: str, tensor_dtype: object) -> OperationPlan:
     """Resolve an activation that is floating regardless of its input dtype."""
     tensor = _require_tensor_dtype(tensor_dtype, "tensor_dtype")
@@ -390,12 +712,12 @@ def _resolve_relu(tensor_dtype: object) -> OperationPlan:
     )
 
 
-def _resolve_reduce(tensor_dtype: object) -> OperationPlan:
-    """Resolve ``reduce``, a sum that preserves its input dtype."""
+def _resolve_reduce_sum(tensor_dtype: object) -> OperationPlan:
+    """Resolve ``reduce_sum``, which preserves its input dtype."""
     tensor = _require_tensor_dtype(tensor_dtype, "tensor_dtype")
     integer = tensor is DType.Int32
     return _plan(
-        "reduce",
+        "reduce_sum",
         (_tensor_operand(tensor, tensor),),
         compute=Arithmetic.INT32_EXACT_CHECKED if integer else Arithmetic.BINARY32,
         output=tensor,
@@ -434,7 +756,30 @@ def _resolve_matmul(lhs_dtype: object, rhs_dtype: object) -> OperationPlan:
 
 _TENSOR_PAIR: Final = (OperandRole.TENSOR, OperandRole.TENSOR)
 _TENSOR_AND_SCALAR: Final = (OperandRole.TENSOR, OperandRole.WEAK_SCALAR)
+_SCALAR_AND_TENSOR: Final = (OperandRole.WEAK_SCALAR, OperandRole.TENSOR)
+_THREE_TENSORS: Final = (
+    OperandRole.TENSOR,
+    OperandRole.TENSOR,
+    OperandRole.TENSOR,
+)
+_TWO_TENSORS_AND_SCALAR: Final = (
+    OperandRole.TENSOR,
+    OperandRole.TENSOR,
+    OperandRole.WEAK_SCALAR,
+)
+_TENSOR_SCALAR_TENSOR: Final = (
+    OperandRole.TENSOR,
+    OperandRole.WEAK_SCALAR,
+    OperandRole.TENSOR,
+)
+_TENSOR_AND_TWO_SCALARS: Final = (
+    OperandRole.TENSOR,
+    OperandRole.WEAK_SCALAR,
+    OperandRole.WEAK_SCALAR,
+)
 _ONE_TENSOR: Final = (OperandRole.TENSOR,)
+_FLOAT32_DOMAIN: Final = (DType.Float32,)
+_INT32_DOMAIN: Final = (DType.Int32,)
 
 # Activations that produce a floating result regardless of their input dtype.
 _FLOATING_ACTIVATIONS: Final = (
@@ -453,14 +798,129 @@ def _floating_activation_spec(operation: str) -> OperationSpec:
     def rule(tensor_dtype: object) -> OperationPlan:
         return _resolve_floating_activation(operation, tensor_dtype)
 
-    return OperationSpec(name=operation, roles=_ONE_TENSOR, rule=rule)
+    return _single_overload_spec(operation, _ONE_TENSOR, rule)
 
 
 def _binary_elementwise_spec(operation: str) -> OperationSpec:
     def rule(lhs_dtype: object, rhs_dtype: object) -> OperationPlan:
         return _resolve_binary_elementwise(operation, lhs_dtype, rhs_dtype)
 
-    return OperationSpec(name=operation, roles=_TENSOR_PAIR, rule=rule)
+    return _single_overload_spec(operation, _TENSOR_PAIR, rule)
+
+
+def _float32_unary_spec(operation: str) -> OperationSpec:
+    def rule(tensor_dtype: object) -> OperationPlan:
+        return _resolve_float32_unary(operation, tensor_dtype)
+
+    return _single_overload_spec(
+        operation,
+        _ONE_TENSOR,
+        rule,
+        tensor_domains=(_FLOAT32_DOMAIN,),
+    )
+
+
+def _float32_binary_spec(operation: str) -> OperationSpec:
+    def rule(lhs_dtype: object, rhs_dtype: object) -> OperationPlan:
+        return _resolve_float32_binary(operation, lhs_dtype, rhs_dtype)
+
+    return _single_overload_spec(
+        operation,
+        _TENSOR_PAIR,
+        rule,
+        tensor_domains=(_FLOAT32_DOMAIN, _FLOAT32_DOMAIN),
+    )
+
+
+def _float32_predicate_spec(operation: str) -> OperationSpec:
+    def rule(lhs_dtype: object, rhs_dtype: object) -> OperationPlan:
+        return _resolve_float32_predicate(operation, lhs_dtype, rhs_dtype)
+
+    return _single_overload_spec(
+        operation,
+        _TENSOR_PAIR,
+        rule,
+        tensor_domains=(_FLOAT32_DOMAIN, _FLOAT32_DOMAIN),
+    )
+
+
+def _float32_reduction_spec(
+    operation: str,
+    accumulation: Accumulation,
+    *,
+    output: SimpleDType = DType.Float32,
+    dtype_operand_positions: tuple[int, ...] | None = None,
+) -> OperationSpec:
+    def rule(tensor_dtype: object) -> OperationPlan:
+        return _resolve_float32_reduction(
+            operation, tensor_dtype, accumulation, output=output
+        )
+
+    return _single_overload_spec(
+        operation,
+        _ONE_TENSOR,
+        rule,
+        tensor_domains=(_FLOAT32_DOMAIN,),
+        dtype_operand_positions=dtype_operand_positions,
+    )
+
+
+def _float32_contraction_spec(operation: str) -> OperationSpec:
+    def rule(lhs_dtype: object, rhs_dtype: object) -> OperationPlan:
+        lhs = _require_float32_tensor_dtype(lhs_dtype, "lhs_dtype")
+        rhs = _require_float32_tensor_dtype(rhs_dtype, "rhs_dtype")
+        return _plan(
+            operation,
+            (
+                _tensor_operand(lhs, DType.Float32),
+                _tensor_operand(rhs, DType.Float32),
+            ),
+            compute=Arithmetic.BINARY32,
+            accumulation=Accumulation.SEQUENTIAL_BINARY32,
+            output=DType.Float32,
+        )
+
+    return _single_overload_spec(
+        operation,
+        _TENSOR_PAIR,
+        rule,
+        tensor_domains=(_FLOAT32_DOMAIN, _FLOAT32_DOMAIN),
+        dtype_operand_positions=(0, 1),
+    )
+
+
+def _selection_spec(
+    operation: str, *, output: SimpleDType, public: bool
+) -> OperationSpec:
+    def rule(tensor_dtype: object) -> OperationPlan:
+        return _resolve_float32_selection(operation, tensor_dtype, output=output)
+
+    return _single_overload_spec(
+        operation,
+        _ONE_TENSOR,
+        rule,
+        tensor_domains=(_FLOAT32_DOMAIN,),
+        public=public,
+        dtype_operand_positions=(0,),
+    )
+
+
+def _single_overload_spec(
+    name: str,
+    roles: tuple[OperandRole, ...],
+    rule: Callable[..., OperationPlan],
+    *,
+    tensor_domains: tuple[tuple[SimpleDType, ...], ...] | None = None,
+    public: bool = True,
+    dtype_operand_positions: tuple[int, ...] | None = None,
+) -> OperationSpec:
+    """Build the common one-overload operation specification."""
+    return OperationSpec(
+        name=name,
+        overloads=(OperationOverload(roles, rule, tensor_domains),),
+        public=public,
+        dtype_operand_positions=dtype_operand_positions,
+    )
 
 
 def _build_registry() -> dict[str, OperationSpec]:
@@ -477,15 +937,179 @@ def _build_registry() -> dict[str, OperationSpec]:
             _binary_elementwise_spec(operation)
             for operation in ("add", "sub", "elementwise_mul")
         ),
-        OperationSpec(name="div", roles=_TENSOR_PAIR, rule=_resolve_div),
-        OperationSpec(name="mul", roles=_TENSOR_AND_SCALAR, rule=_resolve_mul),
-        OperationSpec(name="pow", roles=_TENSOR_AND_SCALAR, rule=_resolve_pow),
-        OperationSpec(name="relu", roles=_ONE_TENSOR, rule=_resolve_relu),
-        OperationSpec(name="reduce", roles=_ONE_TENSOR, rule=_resolve_reduce),
-        OperationSpec(name="matmul", roles=_TENSOR_PAIR, rule=_resolve_matmul),
+        _single_overload_spec("div", _TENSOR_PAIR, _resolve_div),
+        OperationSpec(
+            name="mul",
+            overloads=(
+                OperationOverload(
+                    _TENSOR_PAIR,
+                    lambda lhs, rhs: _resolve_binary_elementwise("mul", lhs, rhs),
+                ),
+                OperationOverload(_TENSOR_AND_SCALAR, _resolve_mul),
+            ),
+        ),
+        OperationSpec(
+            name="pow",
+            overloads=(
+                OperationOverload(_TENSOR_PAIR, _resolve_tensor_pow),
+                OperationOverload(_TENSOR_AND_SCALAR, _resolve_pow),
+                OperationOverload(_SCALAR_AND_TENSOR, _resolve_reverse_pow),
+            ),
+        ),
+        *(
+            _float32_binary_spec(operation)
+            for operation in ("maximum", "minimum", "rem")
+        ),
+        *(_float32_predicate_spec(operation) for operation in ("eq", "ne", "lt", "le")),
+        _single_overload_spec(
+            "logical_not",
+            _ONE_TENSOR,
+            _resolve_logical_not,
+            tensor_domains=(_FLOAT32_DOMAIN,),
+        ),
+        _single_overload_spec("relu", _ONE_TENSOR, _resolve_relu),
+        _single_overload_spec("reduce_sum", _ONE_TENSOR, _resolve_reduce_sum),
+        _float32_reduction_spec(
+            "reduce_prod", Accumulation.SEQUENTIAL_BINARY32_PRODUCT
+        ),
+        _float32_reduction_spec("reduce_max", Accumulation.MAXIMUM),
+        _float32_reduction_spec("reduce_min", Accumulation.MINIMUM),
+        _float32_reduction_spec("argmax", Accumulation.ARGMAX, output=DType.Int32),
+        _float32_reduction_spec("argmin", Accumulation.ARGMIN, output=DType.Int32),
+        _float32_reduction_spec(
+            "cumsum",
+            Accumulation.SEQUENTIAL_BINARY32,
+            dtype_operand_positions=(0,),
+        ),
+        _single_overload_spec("matmul", _TENSOR_PAIR, _resolve_matmul),
+        _float32_contraction_spec("conv_general"),
         *(_floating_activation_spec(operation) for operation in _FLOATING_ACTIVATIONS),
+        *(
+            _float32_unary_spec(operation)
+            for operation in (
+                "neg",
+                "abs",
+                "sign",
+                "recip",
+                "sqrt",
+                "rsqrt",
+                "exp2",
+                "log",
+                "log2",
+                "sin",
+                "cos",
+                "erf",
+                "floor",
+                "ceil",
+                "round",
+            )
+        ),
+        _single_overload_spec(
+            "gather",
+            _TENSOR_PAIR,
+            _resolve_gather,
+            tensor_domains=(_FLOAT32_DOMAIN, _INT32_DOMAIN),
+            dtype_operand_positions=(0, 1),
+        ),
+        _single_overload_spec(
+            "scatter",
+            _THREE_TENSORS,
+            lambda base, indices, updates: _resolve_scatter(
+                "scatter", base, indices, updates
+            ),
+            tensor_domains=(
+                _FLOAT32_DOMAIN,
+                _INT32_DOMAIN,
+                _FLOAT32_DOMAIN,
+            ),
+            dtype_operand_positions=(0, 1, 2),
+        ),
+        _single_overload_spec(
+            "scatter_add",
+            _THREE_TENSORS,
+            lambda base, indices, updates: _resolve_scatter(
+                "scatter_add", base, indices, updates
+            ),
+            tensor_domains=(
+                _FLOAT32_DOMAIN,
+                _INT32_DOMAIN,
+                _FLOAT32_DOMAIN,
+            ),
+            dtype_operand_positions=(0, 1, 2),
+        ),
+        _single_overload_spec(
+            "select",
+            _THREE_TENSORS,
+            _resolve_select,
+            tensor_domains=(
+                (DType.Bool,),
+                _FLOAT32_DOMAIN,
+                _FLOAT32_DOMAIN,
+            ),
+        ),
+        OperationSpec(
+            name="clamp",
+            overloads=(
+                OperationOverload(
+                    _THREE_TENSORS,
+                    lambda tensor, lower, upper: _resolve_clamp(
+                        tensor,
+                        lower,
+                        upper,
+                        lower_role=OperandRole.TENSOR,
+                        upper_role=OperandRole.TENSOR,
+                    ),
+                    (_FLOAT32_DOMAIN, _FLOAT32_DOMAIN, _FLOAT32_DOMAIN),
+                ),
+                OperationOverload(
+                    _TWO_TENSORS_AND_SCALAR,
+                    lambda tensor, lower, upper: _resolve_clamp(
+                        tensor,
+                        lower,
+                        upper,
+                        lower_role=OperandRole.TENSOR,
+                        upper_role=OperandRole.WEAK_SCALAR,
+                    ),
+                    (_FLOAT32_DOMAIN, _FLOAT32_DOMAIN),
+                ),
+                OperationOverload(
+                    _TENSOR_SCALAR_TENSOR,
+                    lambda tensor, lower, upper: _resolve_clamp(
+                        tensor,
+                        lower,
+                        upper,
+                        lower_role=OperandRole.WEAK_SCALAR,
+                        upper_role=OperandRole.TENSOR,
+                    ),
+                    (_FLOAT32_DOMAIN, _FLOAT32_DOMAIN),
+                ),
+                OperationOverload(
+                    _TENSOR_AND_TWO_SCALARS,
+                    lambda tensor, lower, upper: _resolve_clamp(
+                        tensor,
+                        lower,
+                        upper,
+                        lower_role=OperandRole.WEAK_SCALAR,
+                        upper_role=OperandRole.WEAK_SCALAR,
+                    ),
+                    (_FLOAT32_DOMAIN,),
+                ),
+            ),
+        ),
+        *(
+            _selection_spec(operation, output=output, public=False)
+            for operation, output in (
+                ("_sort_values", DType.Float32),
+                ("_sort_indices", DType.Int32),
+                ("_topk_values", DType.Float32),
+                ("_topk_indices", DType.Int32),
+            )
+        ),
     ]
-    return {spec.name: spec for spec in specs}
+    registry = {spec.name: spec for spec in specs}
+    if len(registry) != len(specs):
+        raise ValueError("the operation registry declares one name twice")
+    return registry
 
 
 _REGISTRY: Final[dict[str, OperationSpec]] = _build_registry()
@@ -539,9 +1163,112 @@ def resolvable_plans(
     }
     plans: dict[OperationPlan, None] = {}
     for spec in registered_operations():
-        for operands in product(*(candidates[role] for role in spec.roles)):
-            plans[spec.rule(*operands)] = None
+        for overload in spec.overloads:
+            tensor_domain_index = 0
+            operand_candidates: list[tuple[Any, ...]] = []
+            for role in overload.roles:
+                if role is OperandRole.WEAK_SCALAR:
+                    operand_candidates.append(candidates[role])
+                    continue
+                declared_domains = overload.tensor_domains
+                declared = (
+                    tuple(tensor_dtypes)
+                    if declared_domains is None
+                    else declared_domains[tensor_domain_index]
+                )
+                tensor_domain_index += 1
+                operand_candidates.append(
+                    tuple(
+                        dtype
+                        for dtype in tensor_dtypes
+                        if any(dtype is allowed for allowed in declared)
+                    )
+                )
+            for operands in product(*operand_candidates):
+                plan = overload.rule(*operands)
+                _validate_overload_plan(spec, overload, plan)
+                plans[plan] = None
     return tuple(plans)
+
+
+def _operand_role(value: object) -> OperandRole | None:
+    """Classify an operand only when its role is unambiguous.
+
+    Invalid values deliberately return ``None`` so the selected resolver owns
+    the established diagnostic (for example, ``lhs_dtype must be a DType`` or
+    ``scalar must be a real Python number``) instead of overload selection
+    replacing it with a generic mismatch.
+    """
+    if isinstance(value, DType):
+        return OperandRole.TENSOR
+    if isinstance(value, Real):
+        return OperandRole.WEAK_SCALAR
+    return None
+
+
+def _select_overload(
+    spec: OperationSpec, operands: tuple[object, ...]
+) -> OperationOverload:
+    """Choose one overload deterministically without swallowing rule errors."""
+    same_arity = tuple(
+        overload for overload in spec.overloads if len(overload.roles) == len(operands)
+    )
+    if not same_arity:
+        arities = tuple(sorted({len(overload.roles) for overload in spec.overloads}))
+        expected = (
+            str(arities[0])
+            if len(arities) == 1
+            else "one of " + ", ".join(str(arity) for arity in arities)
+        )
+        raise TypeError(f"{spec.name} takes {expected} operands, got {len(operands)}")
+
+    classified = tuple(_operand_role(value) for value in operands)
+    compatible = tuple(
+        overload
+        for overload in same_arity
+        if all(
+            actual is None or actual is declared
+            for actual, declared in zip(classified, overload.roles, strict=True)
+        )
+    )
+    # Unknown invalid values intentionally choose the first otherwise-compatible
+    # declaration so its resolver produces the precise dtype/scalar diagnostic.
+    if compatible:
+        # A non-DType invalid value is more plausibly a malformed weak scalar
+        # than a malformed dtype when both overloads share the same arity. This
+        # preserves the established ``must be a real Python number`` diagnostic
+        # for calls such as ``mul(tensor_dtype, "bad")`` without weakening the
+        # single-overload tensor validation used by operations such as ``add``.
+        return max(
+            compatible,
+            key=lambda overload: sum(
+                actual is None and declared is OperandRole.WEAK_SCALAR
+                for actual, declared in zip(classified, overload.roles, strict=True)
+            ),
+        )
+    declared = ", ".join(
+        "(" + ", ".join(role.value for role in overload.roles) + ")"
+        for overload in same_arity
+    )
+    raise TypeError(
+        f"{spec.name} operands do not match any declared role signature: {declared}"
+    )
+
+
+def _validate_overload_plan(
+    spec: OperationSpec, overload: OperationOverload, plan: OperationPlan
+) -> None:
+    """Reject a resolver whose returned plan disagrees with its registration."""
+    if plan.operation != spec.name:
+        raise ValueError(
+            f"operation {spec.name!r} resolver returned a plan for {plan.operation!r}"
+        )
+    roles = tuple(operand.role for operand in plan.operands)
+    if roles != overload.roles:
+        raise ValueError(
+            f"operation {spec.name!r} resolver returned operand roles {roles!r}; "
+            f"expected {overload.roles!r}"
+        )
 
 
 def resolve_operation_plan(operation: str, *operands: object) -> OperationPlan:
@@ -553,7 +1280,7 @@ def resolve_operation_plan(operation: str, *operands: object) -> OperationPlan:
 
     Args:
         operation: Operation name, matching the ``dispatch_op`` name (for
-            example ``"add"``, ``"mul"``, ``"pow"``, ``"matmul"``, ``"reduce"``,
+            example ``"add"``, ``"mul"``, ``"pow"``, ``"matmul"``, ``"reduce_sum"``,
             ``"relu"``, or ``"exp"``).
         *operands: One value per operand position: a ``SimpleDType`` for a
             tensor operand, a real Python number for a weak scalar operand.
@@ -584,8 +1311,7 @@ def resolve_operation_plan(operation: str, *operands: object) -> OperationPlan:
         raise NotImplementedError(
             f"no dtype plan is defined for operation {operation!r}"
         )
-    if len(operands) != len(spec.roles):
-        raise TypeError(
-            f"{operation} takes {len(spec.roles)} operands, got {len(operands)}"
-        )
-    return spec.rule(*operands)
+    overload = _select_overload(spec, operands)
+    plan = overload.rule(*operands)
+    _validate_overload_plan(spec, overload, plan)
+    return plan

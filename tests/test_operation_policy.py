@@ -23,6 +23,9 @@ from strideweave.carriers.operation_policy import (
     Accumulation,
     Arithmetic,
     OperandRole,
+    OperationOverload,
+    OperationPlan,
+    OperationSpec,
     registered_operations,
     resolve_operation_plan,
 )
@@ -35,6 +38,11 @@ CHECKED = Arithmetic.INT32_EXACT_CHECKED
 EXACT = Arithmetic.INT32_EXACT
 SEQUENTIAL = Accumulation.SEQUENTIAL_BINARY32
 EXACT_SUM = Accumulation.EXACT_INTEGER
+SEQUENTIAL_PRODUCT = Accumulation.SEQUENTIAL_BINARY32_PRODUCT
+MAXIMUM = Accumulation.MAXIMUM
+MINIMUM = Accumulation.MINIMUM
+ARGMAX = Accumulation.ARGMAX
+ARGMIN = Accumulation.ARGMIN
 
 # One representative weak scalar per normalized kind, plus the bool case the
 # policy deliberately normalizes as a weak float.
@@ -88,7 +96,7 @@ _RELU: dict[tuple[Any, ...], Expected] = {
     (I32,): ((I32,), EXACT, None, I32),
 }
 
-_REDUCE: dict[tuple[Any, ...], Expected] = {
+_REDUCE_SUM: dict[tuple[Any, ...], Expected] = {
     (F32,): ((F32,), BINARY32, SEQUENTIAL, F32),
     (I32,): ((I32,), CHECKED, EXACT_SUM, I32),
 }
@@ -105,16 +113,96 @@ _FLOATING_ACTIVATION: dict[tuple[Any, ...], Expected] = {
     (I32,): ((F32,), BINARY32, None, F32),
 }
 
+_FLOAT32_UNARY: dict[tuple[Any, ...], Expected] = {
+    (F32,): ((F32,), BINARY32, None, F32),
+}
+
+_FLOAT32_BINARY: dict[tuple[Any, ...], Expected] = {
+    (F32, F32): ((F32, F32), BINARY32, None, F32),
+}
+
+_FLOAT32_PREDICATE: dict[tuple[Any, ...], Expected] = {
+    (F32, F32): ((F32, F32), BINARY32, None, DType.Bool),
+}
+
+_LOGICAL_NOT: dict[tuple[Any, ...], Expected] = {
+    (F32,): ((F32,), BINARY32, None, DType.Bool),
+}
+
+_POW_TENSOR: dict[tuple[Any, ...], Expected] = {
+    (F32, F32): ((F32, F32), BINARY32, None, F32),
+    (F32, I32): ((F32, F32), BINARY32, None, F32),
+    (I32, F32): ((F32, F32), BINARY32, None, F32),
+    (I32, I32): ((F32, F32), BINARY32, None, F32),
+}
+
+_REVERSE_POW: dict[tuple[Any, ...], Expected] = {
+    (WEAK_INTEGER, F32): ((F32, F32), BINARY32, None, F32),
+    (WEAK_FLOAT, F32): ((F32, F32), BINARY32, None, F32),
+    (WEAK_BOOL, F32): ((F32, F32), BINARY32, None, F32),
+    (WEAK_INTEGER, I32): ((F32, F32), BINARY32, None, F32),
+    (WEAK_FLOAT, I32): ((F32, F32), BINARY32, None, F32),
+    (WEAK_BOOL, I32): ((F32, F32), BINARY32, None, F32),
+}
+
+_GATHER: dict[tuple[Any, ...], Expected] = {
+    (F32, I32): ((F32, I32), BINARY32, None, F32),
+}
+
+_SCATTER: dict[tuple[Any, ...], Expected] = {
+    (F32, I32, F32): ((F32, I32, F32), BINARY32, None, F32),
+}
+
+_SCATTER_ADD: dict[tuple[Any, ...], Expected] = {
+    (F32, I32, F32): ((F32, I32, F32), BINARY32, SEQUENTIAL, F32),
+}
+
+_SELECT: dict[tuple[Any, ...], Expected] = {
+    (DType.Bool, F32, F32): ((DType.Bool, F32, F32), BINARY32, None, F32),
+}
+
+_CLAMP: dict[tuple[Any, ...], Expected] = {
+    (F32, F32, F32): ((F32, F32, F32), BINARY32, None, F32),
+    (F32, F32, WEAK_INTEGER): ((F32, F32, F32), BINARY32, None, F32),
+    (F32, WEAK_INTEGER, F32): ((F32, F32, F32), BINARY32, None, F32),
+    (F32, WEAK_INTEGER, WEAK_INTEGER): (
+        (F32, F32, F32),
+        BINARY32,
+        None,
+        F32,
+    ),
+    (F32, WEAK_FLOAT, WEAK_BOOL): ((F32, F32, F32), BINARY32, None, F32),
+}
+
 EXPECTED_PLANS: dict[str, dict[tuple[Any, ...], Expected]] = {
     "add": _BINARY_ELEMENTWISE,
     "sub": _BINARY_ELEMENTWISE,
     "elementwise_mul": _BINARY_ELEMENTWISE,
     "div": _DIV,
-    "mul": _MUL,
-    "pow": _POW,
+    "mul": {**_BINARY_ELEMENTWISE, **_MUL},
+    "pow": {**_POW_TENSOR, **_POW, **_REVERSE_POW},
+    "maximum": _FLOAT32_BINARY,
+    "minimum": _FLOAT32_BINARY,
+    "rem": _FLOAT32_BINARY,
+    "eq": _FLOAT32_PREDICATE,
+    "ne": _FLOAT32_PREDICATE,
+    "lt": _FLOAT32_PREDICATE,
+    "le": _FLOAT32_PREDICATE,
+    "logical_not": _LOGICAL_NOT,
     "relu": _RELU,
-    "reduce": _REDUCE,
+    "reduce_sum": _REDUCE_SUM,
+    "reduce_prod": {
+        (F32,): ((F32,), BINARY32, SEQUENTIAL_PRODUCT, F32),
+    },
+    "reduce_max": {(F32,): ((F32,), BINARY32, MAXIMUM, F32)},
+    "reduce_min": {(F32,): ((F32,), BINARY32, MINIMUM, F32)},
+    "argmax": {(F32,): ((F32,), BINARY32, ARGMAX, I32)},
+    "argmin": {(F32,): ((F32,), BINARY32, ARGMIN, I32)},
+    "cumsum": {(F32,): ((F32,), BINARY32, SEQUENTIAL, F32)},
     "matmul": _MATMUL,
+    "conv_general": {
+        (F32, F32): ((F32, F32), BINARY32, SEQUENTIAL, F32),
+    },
     "elu": _FLOATING_ACTIVATION,
     "exp": _FLOATING_ACTIVATION,
     "gelu": _FLOATING_ACTIVATION,
@@ -123,6 +211,35 @@ EXPECTED_PLANS: dict[str, dict[tuple[Any, ...], Expected]] = {
     "silu": _FLOATING_ACTIVATION,
     "softplus": _FLOATING_ACTIVATION,
     "tanh": _FLOATING_ACTIVATION,
+    **{
+        operation: _FLOAT32_UNARY
+        for operation in (
+            "neg",
+            "abs",
+            "sign",
+            "recip",
+            "sqrt",
+            "rsqrt",
+            "exp2",
+            "log",
+            "log2",
+            "sin",
+            "cos",
+            "erf",
+            "floor",
+            "ceil",
+            "round",
+        )
+    },
+    "gather": _GATHER,
+    "scatter": _SCATTER,
+    "scatter_add": _SCATTER_ADD,
+    "select": _SELECT,
+    "clamp": _CLAMP,
+    "_sort_values": _FLOAT32_UNARY,
+    "_sort_indices": {(F32,): ((F32,), BINARY32, None, I32)},
+    "_topk_values": _FLOAT32_UNARY,
+    "_topk_indices": {(F32,): ((F32,), BINARY32, None, I32)},
 }
 
 
@@ -157,20 +274,117 @@ def test_every_registered_operation_has_a_fixture() -> None:
 
 def test_every_supported_tensor_dtype_combination_is_planned() -> None:
     for spec in registered_operations():
-        tensor_positions = [
-            index for index, role in enumerate(spec.roles) if role is OperandRole.TENSOR
-        ]
-        combinations = itertools.product(
-            SUPPORTED_TENSOR_DTYPES, repeat=len(tensor_positions)
-        )
-        for dtypes in combinations:
-            operands: list[Any] = list(dtypes)
-            if spec.roles[-1] is OperandRole.WEAK_SCALAR:
-                operands.append(WEAK_INTEGER)
+        for overload in spec.overloads:
+            tensor_domains = overload.tensor_domains
+            domain_index = 0
+            candidates: list[tuple[Any, ...]] = []
+            for role in overload.roles:
+                if role is OperandRole.WEAK_SCALAR:
+                    candidates.append((WEAK_INTEGER,))
+                    continue
+                candidates.append(
+                    SUPPORTED_TENSOR_DTYPES
+                    if tensor_domains is None
+                    else tensor_domains[domain_index]
+                )
+                domain_index += 1
+            for operands in itertools.product(*candidates):
+                plan = resolve_operation_plan(spec.name, *operands)
 
-            plan = resolve_operation_plan(spec.name, *operands)
+                assert isinstance(plan.output, SimpleDType)
 
-            assert plan.output in SUPPORTED_TENSOR_DTYPES
+
+def test_operation_specs_reject_duplicate_overload_signatures() -> None:
+    def rule(dtype: object) -> OperationPlan:
+        return resolve_operation_plan("relu", dtype)
+
+    overload = OperationOverload((OperandRole.TENSOR,), rule)
+    with pytest.raises(ValueError, match="signature twice"):
+        OperationSpec("duplicate", (overload, overload))
+
+
+def test_dtype_operand_positions_are_central_call_metadata() -> None:
+    specs = {spec.name: spec for spec in registered_operations()}
+
+    assert specs["cumsum"].dtype_operand_positions == (0,)
+    assert specs["gather"].dtype_operand_positions == (0, 1)
+    assert specs["scatter_add"].dtype_operand_positions == (0, 1, 2)
+    assert specs["conv_general"].dtype_operand_positions == (0, 1)
+    assert specs["_topk_values"].dtype_operand_positions == (0,)
+    assert specs["add"].dtype_operand_positions is None
+
+
+@pytest.mark.parametrize(
+    ("positions", "message"),
+    [
+        ((-1,), "non-negative"),
+        ((1, 0), "unique and increasing"),
+        ((0, 0), "unique and increasing"),
+        ((0, 1), "match every overload arity"),
+    ],
+)
+def test_operation_specs_validate_dtype_operand_positions(
+    positions: tuple[int, ...], message: str
+) -> None:
+    def rule(dtype: object) -> OperationPlan:
+        return resolve_operation_plan("relu", dtype)
+
+    overload = OperationOverload((OperandRole.TENSOR,), rule)
+    with pytest.raises(ValueError, match=message):
+        OperationSpec("invalid", (overload,), dtype_operand_positions=positions)
+
+
+def test_multiple_overloads_are_selected_by_exact_operand_roles() -> None:
+    tensor_pair = resolve_operation_plan("mul", F32, F32)
+    tensor_scalar = resolve_operation_plan("mul", F32, 2.0)
+    reverse_pow = resolve_operation_plan("pow", 2.0, F32)
+
+    assert tuple(operand.role for operand in tensor_pair.operands) == (
+        OperandRole.TENSOR,
+        OperandRole.TENSOR,
+    )
+    assert tuple(operand.role for operand in tensor_scalar.operands) == (
+        OperandRole.TENSOR,
+        OperandRole.WEAK_SCALAR,
+    )
+    assert tuple(operand.role for operand in reverse_pow.operands) == (
+        OperandRole.WEAK_SCALAR,
+        OperandRole.TENSOR,
+    )
+
+
+def test_select_and_clamp_roles_are_planned_exactly() -> None:
+    select = resolve_operation_plan("select", DType.Bool, F32, F32)
+    tensor_bounds = resolve_operation_plan("clamp", F32, F32, F32)
+    scalar_bounds = resolve_operation_plan("clamp", F32, -1.0, 1.0)
+
+    assert tuple(operand.role for operand in select.operands) == (
+        OperandRole.TENSOR,
+        OperandRole.TENSOR,
+        OperandRole.TENSOR,
+    )
+    assert tuple(operand.convert_to for operand in select.operands) == (
+        DType.Bool,
+        F32,
+        F32,
+    )
+    assert tuple(operand.role for operand in tensor_bounds.operands) == (
+        OperandRole.TENSOR,
+        OperandRole.TENSOR,
+        OperandRole.TENSOR,
+    )
+    assert tuple(operand.role for operand in scalar_bounds.operands) == (
+        OperandRole.TENSOR,
+        OperandRole.WEAK_SCALAR,
+        OperandRole.WEAK_SCALAR,
+    )
+
+
+def test_select_requires_a_bool_condition_and_clamp_requires_real_bounds() -> None:
+    with pytest.raises(TypeError, match=r"condition_dtype must be DType.Bool"):
+        resolve_operation_plan("select", F32, F32, F32)
+    with pytest.raises(TypeError, match="lower must be a real Python number"):
+        resolve_operation_plan("clamp", F32, "low", 1.0)
 
 
 def test_a_plan_carries_no_field_derivable_from_another() -> None:
@@ -297,7 +511,7 @@ def test_integer_matmul_does_not_check_individual_products() -> None:
 
 
 def test_integer_reduce_checks_only_the_final_narrowing() -> None:
-    plan = resolve_operation_plan("reduce", DType.Int32)
+    plan = resolve_operation_plan("reduce_sum", DType.Int32)
 
     assert plan.compute is Arithmetic.INT32_EXACT_CHECKED
     assert plan.accumulation is Accumulation.EXACT_INTEGER

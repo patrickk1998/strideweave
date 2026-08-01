@@ -50,7 +50,7 @@ def _as_sized_indexable(
 # Generic stores Python objects, so it accepts the legacy opaque-storage
 # descriptors, and it is the behavioral reference for the concrete simple
 # dtypes, so it accepts those too.
-_GENERIC_DTYPES = (DType.Any, DType.Floating, DType.Float32, DType.Int32)
+_GENERIC_DTYPES = (DType.Any, DType.Floating, DType.Float32, DType.Int32, DType.Bool)
 
 
 def _validate_generic_dtype(dtype: DType) -> DType:
@@ -87,13 +87,15 @@ class Generic(Carrier):
 
     Generic accepts the legacy opaque-storage descriptors — ``DType.Floating``
     for differentiable numeric values and ``DType.Any`` for arbitrary objects —
-    and the concrete simple dtypes ``DType.Float32`` and ``DType.Int32``, for
-    which it is StrideWeave's behavioral reference implementation.
+    and the concrete simple dtypes ``DType.Float32``, ``DType.Int32``, and
+    ``DType.Bool``, for which it is StrideWeave's behavioral reference
+    implementation.
 
     Concrete storage is normalized and owned: a ``Float32`` carrier holds
-    binary32-exact floats and an ``Int32`` carrier holds in-range integers,
-    copied into storage this carrier owns. Legacy opaque storage continues to
-    alias a mutable container the caller supplied.
+    binary32-exact floats, an ``Int32`` carrier holds in-range integers, and a
+    ``Bool`` carrier holds normalized Python booleans, copied into storage this
+    carrier owns. Legacy opaque storage continues to alias a mutable container
+    the caller supplied.
 
     Generic is a closed implementation: extend StrideWeave with a sibling
     ``Carrier`` rather than a specialization of this one.
@@ -233,49 +235,144 @@ class Generic(Carrier):
             GenericViewOperation,
             PermuteOperation,
             RearrangeOperation,
+            ReshapeOperation,
+            SqueezeOperation,
+            UnsqueezeOperation,
+        )
+        from .as_strided_ops import GenericAsStridedOperation
+        from .convolution_ops import GenericConvGeneralOperation
+        from .indexing_ops import (
+            GenericGatherOperation,
+            GenericScatterAddOperation,
+            GenericScatterOperation,
         )
         from .ops import (
+            GenericAbsOperation,
             GenericAddOperation,
+            GenericCeilOperation,
+            GenericCosOperation,
             GenericDivOperation,
             GenericElementwiseMulOperation,
             GenericELUOperation,
+            GenericErfOperation,
+            GenericExp2Operation,
             GenericExpOperation,
+            GenericFloorOperation,
             GenericGELUOperation,
             GenericLeakyReLUOperation,
+            GenericLog2Operation,
+            GenericLogOperation,
             GenericMatmulOperation,
+            GenericMaximumOperation,
+            GenericMinimumOperation,
+            GenericNegOperation,
             GenericPowOperation,
-            GenericReduceSumOperation,
+            GenericRecipOperation,
             GenericReLUOperation,
+            GenericRemOperation,
+            GenericRoundOperation,
+            GenericRsqrtOperation,
             GenericScalarMulOperation,
             GenericSigmoidOperation,
+            GenericSignOperation,
             GenericSiLUOperation,
+            GenericSinOperation,
             GenericSoftplusOperation,
+            GenericSqrtOperation,
             GenericSubOperation,
             GenericTanhOperation,
         )
+        from .predicate_ops import (
+            GenericEqOperation,
+            GenericLeOperation,
+            GenericLogicalNotOperation,
+            GenericLtOperation,
+            GenericNeOperation,
+        )
+        from .reduction_ops import (
+            GenericArgMaxOperation,
+            GenericArgMinOperation,
+            GenericCumsumOperation,
+            GenericReduceMaxOperation,
+            GenericReduceMinOperation,
+            GenericReduceProdOperation,
+        )
+        from .reduction_ops import (
+            GenericReduceSumOperation as GenericPlannedReduceSumOperation,
+        )
+        from .selection_ops import (
+            GenericSortIndicesOperation,
+            GenericSortValuesOperation,
+            GenericTopKIndicesOperation,
+            GenericTopKValuesOperation,
+        )
+        from .ternary_ops import GenericClampOperation, GenericSelectOperation
 
         operations = {
             "add": GenericAddOperation,
+            "abs": GenericAbsOperation,
+            "argmax": GenericArgMaxOperation,
+            "argmin": GenericArgMinOperation,
+            "as_strided": GenericAsStridedOperation,
             "broadcast_to": BroadcastOperation,
+            "ceil": GenericCeilOperation,
+            "clamp": GenericClampOperation,
+            "conv_general": GenericConvGeneralOperation,
+            "cos": GenericCosOperation,
+            "cumsum": GenericCumsumOperation,
             "div": GenericDivOperation,
             "elu": GenericELUOperation,
             "elementwise_mul": GenericElementwiseMulOperation,
             "exp": GenericExpOperation,
+            "exp2": GenericExp2Operation,
+            "eq": GenericEqOperation,
+            "erf": GenericErfOperation,
+            "floor": GenericFloorOperation,
+            "gather": GenericGatherOperation,
             "gelu": GenericGELUOperation,
+            "le": GenericLeOperation,
             "leaky_relu": GenericLeakyReLUOperation,
+            "logical_not": GenericLogicalNotOperation,
+            "log": GenericLogOperation,
+            "log2": GenericLog2Operation,
+            "lt": GenericLtOperation,
             "matmul": GenericMatmulOperation,
+            "maximum": GenericMaximumOperation,
+            "minimum": GenericMinimumOperation,
             "mul": GenericScalarMulOperation,
+            "ne": GenericNeOperation,
+            "neg": GenericNegOperation,
             "permute": PermuteOperation,
             "pow": GenericPowOperation,
             "rearrange": RearrangeOperation,
-            "reduce": GenericReduceSumOperation,
+            "reduce_max": GenericReduceMaxOperation,
+            "reduce_min": GenericReduceMinOperation,
+            "reduce_prod": GenericReduceProdOperation,
+            "reduce_sum": GenericPlannedReduceSumOperation,
             "relu": GenericReLUOperation,
+            "recip": GenericRecipOperation,
+            "rem": GenericRemOperation,
+            "reshape": ReshapeOperation,
+            "round": GenericRoundOperation,
+            "rsqrt": GenericRsqrtOperation,
+            "scatter": GenericScatterOperation,
+            "scatter_add": GenericScatterAddOperation,
+            "select": GenericSelectOperation,
             "sigmoid": GenericSigmoidOperation,
             "silu": GenericSiLUOperation,
+            "sign": GenericSignOperation,
+            "sin": GenericSinOperation,
             "softplus": GenericSoftplusOperation,
             "sub": GenericSubOperation,
+            "squeeze": SqueezeOperation,
+            "sqrt": GenericSqrtOperation,
             "tanh": GenericTanhOperation,
+            "unsqueeze": UnsqueezeOperation,
             "view": GenericViewOperation,
+            "_sort_values": GenericSortValuesOperation,
+            "_sort_indices": GenericSortIndicesOperation,
+            "_topk_values": GenericTopKValuesOperation,
+            "_topk_indices": GenericTopKIndicesOperation,
         }
         try:
             operation_type = operations[operation_name]

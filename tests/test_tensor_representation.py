@@ -325,6 +325,187 @@ def test_multi_subtensor_accessors_read_the_authoritative_representation():
     assert len(version_token) == 2
 
 
+def test_multi_subtensor_layout_views_transform_only_c0_domains():
+    first = sw.Generic([1.0] * 4, dtype=sw.DType.Float32)
+    second = sw.Generic([1.0] * 2, dtype=sw.DType.Float32)
+    tensor = multi_float_tensor(first, second)
+
+    permuted = sw.permute(tensor, 1, 0)
+    assert permuted.carrier is first
+    assert permuted._representation.subtensors[0].layout == placement(
+        sw.Shape([2, 2]), sw.Stride([2, 1])
+    )
+    assert (
+        permuted._representation.subtensors[1].layout
+        == tensor._representation.subtensors[1].layout
+    )
+    assert permuted._representation.adjacent_layouts[0] == placement(
+        sw.Shape([2, 2]), sw.Stride([1, 0])
+    )
+
+    expanded = sw.unsqueeze(tensor, 1)
+    assert expanded._representation.subtensors[0].layout == placement(
+        sw.Shape([2, 1, 2]), sw.Stride([1, 0, 2])
+    )
+    assert (
+        expanded._representation.subtensors[1].layout
+        == tensor._representation.subtensors[1].layout
+    )
+    assert expanded._representation.adjacent_layouts[0] == placement(
+        sw.Shape([2, 1, 2]), sw.Stride([0, 0, 1])
+    )
+
+    broadcast = sw.broadcast_to(expanded, sw.Shape([2, 3, 2]))
+    assert broadcast._representation.subtensors[0].layout == placement(
+        sw.Shape([2, 3, 2]), sw.Stride([1, 0, 2])
+    )
+    assert broadcast._representation.subtensors[0].carrier is first
+    assert broadcast._representation.subtensors[1].carrier is second
+
+    squeezed = sw.squeeze(expanded, 1)
+    assert (
+        squeezed._representation.subtensors[0].layout
+        == tensor._representation.subtensors[0].layout
+    )
+    assert (
+        squeezed._representation.adjacent_layouts[0]
+        == tensor._representation.adjacent_layouts[0]
+    )
+
+
+@pytest.mark.parametrize("backend", ["generic", "cpu"])
+def test_multi_subtensor_slice_preserves_representation_and_shared_versions(
+    backend: str,
+) -> None:
+    if backend == "cpu":
+        first: sw.Carrier = sw.CPU(4, dtype=sw.DType.Float32)
+        second: sw.Carrier = sw.CPU(2, dtype=sw.DType.Float32)
+    else:
+        first = sw.Generic([1.0] * 4, dtype=sw.DType.Float32)
+        second = sw.Generic([1.0] * 2, dtype=sw.DType.Float32)
+    tensor = multi_float_tensor(first, second)
+
+    view = tensor[:, :1]
+
+    assert view.dtype() is tensor.dtype()
+    assert view._representation.subtensors[0].carrier is first
+    assert view._representation.subtensors[1].carrier is second
+    assert view._representation.subtensors[0].layout == placement(
+        sw.Shape([2, 1]), sw.Stride([1, 2])
+    )
+    assert view._representation.adjacent_layouts[0] == placement(
+        sw.Shape([2, 1]), sw.Stride([0, 1])
+    )
+    assert view._version_token() == tensor._version_token()
+    first.set_value(0, 7.0)
+    assert view._version_token() == tensor._version_token()
+
+
+def test_multi_subtensor_slice_backward_scatters_every_plane() -> None:
+    tensor = multi_float_tensor(
+        sw.Generic([1.0, 2.0, 3.0, 4.0], dtype=sw.DType.Float32),
+        sw.Generic([10.0, 20.0], dtype=sw.DType.Float32),
+    )
+    operation = tensor.carrier.dispatch_op("view")
+    operation.forward(tensor, (slice(None), slice(None, 1)))
+    operation.store_inputs(tensor)
+    gradient = multi_float_tensor(
+        sw.Generic([5.0, 7.0, 0.0, 0.0], dtype=sw.DType.Float32),
+        sw.Generic([11.0, 13.0], dtype=sw.DType.Float32),
+    )[:, :1]
+
+    (input_gradient,) = operation.backward(gradient)
+
+    assert input_gradient._representation.subtensors[0].layout == tensor.layout
+    assert (
+        input_gradient._representation.adjacent_layouts
+        == tensor._representation.adjacent_layouts
+    )
+    assert [
+        input_gradient._representation.subtensors[0].carrier[index]
+        for index in range(4)
+    ] == [5.0, 7.0, 0.0, 0.0]
+    assert [
+        input_gradient._representation.subtensors[1].carrier[index]
+        for index in range(2)
+    ] == [11.0, 13.0]
+
+
+def test_multi_subtensor_slice_rejects_nonzero_logical_origins() -> None:
+    tensor = multi_float_tensor(
+        sw.Generic([1.0] * 4, dtype=sw.DType.Float32),
+        sw.Generic([1.0] * 2, dtype=sw.DType.Float32),
+    )
+
+    with pytest.raises(NotImplementedError, match="normalized start 0"):
+        tensor[:, 1:]
+    with pytest.raises(NotImplementedError, match="normalized start 0"):
+        tensor[:, 1]
+
+
+def test_cpu_backed_multi_subtensor_layout_views_preserve_every_plane():
+    first = sw.CPU(4, dtype=sw.DType.Float32)
+    second = sw.CPU(2, dtype=sw.DType.Float32)
+    tensor = multi_float_tensor(first, second)
+
+    view = sw.broadcast_to(sw.unsqueeze(tensor, 1), sw.Shape([2, 3, 2]))
+
+    assert view._representation.subtensors[0].carrier is first
+    assert view._representation.subtensors[1].carrier is second
+    assert view._representation.subtensors[0].layout == placement(
+        sw.Shape([2, 3, 2]), sw.Stride([1, 0, 2])
+    )
+    assert (
+        view._representation.subtensors[1].layout
+        == tensor._representation.subtensors[1].layout
+    )
+
+
+def test_cpu_multi_subtensor_non_view_operations_remain_rejected():
+    first = sw.CPU(4, dtype=sw.DType.Float32)
+    second = sw.CPU(2, dtype=sw.DType.Float32)
+    tensor = multi_float_tensor(first, second)
+    destination = sw.CPU(4, dtype=sw.DType.Float32)
+    versions = (first.version, second.version, destination.version)
+
+    operations = (
+        lambda: sw.add(tensor, tensor),
+        lambda: sw.rearrange(tensor, "a b -> b a"),
+        lambda: sw.move(tensor, destination),
+    )
+    for operation in operations:
+        with pytest.raises(
+            NotImplementedError,
+            match="Multi-subtensor Tensor operation execution",
+        ):
+            operation()
+
+    assert (first.version, second.version, destination.version) == versions
+    assert not first.is_released()
+    assert not second.is_released()
+
+
+def test_multi_subtensor_evictable_view_refuses_before_plane_loss():
+    first = sw.Evictable(
+        sw.Generic([1.0] * 4, dtype=sw.DType.Float32),
+        sw.Generic([0.0] * 4, dtype=sw.DType.Float32),
+    )
+    second = sw.Evictable(
+        sw.Generic([1.0] * 2, dtype=sw.DType.Float32),
+        sw.Generic([0.0] * 2, dtype=sw.DType.Float32),
+    )
+    tensor = multi_float_tensor(first, second)
+    versions = (first.version, second.version)
+
+    with pytest.raises(
+        NotImplementedError,
+        match="Multi-subtensor Tensor Evictable operation lowering",
+    ):
+        sw.permute(tensor, 1, 0)
+
+    assert (first.version, second.version) == versions
+
+
 def test_multi_subtensor_entry_points_fail_before_generic_carrier_effects():
     first = sw.Generic([1.0] * 4, dtype=sw.DType.Float32)
     second = sw.Generic([1.0] * 2, dtype=sw.DType.Float32)
@@ -336,11 +517,9 @@ def test_multi_subtensor_entry_points_fail_before_generic_carrier_effects():
         tensor[0]
     with pytest.raises(NotImplementedError, match="Multi-subtensor Tensor mutation"):
         tensor[0] = 2.0
-    with pytest.raises(
-        NotImplementedError,
-        match="Multi-subtensor Tensor operation execution",
-    ):
-        tensor[:, 0]
+    assert tensor[:, 0]._representation.subtensors[0].layout == placement(
+        sw.Shape(2), sw.Stride(1)
+    )
     with pytest.raises(
         NotImplementedError,
         match="Multi-subtensor Tensor operation execution",

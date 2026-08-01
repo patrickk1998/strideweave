@@ -35,7 +35,8 @@ TWO_MODE = Layout(Shape([2, 2]), Stride([1, 2]))
 
 def cpu_tensor(dtype: DType, layout: Layout) -> Tensor:
     carrier = CPU(4, dtype=dtype)
-    for index, value in enumerate((1, 2, 3, 4)):
+    values = (True, False, True, False) if dtype is DType.Bool else (1, 2, 3, 4)
+    for index, value in enumerate(values):
         carrier[index] = value
     return Tensor(carrier, 0, layout)
 
@@ -105,15 +106,27 @@ def test_cpu_declares_only_shapes_its_kernels_implement():
     # An accumulating kernel needs an accumulation and an elementwise kernel has
     # nowhere to apply one, so the two are declared apart rather than left to a
     # branch to sort out.
-    for operation in ("reduce", "matmul"):
+    for operation in ("reduce_sum", "matmul"):
         for capability in capabilities_for_carrier_class(CPU, operation):
             assert capability.accumulation is not None
+    accumulating_operations = {
+        "reduce_sum",
+        "reduce_prod",
+        "reduce_max",
+        "reduce_min",
+        "argmax",
+        "argmin",
+        "cumsum",
+        "matmul",
+        "conv_general",
+        "scatter_add",
+    }
     for capability in capabilities_for_carrier_class(CPU):
-        if capability.operation not in ("reduce", "matmul"):
+        if capability.operation not in accumulating_operations:
             assert capability.accumulation is None
 
 
-@pytest.mark.parametrize("operation", ["reduce", "matmul"])
+@pytest.mark.parametrize("operation", ["reduce_sum", "matmul"])
 def test_an_accumulating_plan_without_an_accumulation_is_unsupported(operation):
     # The confirmed bug this boundary exists for: an Int32 reduce plan carrying
     # no accumulation entered the floating branch and wrote Float32 bit patterns
@@ -138,7 +151,7 @@ def test_an_accumulating_plan_without_an_accumulation_is_unsupported(operation):
     ids=["compute", "output", "accumulation"],
 )
 def test_a_plan_disagreeing_with_the_kernel_is_unsupported(overrides):
-    integer_reduce = resolve_operation_plan("reduce", DType.Int32)
+    integer_reduce = resolve_operation_plan("reduce_sum", DType.Int32)
 
     assert not supports_operation_plan(
         CPU, dataclasses.replace(integer_reduce, **overrides)
@@ -162,7 +175,7 @@ resolve = operation_policy.resolve_operation_plan
 
 def injected(operation, *operands):
     plan = resolve(operation, *operands)
-    if operation == "reduce":
+    if operation == "reduce_sum":
         return dataclasses.replace(plan, accumulation=None)
     return plan
 
@@ -175,7 +188,7 @@ for index, value in enumerate((1, 2, 3, 4)):
 tensor = Tensor(carrier, 0, Layout(Shape([2, 2]), Stride([1, 2])))
 
 try:
-    sw.reduce(tensor)
+    sw.reduce_sum(tensor, "a b -> a")
 except UnsupportedOperationPlan as error:
     assert "CPU declares no" in str(error), error
 else:
@@ -197,7 +210,7 @@ def test_every_declared_capability_executes_on_a_real_tensor():
         arguments = _arguments_for(capability)
         if arguments is None:
             continue
-        result = getattr(sw, capability.operation)(*arguments)
+        result = _execute_capability(capability.operation, arguments)
         executed += 1
 
         assert result.dtype() is capability.output
@@ -206,11 +219,58 @@ def test_every_declared_capability_executes_on_a_real_tensor():
 
 def _arguments_for(capability):
     """Build real operands matching one capability's operand shape."""
-    layout = TWO_MODE if capability.operation in ("reduce", "matmul") else ONE_MODE
+    operation = capability.operation
+    if operation in {"_sort_values", "_sort_indices", "_topk_values", "_topk_indices"}:
+        return (cpu_tensor(DType.Float32, ONE_MODE),)
+    if operation == "conv_general":
+        lhs = cpu_tensor(DType.Float32, Layout(Shape([1, 1, 2]), Stride([1, 1, 1])))
+        kernel = cpu_tensor(DType.Float32, Layout(Shape([1, 1, 1]), Stride([1, 1, 1])))
+        return (lhs, kernel, (1,), ((0, 0),))
+    if operation == "gather":
+        source = cpu_tensor(DType.Float32, Layout(Shape([2, 2]), Stride([1, 2])))
+        indices = cpu_tensor(DType.Int32, Layout(Shape(1), Stride(1)))
+        return (source, indices, 0)
+    if operation in {"scatter", "scatter_add"}:
+        base = cpu_tensor(DType.Float32, TWO_MODE)
+        indices = cpu_tensor(DType.Int32, Layout(Shape(1), Stride(1)))
+        updates = cpu_tensor(DType.Float32, Layout(Shape([1, 2]), Stride([1, 1])))
+        return (base, indices, updates, 0)
+
+    reducing_operations = {
+        "reduce_sum",
+        "reduce_prod",
+        "reduce_max",
+        "reduce_min",
+        "argmax",
+        "argmin",
+    }
+    layout = TWO_MODE if operation in reducing_operations | {"matmul"} else ONE_MODE
     arguments = []
     for operand in capability.operands:
         if operand.role is OperandRole.TENSOR:
             arguments.append(cpu_tensor(operand.dtype, layout))
         else:
             arguments.append(3 if operand.convert_to is DType.Int32 else 0.5)
+    if operation in reducing_operations:
+        arguments.append("a b -> a")
+    elif operation == "cumsum":
+        arguments.append(0)
     return tuple(arguments)
+
+
+def _execute_capability(operation: str, arguments: tuple[object, ...]):
+    """Call public wrappers for private sort/top-k capability names."""
+    tensor = arguments[0] if arguments else None
+    if operation == "_sort_values":
+        assert isinstance(tensor, Tensor)
+        return sw.sort(tensor).values
+    if operation == "_sort_indices":
+        assert isinstance(tensor, Tensor)
+        return sw.sort(tensor).indices
+    if operation == "_topk_values":
+        assert isinstance(tensor, Tensor)
+        return sw.topk(tensor, 2).values
+    if operation == "_topk_indices":
+        assert isinstance(tensor, Tensor)
+        return sw.topk(tensor, 2).indices
+    return getattr(sw, operation)(*arguments)

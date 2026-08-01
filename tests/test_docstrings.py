@@ -1,4 +1,5 @@
 import ast
+import doctest
 import inspect
 from collections.abc import Callable
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import cast
 import strideweave as sw
 import strideweave.einops as einops
 import strideweave.friendly as friendly
+import strideweave.functional.api as functional_api
 import strideweave.nn as nn
 import strideweave.operation as operation
 
@@ -155,6 +157,20 @@ def test_documentable_top_level_exports_have_docstrings():
         assert_has_docstring(value, qualified_name)
         if inspect.isfunction(value):
             assert_function_doc_contract(value, qualified_name)
+
+
+def test_new_operation_examples_execute_with_explicit_friendly_imports() -> None:
+    selected = []
+    tensor_references = 0
+    for test in doctest.DocTestFinder().find(functional_api):
+        references = sum(example.source.count("F.tensor") for example in test.examples)
+        if references or test.name.endswith(".as_strided"):
+            selected.append(test)
+            tensor_references += references
+
+    assert tensor_references >= 45
+    for test in selected:
+        doctest.DebugRunner().run(test)
 
 
 def test_operation_runtime_exports_match_stub_declarations():

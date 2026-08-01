@@ -131,7 +131,7 @@ class MSELoss(Module):
 
     The loss is composed from primitives: elementwise difference, square via
     ``pow``, reduction of all elements to the scalar layout ``Shape(1)``
-    through the ``"a b -> 1"`` reduce description, and scaling by the
+    through the ``"a b -> 1"`` ``reduce_sum`` description, and scaling by the
     reciprocal element count. The result supports ``backward()`` with an
     implicit unit gradient.
 

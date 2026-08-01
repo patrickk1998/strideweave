@@ -16,7 +16,9 @@ from strideweave import (
     PermuteOperation,
     RearrangeOperation,
     Shape,
+    SqueezeOperation,
     Stride,
+    UnsqueezeOperation,
 )
 from strideweave.carriers.operation_helpers import execute_lowered_operation
 from strideweave.tensor import Tensor
@@ -220,7 +222,7 @@ def test_cpu_dispatch_op_returns_supported_operations():
         "matmul": "_CPUMatmulOperation",
         "mul": "_CPUScalarMulOperation",
         "pow": "_CPUPowOperation",
-        "reduce": "_CPUReduceSumOperation",
+        "reduce_sum": "_CPUReduceSumOperation",
         "relu": "_CPUReLUOperation",
         "sigmoid": "_CPUSigmoidOperation",
         "silu": "_CPUSiLUOperation",
@@ -240,6 +242,8 @@ def test_cpu_dispatch_op_returns_supported_operations():
 
     assert isinstance(carrier.dispatch_op("permute"), PermuteOperation)
     assert isinstance(carrier.dispatch_op("rearrange"), RearrangeOperation)
+    assert isinstance(carrier.dispatch_op("squeeze"), SqueezeOperation)
+    assert isinstance(carrier.dispatch_op("unsqueeze"), UnsqueezeOperation)
     assert isinstance(carrier.dispatch_op("view"), GenericViewOperation)
 
     with pytest.raises(NotImplementedError):
@@ -525,7 +529,7 @@ def test_cpu_int32_add_and_elementwise_mul_keep_int32_without_autograd():
     rhs = make_cpu_tensor([10, 20, 30, 40], layout, DType.Int32)
 
     add_result = lhs + rhs
-    mul_result = lhs * rhs
+    mul_result = sw.elementwise_mul(lhs, rhs)
 
     assert add_result.dtype() is DType.Int32
     assert tensor_values(add_result) == [11, 22, 33, 44]
@@ -638,7 +642,7 @@ def test_cpu_elementwise_mul_uses_native_operation_and_backpropagates():
     lhs = make_cpu_tensor(range(layout._cache.cosize), layout)
     rhs = make_cpu_tensor(range(10, 10 + layout._cache.cosize), layout)
 
-    result = lhs * rhs
+    result = sw.elementwise_mul(lhs, rhs)
     gradient = make_cpu_tensor([1.0] * result.layout.cosize, result.layout)
     result.backward(gradient)
     lhs_grad = require_grad(lhs)
@@ -695,7 +699,7 @@ def test_cpu_int32_pow_relu_reduce_and_matmul_preserve_int32():
 
     pow_result = tensor**2
     relu_result = sw.relu(tensor)
-    reduce_result = sw.reduce(reduce_tensor)
+    reduce_result = sw.reduce_sum(reduce_tensor, "a b -> a")
     matmul_result = lhs @ rhs
 
     assert pow_result.dtype() is DType.Int32
@@ -738,11 +742,14 @@ def test_cpu_int32_operations_raise_on_overflow():
     with pytest.raises(OverflowError):
         _ = make_cpu_tensor([max_int32], one_mode, DType.Int32) * 2
     with pytest.raises(OverflowError):
-        _ = make_cpu_tensor([50_000], one_mode, DType.Int32) * make_cpu_tensor(
-            [50_000], one_mode, DType.Int32
+        _ = sw.elementwise_mul(
+            make_cpu_tensor([50_000], one_mode, DType.Int32),
+            make_cpu_tensor([50_000], one_mode, DType.Int32),
         )
     with pytest.raises(OverflowError):
-        sw.reduce(make_cpu_tensor([max_int32, 1], two_mode, DType.Int32))
+        sw.reduce_sum(
+            make_cpu_tensor([max_int32, 1], two_mode, DType.Int32), "a b -> a"
+        )
     with pytest.raises(OverflowError):
         _ = make_cpu_tensor([max_int32], matmul_layout, DType.Int32) @ make_cpu_tensor(
             [2], matmul_layout, DType.Int32
@@ -822,7 +829,7 @@ def test_cpu_reduce_sums_second_mode_and_backpropagates():
         Layout(Shape([2, 3]), Stride([1, 2])),
     )
 
-    result = sw.reduce(tensor)
+    result = sw.reduce_sum(tensor, "a b -> a")
     gradient = make_cpu_tensor([10.0, 20.0], result.layout)
     result.backward(gradient)
     tensor_grad = require_grad(tensor)
@@ -838,7 +845,7 @@ def test_cpu_reduce_uses_expanded_keys_for_hierarchical_modes():
     layout = Layout(Shape([[2, 2], [3, 2]]), Stride([[1, 5], [20, 7]]))
     tensor = make_cpu_tensor(range(layout._cache.cosize), layout)
 
-    result = sw.reduce(tensor)
+    result = sw.reduce_sum(tensor, "a b -> a")
     gradient = make_cpu_tensor([10.0, 20.0, 30.0, 40.0], result.layout)
     result.backward(gradient)
     tensor_grad = require_grad(tensor)

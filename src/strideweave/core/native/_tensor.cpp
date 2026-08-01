@@ -1033,8 +1033,8 @@ PYBIND11_MODULE(_tensor, module) {
             "__getitem__",
             [](py::object self, py::object key) {
                 if (contains_slice(key)) {
-                    return py::module_::import("strideweave.operation")
-                        .attr("view")(self, key);
+                    return py::module_::import("strideweave.functional.api")
+                        .attr("_view")(self, key);
                 }
                 Tensor& tensor = py::cast<Tensor&>(self);
                 return tensor.get_item(key);

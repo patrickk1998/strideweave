@@ -170,6 +170,18 @@ private:
     }
 
     void require_single_subtensor_inputs(py::args inputs) {
+        // Pure c0 layout views preserve every plane and are the only v0
+        // operations allowed to execute on a generalized representation.
+        // Arithmetic, movement, and coordinate indexing retain the
+        // one-subtensor preflight until their per-plane semantics exist.
+        const bool layout_view =
+            operation_name_ == "broadcast_to" || operation_name_ == "permute" ||
+            operation_name_ == "reshape" || operation_name_ == "as_strided" ||
+            operation_name_ == "squeeze" || operation_name_ == "unsqueeze" ||
+            operation_name_ == "view";
+        if (layout_view) {
+            return;
+        }
         py::object tensor = tensor_type();
         for (py::handle input : inputs) {
             if (py::isinstance(input, tensor)) {

@@ -50,12 +50,19 @@ public:
                 if (!empty) {
                     std::fill_n(data_as<float>(), allocation_size, 0.0f);
                 }
-            } else {
+            } else if (dtype_ == CpuDType::Int32) {
                 owned_int_data_ =
                     std::unique_ptr<std::int32_t[]>(new std::int32_t[allocation_size]);
                 data_ = reinterpret_cast<std::byte*>(owned_int_data_.get());
                 if (!empty) {
                     std::fill_n(data_as<std::int32_t>(), allocation_size, 0);
+                }
+            } else {
+                owned_bool_data_ =
+                    std::unique_ptr<std::uint8_t[]>(new std::uint8_t[allocation_size]);
+                data_ = reinterpret_cast<std::byte*>(owned_bool_data_.get());
+                if (!empty) {
+                    std::fill_n(data_as<std::uint8_t>(), allocation_size, 0);
                 }
             }
             return;
@@ -82,6 +89,9 @@ public:
     py::object get_value(Index index) const override {
         if (dtype_ == CpuDType::Float32) {
             return py::float_(element<float>(index));
+        }
+        if (dtype_ == CpuDType::Bool) {
+            return py::bool_(element<std::uint8_t>(index) != 0);
         }
         return py::int_(element<std::int32_t>(index));
     }
@@ -177,11 +187,12 @@ protected:
 
     bool _is_mutable() const override { return is_mutable_; }
 
-    // The kernels are written for these two encodings, whichever one this
-    // carrier currently holds; parse_cpu_dtype accepts exactly the same pair.
+    // The kernels are written for these encodings, whichever one this carrier
+    // currently holds; parse_cpu_dtype accepts exactly the same set.
     bool _supports_storage_dtype(py::object dtype) const override {
         const CpuBindings& bindings = cpu_bindings();
-        return dtype.is(bindings.float32) || dtype.is(bindings.int32);
+        return dtype.is(bindings.float32) || dtype.is(bindings.int32) ||
+               dtype.is(bindings.boolean);
     }
 
     void set_value(Index index, py::object value) override {
@@ -191,6 +202,7 @@ protected:
     void _release() override {
         owned_float_data_.reset();
         owned_int_data_.reset();
+        owned_bool_data_.reset();
         data_ = nullptr;
         size_ = 0;
     }
@@ -199,16 +211,23 @@ private:
     void write_zero(Index index) {
         if (dtype_ == CpuDType::Float32) {
             element<float>(index) = 0.0f;
-        } else {
+        } else if (dtype_ == CpuDType::Int32) {
             element<std::int32_t>(index) = 0;
+        } else {
+            element<std::uint8_t>(index) = 0;
         }
     }
 
     void set_value_at(Index index, py::handle value) {
         if (dtype_ == CpuDType::Float32) {
             element<float>(index) = py::cast<float>(value);
-        } else {
+        } else if (dtype_ == CpuDType::Int32) {
             element<std::int32_t>(index) = require_int32(value, "CPU value");
+        } else {
+            if (!py::isinstance<py::bool_>(value)) {
+                throw py::type_error("CPU value must be a bool for Bool storage");
+            }
+            element<std::uint8_t>(index) = py::cast<bool>(value) ? 1U : 0U;
         }
     }
 
@@ -241,6 +260,7 @@ private:
     bool is_mutable_;
     std::unique_ptr<float[]> owned_float_data_;
     std::unique_ptr<std::int32_t[]> owned_int_data_;
+    std::unique_ptr<std::uint8_t[]> owned_bool_data_;
     std::byte* data_ = nullptr;
 };
 
@@ -442,7 +462,48 @@ struct CpuTensorView {
         if (carrier->cpu_dtype() == CpuDType::Float32) {
             return carrier->unchecked_element<float>(index);
         }
-        return static_cast<float>(carrier->unchecked_element<std::int32_t>(index));
+        if (carrier->cpu_dtype() == CpuDType::Int32) {
+            return static_cast<float>(carrier->unchecked_element<std::int32_t>(index));
+        }
+        return carrier->unchecked_element<std::uint8_t>(index) != 0 ? 1.0f : 0.0f;
+    }
+
+    std::int32_t read_int_storage(Index index) const {
+        if (carrier->cpu_dtype() == CpuDType::Int32) {
+            return carrier->unchecked_element<std::int32_t>(index);
+        }
+        if (carrier->cpu_dtype() == CpuDType::Bool) {
+            return carrier->unchecked_element<std::uint8_t>(index) != 0 ? 1 : 0;
+        }
+        return static_cast<std::int32_t>(carrier->unchecked_element<float>(index));
+    }
+
+    bool read_bool_storage(Index index) const {
+        if (carrier->cpu_dtype() == CpuDType::Bool) {
+            return carrier->unchecked_element<std::uint8_t>(index) != 0;
+        }
+        if (carrier->cpu_dtype() == CpuDType::Int32) {
+            return carrier->unchecked_element<std::int32_t>(index) != 0;
+        }
+        return carrier->unchecked_element<float>(index) != 0.0f;
+    }
+
+    bool read_bool_expanded(const Index* key, std::size_t size) const {
+        return read_bool_storage(offset + cache->index_expanded(key, size));
+    }
+
+    bool read_bool_expanded(const std::vector<Index>& key) const {
+        return read_bool_expanded(key.data(), key.size());
+    }
+
+    void write_bool_expanded(const Index* key, std::size_t size, bool value) const {
+        const Index layout_index = cache->index_expanded(key, size);
+        carrier->unchecked_element<std::uint8_t>(offset + layout_index) =
+            value ? 1U : 0U;
+    }
+
+    void write_bool_expanded(const std::vector<Index>& key, bool value) const {
+        write_bool_expanded(key.data(), key.size(), value);
     }
 };
 
@@ -477,6 +538,12 @@ inline void CPU::scatter(py::object to_scatter, py::object scatter_onto,
     if (!layouts_equal(mapping_shape, source_shape)) {
         throw py::value_error("mapping shape must match to_scatter layout shape");
     }
+    if (dtype_ == CpuDType::Bool && source.carrier->cpu_dtype() != CpuDType::Bool) {
+        throw py::type_error("cannot scatter non-Bool values into a Bool CPU carrier");
+    }
+    if (dtype_ != CpuDType::Bool && source.carrier->cpu_dtype() == CpuDType::Bool) {
+        throw py::type_error("cannot scatter Bool values into a numeric CPU carrier");
+    }
     if (dtype_ == CpuDType::Int32 && source.carrier->cpu_dtype() != CpuDType::Int32) {
         throw py::type_error("cannot scatter Float32 values into an Int32 CPU carrier");
     }
@@ -505,9 +572,13 @@ inline void CPU::scatter(py::object to_scatter, py::object scatter_onto,
             if (dtype_ == CpuDType::Float32) {
                 unchecked_element<float>(destination_index) =
                     source.read_float_storage(source.offset + source_index);
-            } else {
+            } else if (dtype_ == CpuDType::Int32) {
                 unchecked_element<std::int32_t>(destination_index) =
                     source.carrier->unchecked_element<std::int32_t>(source.offset +
+                                                                    source_index);
+            } else {
+                unchecked_element<std::uint8_t>(destination_index) =
+                    source.carrier->unchecked_element<std::uint8_t>(source.offset +
                                                                     source_index);
             }
             mapping_cache.increment_key(key.data(), key.size());
