@@ -31,7 +31,7 @@ namespace py = pybind11;
 
 namespace strideweave::carrier {
 
-enum class CpuDType { Float32, Int32 };
+enum class CpuDType { Float32, Int32, Bool };
 
 // Mirrors strideweave.carriers.operation_policy.Arithmetic. Binary32 is
 // IEEE-754 binary32; Int32ExactChecked evaluates exactly over the integers and
@@ -41,7 +41,16 @@ enum class CpuArithmetic { Binary32, Int32ExactChecked, Int32Exact };
 
 // Mirrors strideweave.carriers.operation_policy.Accumulation, plus None for an
 // operation that combines no terms.
-enum class CpuAccumulation { None, SequentialBinary32, ExactInteger };
+enum class CpuAccumulation {
+    None,
+    SequentialBinary32,
+    SequentialBinary32Product,
+    Maximum,
+    Minimum,
+    Argmax,
+    Argmin,
+    ExactInteger,
+};
 
 struct CpuBindings {
     py::object resolve_operation_plan;
@@ -50,10 +59,16 @@ struct CpuBindings {
     py::object compound_dtype;
     py::object float32;
     py::object int32;
+    py::object boolean;
     py::object binary32;
     py::object int32_exact_checked;
     py::object int32_exact;
     py::object sequential_binary32;
+    py::object sequential_binary32_product;
+    py::object maximum;
+    py::object minimum;
+    py::object argmax;
+    py::object argmin;
     py::object exact_integer;
 };
 
@@ -77,10 +92,16 @@ inline const CpuBindings& cpu_bindings() {
             carriers.attr("CompoundDType"),
             dtype.attr("Float32"),
             dtype.attr("Int32"),
+            dtype.attr("Bool"),
             arithmetic.attr("BINARY32"),
             arithmetic.attr("INT32_EXACT_CHECKED"),
             arithmetic.attr("INT32_EXACT"),
             accumulation.attr("SEQUENTIAL_BINARY32"),
+            accumulation.attr("SEQUENTIAL_BINARY32_PRODUCT"),
+            accumulation.attr("MAXIMUM"),
+            accumulation.attr("MINIMUM"),
+            accumulation.attr("ARGMAX"),
+            accumulation.attr("ARGMIN"),
             accumulation.attr("EXACT_INTEGER"),
         };
     }();
@@ -115,15 +136,25 @@ inline CpuDType parse_cpu_dtype(py::handle dtype) {
     if (dtype.is(bindings.int32)) {
         return CpuDType::Int32;
     }
+    if (dtype.is(bindings.boolean)) {
+        return CpuDType::Bool;
+    }
     if (py::isinstance(dtype, bindings.compound_dtype)) {
         throw_compound_dtype_error(dtype);
     }
-    throw py::value_error("CPU dtype must be DType.Float32 or DType.Int32");
+    throw py::value_error(
+        "CPU dtype must be DType.Float32, DType.Int32, or DType.Bool");
 }
 
 inline py::object cpu_dtype_object(CpuDType dtype) {
     const CpuBindings& bindings = cpu_bindings();
-    return dtype == CpuDType::Float32 ? bindings.float32 : bindings.int32;
+    if (dtype == CpuDType::Float32) {
+        return bindings.float32;
+    }
+    if (dtype == CpuDType::Int32) {
+        return bindings.int32;
+    }
+    return bindings.boolean;
 }
 
 // One operation's resolved policy, in the form the kernels consume.
@@ -159,6 +190,21 @@ inline CpuAccumulation parse_cpu_accumulation(py::handle value) {
     }
     if (value.is(bindings.sequential_binary32)) {
         return CpuAccumulation::SequentialBinary32;
+    }
+    if (value.is(bindings.sequential_binary32_product)) {
+        return CpuAccumulation::SequentialBinary32Product;
+    }
+    if (value.is(bindings.maximum)) {
+        return CpuAccumulation::Maximum;
+    }
+    if (value.is(bindings.minimum)) {
+        return CpuAccumulation::Minimum;
+    }
+    if (value.is(bindings.argmax)) {
+        return CpuAccumulation::Argmax;
+    }
+    if (value.is(bindings.argmin)) {
+        return CpuAccumulation::Argmin;
     }
     if (value.is(bindings.exact_integer)) {
         return CpuAccumulation::ExactInteger;

@@ -581,22 +581,22 @@ def test_einops_reduce_string_api_reduces_omitted_dimensions():
     assert isinstance(result.autograd_ctx, GenericReduceSumOperation)
 
 
-def test_top_level_reduce_accepts_einops_string_descriptions():
+def test_top_level_reduce_sum_accepts_einops_string_descriptions():
     layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
     tensor = Tensor(Generic(range(layout.shape.logical_size)), 0, layout)
 
-    result = sw.reduce(tensor, "a (c d) b -> a c")
+    result = sw.reduce_sum(tensor, "a (c d) b -> a c")
 
     assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
     assert result[1, 2] == sum(tensor[1, [2, d], b] for d in range(4) for b in range(5))
 
 
-def test_top_level_reduce_rejects_non_string_description():
+def test_top_level_reduce_sum_rejects_non_string_description():
     tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
     description: Any = object()
 
     with pytest.raises(TypeError):
-        sw.reduce(tensor, description)
+        sw.reduce_sum(tensor, description)
     with pytest.raises(TypeError):
         einops_reduce(tensor, description)
 
@@ -637,7 +637,7 @@ def test_einops_reduce_string_api_works_with_cpu_tensors():
         [float(i) for i in range(layout.shape.logical_size)], layout
     )
 
-    result = sw.reduce(tensor, "a (c d) b -> a c")
+    result = sw.reduce_sum(tensor, "a (c d) b -> a c")
 
     assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
     assert tensor_values(result) == pytest.approx(

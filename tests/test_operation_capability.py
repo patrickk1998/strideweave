@@ -54,6 +54,7 @@ from strideweave.carriers.operation_policy import (
 
 F32 = DType.Float32
 I32 = DType.Int32
+BOOL = DType.Bool
 
 
 def plan(
@@ -108,13 +109,13 @@ def test_enumeration_is_deterministic_rather_than_registration_ordered():
     backend = carrier_class()
     relu = OperationCapability.from_plan(resolve_operation_plan("relu", F32))
     add = OperationCapability.from_plan(resolve_operation_plan("add", I32, I32))
-    reduce = OperationCapability.from_plan(resolve_operation_plan("reduce", F32))
+    reduce = OperationCapability.from_plan(resolve_operation_plan("reduce_sum", F32))
 
     register_operation_capabilities(backend, [relu, reduce, add])
 
     assert [entry.operation for entry in capabilities_for_carrier_class(backend)] == [
         "add",
-        "reduce",
+        "reduce_sum",
         "relu",
     ]
 
@@ -260,7 +261,7 @@ def test_a_declaration_racing_observers_is_all_or_nothing():
     # the sealed empty one, and the class never widens after an observation.
     entries = tuple(
         OperationCapability.from_plan(resolve_operation_plan(operation, I32))
-        for operation in ("relu", "reduce")
+        for operation in ("relu", "reduce_sum")
     )
     for _ in range(50):
         backend = carrier_class("RacedCarrier")
@@ -340,10 +341,10 @@ def test_a_plan_differing_in_one_field_does_not_match(overrides, reason):
 
 
 def test_a_declared_accumulation_is_not_satisfied_by_a_plan_without_one():
-    # The confirmed CPU bug: an Int32 reduce plan with no accumulation must not
-    # reach the accumulating branch a reduce capability describes.
+    # The confirmed CPU bug: an Int32 reduce-sum plan with no accumulation must
+    # not reach the accumulating branch a reduce capability describes.
     backend = carrier_class()
-    accumulating = resolve_operation_plan("reduce", I32)
+    accumulating = resolve_operation_plan("reduce_sum", I32)
     register_operation_capabilities(
         backend, [OperationCapability.from_plan(accumulating)]
     )
@@ -716,6 +717,37 @@ def test_a_shipped_backend_declares_exactly_what_it_executes():
     assert set(capabilities_for_carrier_class(sw.CPU)) == set(cpu_capabilities())
 
 
+@pytest.mark.parametrize("backend", [sw.Generic, sw.CPU], ids=["generic", "cpu"])
+def test_shipped_backends_declare_select_and_every_clamp_overload(backend):
+    select_plan = resolve_operation_plan("select", BOOL, F32, F32)
+    clamp_plans = (
+        resolve_operation_plan("clamp", F32, F32, F32),
+        resolve_operation_plan("clamp", F32, F32, 1.0),
+        resolve_operation_plan("clamp", F32, -1.0, F32),
+        resolve_operation_plan("clamp", F32, -1.0, 1.0),
+    )
+
+    assert set(capabilities_for_carrier_class(backend, "select")) == {
+        OperationCapability.from_plan(select_plan)
+    }
+    assert set(capabilities_for_carrier_class(backend, "clamp")) == {
+        OperationCapability.from_plan(plan) for plan in clamp_plans
+    }
+    assert supports_operation_plan(backend, select_plan)
+    assert all(supports_operation_plan(backend, plan) for plan in clamp_plans)
+
+    clamp_roles = {
+        tuple(operand.role for operand in entry.operands)
+        for entry in capabilities_for_carrier_class(backend, "clamp")
+    }
+    assert clamp_roles == {
+        (OperandRole.TENSOR, OperandRole.TENSOR, OperandRole.TENSOR),
+        (OperandRole.TENSOR, OperandRole.TENSOR, OperandRole.WEAK_SCALAR),
+        (OperandRole.TENSOR, OperandRole.WEAK_SCALAR, OperandRole.TENSOR),
+        (OperandRole.TENSOR, OperandRole.WEAK_SCALAR, OperandRole.WEAK_SCALAR),
+    }
+
+
 # --- Capability construction --------------------------------------------------
 
 
@@ -725,9 +757,14 @@ def test_a_capability_round_trips_the_plan_it_was_built_from():
         ("div", (I32, F32)),
         ("mul", (I32, 3)),
         ("pow", (F32, 0.5)),
-        ("reduce", (I32,)),
+        ("reduce_sum", (I32,)),
         ("matmul", (I32, I32)),
         ("exp", (I32,)),
+        ("select", (BOOL, F32, F32)),
+        ("clamp", (F32, F32, F32)),
+        ("clamp", (F32, F32, 1.0)),
+        ("clamp", (F32, -1.0, F32)),
+        ("clamp", (F32, -1.0, 1.0)),
     ):
         resolved = resolve_operation_plan(operation, *operands)
         entry = OperationCapability.from_plan(resolved)
@@ -748,6 +785,20 @@ def test_a_weak_scalar_capability_carries_no_storage_dtype():
     assert scalar.role is OperandRole.WEAK_SCALAR
     assert scalar.dtype is None
     assert scalar.convert_to is I32
+
+
+def test_clamp_weak_scalar_capabilities_carry_no_storage_dtype():
+    entry = OperationCapability.from_plan(
+        resolve_operation_plan("clamp", F32, -1.0, 1.0)
+    )
+    tensor, lower, upper = entry.operands
+
+    assert tensor.role is OperandRole.TENSOR
+    assert tensor.dtype is F32
+    for bound in (lower, upper):
+        assert bound.role is OperandRole.WEAK_SCALAR
+        assert bound.dtype is None
+        assert bound.convert_to is F32
 
 
 @pytest.mark.parametrize(
@@ -821,6 +872,11 @@ def test_a_carrier_reports_its_backend_capabilities(carrier):
     assert reported == capabilities_for_carrier_class(type(carrier))
     assert isinstance(reported, tuple)
     assert all(isinstance(entry, sw.OperationCapability) for entry in reported)
+    # Predicate plans and index-producing reductions coexist with the numeric
+    # plans in one backend registry; introspection must not narrow the result to
+    # a single output dtype.
+    outputs = {entry.output for entry in reported}
+    assert {DType.Bool, DType.Int32} <= outputs
 
 
 def test_capability_queries_do_not_filter_by_the_querying_carriers_dtype():
@@ -836,17 +892,28 @@ def test_capability_queries_do_not_filter_by_the_querying_carriers_dtype():
 def test_a_carrier_query_is_restricted_to_one_operation_in_a_stable_order():
     carrier = sw.CPU(1)
 
-    reported = carrier.operation_capabilities("relu")
+    # ``mul`` has tensor/tensor and tensor/weak-scalar overloads. The query is
+    # still restricted to the name and returns every exact shape in a stable
+    # order, rather than assuming one role signature per operation spec.
+    reported = carrier.operation_capabilities("mul")
 
-    assert {entry.operation for entry in reported} == {"relu"}
-    assert [entry.output.name for entry in reported] == ["Float32", "Int32"]
-    assert reported == carrier.operation_capabilities("relu")
+    assert {entry.operation for entry in reported} == {"mul"}
+    assert {entry.output for entry in reported} == {DType.Float32, DType.Int32}
+    assert any(
+        any(operand.role is OperandRole.WEAK_SCALAR for operand in entry.operands)
+        for entry in reported
+    )
+    assert any(
+        all(operand.role is OperandRole.TENSOR for operand in entry.operands)
+        for entry in reported
+    )
+    assert reported == carrier.operation_capabilities("mul")
 
 
 def test_an_unknown_operation_is_distinguished_from_an_unsupported_plan():
     carrier = sw.CPU(1)
     unsupported = dataclasses.replace(
-        resolve_operation_plan("reduce", I32), accumulation=None
+        resolve_operation_plan("reduce_sum", I32), accumulation=None
     )
 
     assert carrier.operation_capabilities("no_such_operation") == ()
@@ -855,9 +922,10 @@ def test_an_unknown_operation_is_distinguished_from_an_unsupported_plan():
     )
     reason = carrier.unsupported_plan_reason(unsupported)
     assert reason is not None
-    assert "for this 'reduce' plan" in reason
+    assert "for this 'reduce_sum' plan" in reason
     assert (
-        carrier.unsupported_plan_reason(resolve_operation_plan("reduce", I32)) is None
+        carrier.unsupported_plan_reason(resolve_operation_plan("reduce_sum", I32))
+        is None
     )
 
 
@@ -878,7 +946,7 @@ def test_a_carrier_requires_the_same_capability_execution_uses():
 def test_a_reported_capability_is_immutable_and_exposes_its_fields():
     (capability,) = [
         entry
-        for entry in sw.CPU(1).operation_capabilities("reduce")
+        for entry in sw.CPU(1).operation_capabilities("reduce_sum")
         if entry.output is I32
     ]
 
@@ -1301,10 +1369,12 @@ def test_a_dependent_carrier_distinguishes_an_unknown_operation_from_a_shape():
 
     assert reason is not None
     assert "for this 'relu' plan" in reason
-    assert carrier.unsupported_plan_reason(resolve_operation_plan("reduce", I32)) == (
-        "DiscriminatingDependent declares no operation-plan capability for 'reduce'"
+    assert carrier.unsupported_plan_reason(
+        resolve_operation_plan("reduce_sum", I32)
+    ) == (
+        "DiscriminatingDependent declares no operation-plan capability for 'reduce_sum'"
     )
-    assert carrier.operation_capabilities("reduce") == ()
+    assert carrier.operation_capabilities("reduce_sum") == ()
 
 
 @pytest.mark.parametrize("query", CARRIER_QUERIES.values(), ids=CARRIER_QUERIES)

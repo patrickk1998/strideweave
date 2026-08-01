@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import cache
 from typing import Any
 
 from ..dtype import SimpleDType
@@ -13,12 +12,6 @@ from ..operation_policy import (
     resolve_operation_plan,
 )
 from .carrier import Evictable
-
-
-@cache
-def _planned_operations() -> frozenset[str]:
-    """Return the operation names the central policy resolves plans for."""
-    return frozenset(spec.name for spec in registered_operations())
 
 
 class EvictableOperation(Operation):
@@ -93,6 +86,11 @@ class EvictableOperation(Operation):
             raise TypeError("operation tensor inputs must be Tensors")
         if not isinstance(tensor.carrier, Evictable):
             raise TypeError("EvictableOperation requires Evictable tensor inputs")
+        # A pure layout view may pass the outer multi-subtensor preflight, but
+        # this adapter still only knows how to lower one primary plane. Refuse
+        # before constructing a one-subtensor Tensor so no plane is silently
+        # discarded at the composite boundary.
+        tensor._require_single_subtensor("Evictable operation lowering")
         primary = tensor.carrier._require_promoted()
         return Tensor(primary, tensor.offset, tensor.layout)
 
@@ -142,10 +140,27 @@ class EvictableOperation(Operation):
         from ...core.tensor import Tensor
 
         operation = self._primary_operation._operation_name
-        if operation is None or operation not in _planned_operations():
+        if operation is None:
             return None
+        spec = next(
+            (
+                candidate
+                for candidate in registered_operations()
+                if candidate.name == operation
+            ),
+            None,
+        )
+        if spec is None:
+            return None
+        policy_inputs = inputs
+        if spec.dtype_operand_positions is not None:
+            policy_inputs = tuple(
+                inputs[position]
+                for position in spec.dtype_operand_positions
+                if position < len(inputs)
+            )
         operands: list[Any] = []
-        for value in inputs:
+        for value in policy_inputs:
             if not isinstance(value, Tensor):
                 operands.append(value)
                 continue

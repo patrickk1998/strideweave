@@ -205,3 +205,49 @@ class _CPUMatmulOperation:
     @property
     def ctx(self) -> dict[Any, Any]: ...
     def inputs(self) -> tuple[Any, ...]: ...
+
+# Additional native CPU primitive adapters.  They intentionally expose the
+# same small Operation surface as the historical classes above; dispatch users
+# normally obtain them through Carrier.dispatch_op rather than constructing
+# these implementation classes directly.
+class _CPUNativeOperation:
+    def forward(self, *inputs: Any) -> Any: ...
+    def backward(self, gradient: Any) -> Any: ...
+    @property
+    def ctx(self) -> dict[Any, Any]: ...
+    def inputs(self) -> tuple[Any, ...]: ...
+
+_CPUAbsOperation = _CPUNativeOperation
+_CPUArgmaxOperation = _CPUNativeOperation
+_CPUArgminOperation = _CPUNativeOperation
+_CPUCeilOperation = _CPUNativeOperation
+_CPUConvGeneralOperation = _CPUNativeOperation
+_CPUCosOperation = _CPUNativeOperation
+_CPUCumsumOperation = _CPUNativeOperation
+_CPUEqOperation = _CPUNativeOperation
+_CPUErfOperation = _CPUNativeOperation
+_CPUExp2Operation = _CPUNativeOperation
+_CPUFloorOperation = _CPUNativeOperation
+_CPUGatherOperation = _CPUNativeOperation
+_CPULeOperation = _CPUNativeOperation
+_CPULogicalNotOperation = _CPUNativeOperation
+_CPULogOperation = _CPUNativeOperation
+_CPULog2Operation = _CPUNativeOperation
+_CPULtOperation = _CPUNativeOperation
+_CPUMaximumOperation = _CPUNativeOperation
+_CPUMinimumOperation = _CPUNativeOperation
+_CPUNeOperation = _CPUNativeOperation
+_CPUNegOperation = _CPUNativeOperation
+_CPURecipOperation = _CPUNativeOperation
+_CPUReduceMaxOperation = _CPUNativeOperation
+_CPUReduceMinOperation = _CPUNativeOperation
+_CPUReduceProdOperation = _CPUNativeOperation
+_CPURemOperation = _CPUNativeOperation
+_CPURoundOperation = _CPUNativeOperation
+_CPURsqrtOperation = _CPUNativeOperation
+_CPUScatterOperation = _CPUNativeOperation
+_CPUSignOperation = _CPUNativeOperation
+_CPUSinOperation = _CPUNativeOperation
+_CPUSortOperation = _CPUNativeOperation
+_CPUSqrtOperation = _CPUNativeOperation
+_CPUTopKOperation = _CPUNativeOperation

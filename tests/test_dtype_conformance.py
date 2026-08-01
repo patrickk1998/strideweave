@@ -16,6 +16,7 @@ defined below (policy section 10.4).
 from __future__ import annotations
 
 import math
+import struct
 from dataclasses import dataclass
 from itertools import product
 from typing import Any, Self
@@ -27,6 +28,8 @@ import strideweave as sw
 from strideweave import CPU, DType, Generic, Layout, Shape, Stride, Tensor
 from strideweave.carriers.operation_policy import (
     OperandRole,
+    OperationOverload,
+    OperationSpec,
     registered_operations,
     resolve_operation_plan,
 )
@@ -35,13 +38,40 @@ ONE_MODE = Layout(Shape(4), Stride(1))
 TWO_MODE = Layout(Shape([2, 2]), Stride([1, 2]))
 
 # Operations whose operands must carry a contractible two-mode layout.
-TWO_MODE_OPERATIONS = frozenset({"matmul", "reduce"})
+TWO_MODE_OPERATIONS = frozenset(
+    {
+        "argmax",
+        "argmin",
+        "cumsum",
+        "matmul",
+        "reduce_max",
+        "reduce_min",
+        "reduce_prod",
+        "reduce_sum",
+        "scatter",
+        "scatter_add",
+        "_sort_indices",
+        "_sort_values",
+        "_topk_indices",
+        "_topk_values",
+    }
+)
+
+GATHER_INDEX_LAYOUT = Layout(Shape(2), Stride(1))
+CONV_LHS_LAYOUT = Layout(Shape([1, 1, 4]), Stride([1, 1, 1]))
+CONV_KERNEL_LAYOUT = Layout(Shape([1, 1, 1]), Stride([1, 1, 1]))
 
 # Sample operands. The floating values exercise rounding (0.1 is not
 # representable in binary32) and both signs; the integers stay small enough that
 # every integer plan produces a representable result.
 FLOAT_SAMPLE = (1.5, -2.25, 0.1, 3.0)
 INT_SAMPLE = (1, -2, 3, 4)
+BOOL_SAMPLE = (True, False, True, False)
+SELECT_TRUE_SAMPLE = (1.0, 2.0, 3.0, 4.0)
+SELECT_FALSE_SAMPLE = (10.0, 20.0, 30.0, 40.0)
+CLAMP_INPUT_SAMPLE = (-2.0, -0.5, 0.5, 3.0)
+CLAMP_LOWER_SAMPLE = (-1.0, -1.0, -1.0, -1.0)
+CLAMP_UPPER_SAMPLE = (1.0, 1.0, 1.0, 1.0)
 
 # Weak scalars covering both plan-selecting kinds and the pinned `bool` case.
 WEAK_SCALARS = (2, 2.5, True)
@@ -52,7 +82,18 @@ WEAK_SCALARS = (2, 2.5, True)
 # These are the only operations this suite compares with a tolerance; every
 # other operation is compared bit-exactly.
 TRANSCENDENTAL_OPERATIONS = frozenset(
-    {"elu", "exp", "gelu", "leaky_relu", "pow", "sigmoid", "silu", "softplus", "tanh"}
+    {
+        "elu",
+        "erf",
+        "exp",
+        "gelu",
+        "leaky_relu",
+        "pow",
+        "sigmoid",
+        "silu",
+        "softplus",
+        "tanh",
+    }
 )
 
 # The admitted spreads, in relative terms. Forward, a last-ulp libm difference
@@ -67,6 +108,11 @@ TRANSCENDENTAL_OPERATIONS = frozenset(
 # is involved, and by exact dtype identity on every case.
 LIBM_FORWARD_TOLERANCE = 2e-6
 LIBM_BACKWARD_TOLERANCE = 2e-5
+
+
+def test_erf_is_compared_with_platform_libm_tolerance() -> None:
+    """Keep ``erf`` out of the bit-exact cross-platform comparison path."""
+    assert "erf" in TRANSCENDENTAL_OPERATIONS
 
 
 def generic_carrier(values: tuple[Any, ...], dtype: DType) -> Generic:
@@ -84,11 +130,25 @@ BACKENDS = {"generic": generic_carrier, "cpu": cpu_carrier}
 
 
 def sample_for(dtype: DType) -> tuple[Any, ...]:
-    return FLOAT_SAMPLE if dtype is DType.Float32 else INT_SAMPLE
+    if dtype is DType.Float32:
+        return FLOAT_SAMPLE
+    if dtype is DType.Bool:
+        return BOOL_SAMPLE
+    return INT_SAMPLE
 
 
 def values_of(tensor: Tensor) -> list[Any]:
     return [tensor[index] for index in range(tensor.size())]
+
+
+def float32_from_bits(bits: int) -> float:
+    """Construct a Python float carrying one exact binary32 bit pattern."""
+    return struct.unpack("!f", struct.pack("!I", bits))[0]
+
+
+def float32_bits(value: float) -> int:
+    """Return the binary32 storage pattern of a Python numeric value."""
+    return struct.unpack("!I", struct.pack("!f", value))[0]
 
 
 def ones_like(tensor: Tensor, backend: str) -> Tensor:
@@ -108,38 +168,153 @@ class Outcome:
     message: str = ""
 
 
-def specification(operation: str, dtypes: tuple[DType, ...], scalar: object):
-    """Build the operand description for one invocation of ``operation``."""
-    spec = {candidate.name: candidate for candidate in registered_operations()}[
+def operation_spec(operation: str) -> OperationSpec:
+    """Return one registered operation specification by name."""
+    return {candidate.name: candidate for candidate in registered_operations()}[
         operation
     ]
-    layout = TWO_MODE if operation in TWO_MODE_OPERATIONS else ONE_MODE
+
+
+def operation_overload(operation: str, overload_index: int) -> OperationOverload:
+    """Return an explicitly selected overload from the operation registry."""
+    return operation_spec(operation).overloads[overload_index]
+
+
+def layout_for_tensor(operation: str, tensor_index: int) -> Layout:
+    """Choose a small valid layout for one tensor argument."""
+    if operation == "gather" and tensor_index == 1:
+        return GATHER_INDEX_LAYOUT
+    if operation in {"scatter", "scatter_add"} and tensor_index == 1:
+        return GATHER_INDEX_LAYOUT
+    if operation == "conv_general":
+        return CONV_LHS_LAYOUT if tensor_index == 0 else CONV_KERNEL_LAYOUT
+    return TWO_MODE if operation in TWO_MODE_OPERATIONS else ONE_MODE
+
+
+def values_for_tensor(
+    operation: str,
+    overload_index: int,
+    tensor_index: int,
+    dtype: DType,
+) -> tuple[Any, ...]:
+    """Provide values compatible with operation-specific shape parameters."""
+    if operation in {"gather", "scatter", "scatter_add"} and tensor_index == 1:
+        return (0, 1)
+    if operation == "conv_general":
+        return (1.5, -2.25, 0.1, 3.0) if tensor_index == 0 else (2.0,)
+    if operation == "select":
+        return (BOOL_SAMPLE, SELECT_TRUE_SAMPLE, SELECT_FALSE_SAMPLE)[tensor_index]
+    if operation == "clamp":
+        if tensor_index == 0:
+            return CLAMP_INPUT_SAMPLE
+        if overload_index in {0, 1} and tensor_index == 1:
+            return CLAMP_LOWER_SAMPLE
+        return CLAMP_UPPER_SAMPLE
+    return sample_for(dtype)
+
+
+def invoke(operation: str, arguments: list[Any], backend: str) -> Tensor:
+    """Invoke public and internal operations with their non-dtype parameters."""
+    if operation in {
+        "reduce_sum",
+        "reduce_prod",
+        "reduce_max",
+        "reduce_min",
+        "argmax",
+        "argmin",
+    }:
+        return getattr(sw, operation)(arguments[0], "a b -> a")
+    if operation == "cumsum":
+        return sw.cumsum(arguments[0], 1)
+    if operation == "gather":
+        return sw.gather(arguments[0], arguments[1], 0)
+    if operation in {"scatter", "scatter_add"}:
+        return getattr(sw, operation)(arguments[0], arguments[1], arguments[2], 0)
+    if operation == "conv_general":
+        return (
+            arguments[0]
+            .carrier.dispatch_op(operation)
+            .forward(
+                arguments[0],
+                arguments[1],
+                (1,),
+                ((0, 0),),
+            )
+        )
+    if operation == "_sort_values":
+        return (
+            arguments[0].carrier.dispatch_op(operation).forward(arguments[0], 1, False)
+        )
+    if operation == "_sort_indices":
+        return (
+            arguments[0].carrier.dispatch_op(operation).forward(arguments[0], 1, False)
+        )
+    if operation == "_topk_values":
+        return (
+            arguments[0]
+            .carrier.dispatch_op(operation)
+            .forward(arguments[0], 1, 1, True)
+        )
+    if operation == "_topk_indices":
+        return (
+            arguments[0]
+            .carrier.dispatch_op(operation)
+            .forward(arguments[0], 1, 1, True)
+        )
+    return getattr(sw, operation)(*arguments)
+
+
+def specification(
+    operation: str,
+    overload_index: int,
+    dtypes: tuple[DType, ...],
+    scalar: object,
+):
+    """Build the operand description for one selected registry overload."""
+    overload = operation_overload(operation, overload_index)
     remaining = list(dtypes)
+    if operation == "clamp":
+        assert isinstance(scalar, tuple)
+        clamp_scalars = iter(scalar)
+    else:
+        clamp_scalars = iter(())
     roles: list[tuple[OperandRole, Any]] = []
-    for role in spec.roles:
+    for role in overload.roles:
         if role is OperandRole.TENSOR:
             roles.append((role, remaining.pop(0)))
         else:
-            roles.append((role, scalar))
-    return roles, layout
+            roles.append(
+                (role, next(clamp_scalars) if operation == "clamp" else scalar)
+            )
+    return roles
 
 
-def run(operation: str, dtypes: tuple[DType, ...], scalar: object, backend: str):
+def run(
+    operation: str,
+    overload_index: int,
+    dtypes: tuple[DType, ...],
+    scalar: object,
+    backend: str,
+):
     """Run one operation on one backend, forward and, if possible, backward."""
-    roles, layout = specification(operation, dtypes, scalar)
+    roles = specification(operation, overload_index, dtypes, scalar)
     make = BACKENDS[backend]
     tensors: list[Tensor] = []
     arguments: list[Any] = []
+    tensor_index = 0
     for role, value in roles:
         if role is OperandRole.TENSOR:
-            tensor = Tensor(make(sample_for(value), value), 0, layout)
+            layout = layout_for_tensor(operation, tensor_index)
+            values = values_for_tensor(operation, overload_index, tensor_index, value)
+            tensor = Tensor(make(values, value), 0, layout)
             tensors.append(tensor)
             arguments.append(tensor)
+            tensor_index += 1
         else:
             arguments.append(value)
 
     try:
-        result = getattr(sw, operation)(*arguments)
+        result = invoke(operation, arguments, backend)
     except Exception as error:
         # The refusal is part of the outcome: both backends must refuse the
         # same invocations with the same exception type *and* the same message,
@@ -208,7 +383,7 @@ def assert_conformant(
             )
 
 
-def registered_cases() -> list[tuple[str, tuple[DType, ...], object]]:
+def registered_cases() -> list[tuple[str, int, tuple[DType, ...], object]]:
     """Enumerate every registered operation over every supported combination.
 
     The scalar is varied only for the operations that take one. A scalar an
@@ -218,12 +393,39 @@ def registered_cases() -> list[tuple[str, tuple[DType, ...], object]]:
     """
     cases = []
     for spec in registered_operations():
-        tensor_count = sum(role is OperandRole.TENSOR for role in spec.roles)
-        takes_scalar = any(role is OperandRole.WEAK_SCALAR for role in spec.roles)
-        scalars = WEAK_SCALARS if takes_scalar else WEAK_SCALARS[:1]
-        for dtypes in product((DType.Float32, DType.Int32), repeat=tensor_count):
-            for scalar in scalars:
-                cases.append((spec.name, dtypes, scalar))
+        for overload_index, overload in enumerate(spec.overloads):
+            tensor_count = sum(role is OperandRole.TENSOR for role in overload.roles)
+            scalar_positions = tuple(
+                index
+                for index, role in enumerate(overload.roles)
+                if role is OperandRole.WEAK_SCALAR
+            )
+            if spec.name == "clamp":
+                clamp_bounds = {
+                    (): (),
+                    (1,): (-1.0,),
+                    (2,): (1.0,),
+                    (1, 2): (-1.0, 1.0),
+                }
+                scalars = (clamp_bounds[scalar_positions],)
+            else:
+                scalars = WEAK_SCALARS if scalar_positions else WEAK_SCALARS[:1]
+            tensor_domains = overload.tensor_domains
+            domains: list[tuple[DType, ...]] = []
+            tensor_index = 0
+            for role in overload.roles:
+                if role is OperandRole.WEAK_SCALAR:
+                    continue
+                domains.append(
+                    (DType.Float32, DType.Int32)
+                    if tensor_domains is None
+                    else tuple(tensor_domains[tensor_index])
+                )
+                tensor_index += 1
+            assert len(domains) == tensor_count
+            for dtypes in product(*domains):
+                for scalar in scalars:
+                    cases.append((spec.name, overload_index, dtypes, scalar))
     return cases
 
 
@@ -231,17 +433,20 @@ CASES = registered_cases()
 
 
 def case_id(case) -> str:
-    operation, dtypes, scalar = case
-    return f"{operation}-{'x'.join(dtype.name for dtype in dtypes)}-{scalar!r}"
+    operation, overload_index, dtypes, scalar = case
+    return (
+        f"{operation}[{overload_index}]-"
+        f"{'x'.join(dtype.name for dtype in dtypes)}-{scalar!r}"
+    )
 
 
 @pytest.mark.parametrize("case", CASES, ids=case_id)
 def test_generic_and_cpu_agree_on_every_registered_operation(case):
-    operation, dtypes, scalar = case
+    operation, overload_index, dtypes, scalar = case
     transcendental = operation in TRANSCENDENTAL_OPERATIONS
 
-    generic = run(operation, dtypes, scalar, "generic")
-    cpu = run(operation, dtypes, scalar, "cpu")
+    generic = run(operation, overload_index, dtypes, scalar, "generic")
+    cpu = run(operation, overload_index, dtypes, scalar, "cpu")
 
     assert_conformant(
         generic,
@@ -251,22 +456,71 @@ def test_generic_and_cpu_agree_on_every_registered_operation(case):
     )
 
 
+@pytest.mark.parametrize(
+    ("operation", "values", "expected_bits", "expected_gradient"),
+    [
+        (
+            "reduce_max",
+            (float32_from_bits(0x7FC00011), 5.0, float32_from_bits(0x7FC00022)),
+            0x7FC00011,
+            (float("nan"),) * 3,
+        ),
+        (
+            "reduce_min",
+            (float32_from_bits(0x7FC00011), 5.0, float32_from_bits(0x7FC00022)),
+            0x7FC00011,
+            (float("nan"),) * 3,
+        ),
+        ("reduce_max", (-0.0, 0.0), 0x00000000, (2.0, 2.0)),
+        ("reduce_min", (0.0, -0.0), 0x80000000, (2.0, 2.0)),
+        ("reduce_max", (3.0, 3.0, -1.0), 0x40400000, (2.0, 2.0, 0.0)),
+        ("reduce_min", (3.0, 3.0, 4.0), 0x40400000, (2.0, 2.0, 0.0)),
+        ("reduce_max", (float("inf"), -float("inf"), 5.0), 0x7F800000, (4.0, 0.0, 0.0)),
+        ("reduce_min", (float("inf"), -float("inf"), 5.0), 0xFF800000, (0.0, 4.0, 0.0)),
+    ],
+)
+def test_extrema_reductions_share_ordered_float32_semantics(
+    operation: str,
+    values: tuple[float, ...],
+    expected_bits: int,
+    expected_gradient: tuple[float, ...],
+) -> None:
+    """Pin extrema payload, tie, infinity, signed-zero, and VJP conformance."""
+    outcomes = {}
+    layout = Layout(Shape([1, len(values)]), Stride([1, 1]))
+    for backend, make in BACKENDS.items():
+        tensor = Tensor(make(values, DType.Float32), 0, layout)
+        result = getattr(sw, operation)(tensor, "a b -> a")
+        result_bits = float32_bits(result[0])
+        result.backward(Tensor(make((4.0,), DType.Float32), 0, result.layout))
+        gradient = tensor.grad
+        assert gradient is not None
+        outcomes[backend] = (result_bits, tuple(values_of(gradient)))
+
+    for result_bits, gradient in outcomes.values():
+        assert result_bits == expected_bits
+        assert same_values(gradient, expected_gradient, tolerance=None)
+    assert outcomes["cpu"][0] == outcomes["generic"][0]
+
+
 @pytest.mark.parametrize("case", CASES, ids=case_id)
 def test_both_backends_produce_the_resolved_plan_output(case):
-    operation, dtypes, scalar = case
-    roles, _ = specification(operation, dtypes, scalar)
+    operation, overload_index, dtypes, scalar = case
+    roles = specification(operation, overload_index, dtypes, scalar)
     # Tensor operands are passed to the resolver as their storage dtype and weak
     # scalars as the value itself, which is exactly what `roles` already holds.
     plan = resolve_operation_plan(operation, *(value for _, value in roles))
 
     for backend in BACKENDS:
-        assert run(operation, dtypes, scalar, backend).dtype is plan.output
+        assert (
+            run(operation, overload_index, dtypes, scalar, backend).dtype is plan.output
+        )
 
 
 @pytest.mark.parametrize("case", CASES, ids=case_id)
 def test_both_backends_attach_a_graph_exactly_when_the_plan_allows_one(case):
-    operation, dtypes, scalar = case
-    roles, _ = specification(operation, dtypes, scalar)
+    operation, overload_index, dtypes, scalar = case
+    roles = specification(operation, overload_index, dtypes, scalar)
     plan = resolve_operation_plan(operation, *(value for _, value in roles))
 
     # A floating result may participate in autograd, but a node is attached
@@ -276,7 +530,10 @@ def test_both_backends_attach_a_graph_exactly_when_the_plan_allows_one(case):
     expected = plan.output is DType.Float32 and differentiable_input
 
     for backend in BACKENDS:
-        assert run(operation, dtypes, scalar, backend).has_graph is expected
+        assert (
+            run(operation, overload_index, dtypes, scalar, backend).has_graph
+            is expected
+        )
 
 
 @pytest.mark.parametrize("case", CASES, ids=case_id)
@@ -284,9 +541,9 @@ def test_no_enumerated_case_is_vacuous(case):
     # Every case above compares two successful results. If an invocation ever
     # started raising on both backends, the comparison would still pass while
     # testing nothing, so the enumeration asserts that it did not.
-    operation, dtypes, scalar = case
+    operation, overload_index, dtypes, scalar = case
 
-    outcome = run(operation, dtypes, scalar, "generic")
+    outcome = run(operation, overload_index, dtypes, scalar, "generic")
 
     assert outcome.error is None
     assert len(outcome.values) > 0
@@ -302,7 +559,7 @@ REJECTED_SCALARS = ["text", None, complex(1, 2), [1]]
 @pytest.mark.parametrize("scalar", REJECTED_SCALARS, ids=repr)
 def test_both_backends_refuse_the_same_scalars_identically(dtype, operation, scalar):
     outcomes = {
-        backend: run(operation, (dtype,), scalar, backend) for backend in BACKENDS
+        backend: run(operation, 1, (dtype,), scalar, backend) for backend in BACKENDS
     }
 
     assert outcomes["generic"].error is TypeError
@@ -316,7 +573,8 @@ def test_every_registered_operation_is_reachable_as_a_public_function():
     # invoked above; a policy operation with no public entry point would
     # otherwise be silently uncovered.
     for spec in registered_operations():
-        assert callable(getattr(sw, spec.name))
+        if spec.public:
+            assert callable(getattr(sw, spec.name))
     assert {case[0] for case in CASES} == {
         spec.name for spec in registered_operations()
     }
@@ -354,7 +612,7 @@ def tensor_with_logical_values(
     backend: str,
 ) -> Tensor:
     """Build a zero-offset tensor by placing values through its layout."""
-    zero = 0.0 if dtype is DType.Float32 else 0
+    zero = 0.0 if dtype is DType.Float32 else False if dtype is DType.Bool else 0
     physical = [zero] * layout.cosize
     for logical_index, value in enumerate(values):
         physical[layout.index(logical_index)] = value
@@ -364,13 +622,13 @@ def tensor_with_logical_values(
 GAPPED_INVOCATIONS = {
     "add": lambda tensor: tensor + tensor,
     "sub": lambda tensor: tensor - tensor,
-    "elementwise_mul": lambda tensor: tensor * tensor,
+    "elementwise_mul": lambda tensor: sw.elementwise_mul(tensor, tensor),
     "div": lambda tensor: tensor / tensor,
     "mul": lambda tensor: sw.mul(tensor, 2),
     "pow": lambda tensor: tensor**2,
     "relu": sw.relu,
     "exp": sw.exp,
-    "reduce": sw.reduce,
+    "reduce_sum": lambda tensor: sw.reduce_sum(tensor, "a b -> a"),
     "matmul": lambda tensor: tensor @ tensor,
 }
 
@@ -410,9 +668,12 @@ def test_binary_pointwise_result_uses_injective_canonical_storage(dtype):
 def binary_pointwise_operations() -> tuple[str, ...]:
     """Enumerate tensor-pair operations whose plans have no accumulation."""
     tensor_pair = (OperandRole.TENSOR, OperandRole.TENSOR)
+    exercised = {"add", "sub", "elementwise_mul", "div"}
     operations = []
     for spec in registered_operations():
-        if spec.roles != tensor_pair:
+        if spec.name not in exercised or not any(
+            overload.roles == tensor_pair for overload in spec.overloads
+        ):
             continue
         plans = (
             resolve_operation_plan(spec.name, lhs_dtype, rhs_dtype)
@@ -582,6 +843,111 @@ def test_binary_pointwise_alignment_refuses_incompatible_leaf_extents(backend):
     )
 
 
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+def test_select_broadcasts_all_operands_and_routes_branch_gradients(backend):
+    condition = tensor_with_logical_values(
+        (True, False),
+        DType.Bool,
+        Layout(Shape([2, 1]), Stride([1, 2])),
+        backend,
+    )
+    on_true = tensor_with_logical_values(
+        (1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+        DType.Float32,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+        backend,
+    )
+    on_false = tensor_with_logical_values(
+        (10.0, 20.0, 30.0),
+        DType.Float32,
+        Layout(Shape([1, 3]), Stride([1, 1])),
+        backend,
+    )
+
+    result = sw.select(condition, on_true, on_false)
+    result.backward(ones_like(result, backend))
+
+    assert result.dtype() is DType.Float32
+    assert tuple(values_of(result)) == (1.0, 10.0, 3.0, 20.0, 5.0, 30.0)
+    assert not condition.is_differentiable()
+    assert on_true.grad is not None
+    assert tuple(values_of(on_true.grad)) == (1.0, 0.0, 1.0, 0.0, 1.0, 0.0)
+    assert on_false.grad is not None
+    assert tuple(values_of(on_false.grad)) == (1.0, 1.0, 1.0)
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+def test_clamp_broadcasts_tensor_bounds_and_reduces_their_gradients(backend):
+    tensor = tensor_with_logical_values(
+        (-2.0, 0.0, 0.5, 2.0, 3.0, -3.0),
+        DType.Float32,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+        backend,
+    )
+    lower = tensor_with_logical_values(
+        (-1.0, -2.0),
+        DType.Float32,
+        Layout(Shape([2, 1]), Stride([1, 2])),
+        backend,
+    )
+    upper = tensor_with_logical_values(
+        (1.0, 1.5, 2.0),
+        DType.Float32,
+        Layout(Shape([1, 3]), Stride([1, 1])),
+        backend,
+    )
+
+    result = sw.clamp(tensor, lower, upper)
+    result.backward(ones_like(result, backend))
+
+    assert tuple(values_of(result)) == (-1.0, 0.0, 0.5, 1.5, 2.0, -2.0)
+    assert tensor.grad is not None
+    assert tuple(values_of(tensor.grad)) == (0.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+    assert lower.grad is not None
+    assert tuple(values_of(lower.grad)) == (1.0, 1.0)
+    assert upper.grad is not None
+    assert tuple(values_of(upper.grad)) == (0.0, 1.0, 1.0)
+
+
+@pytest.mark.parametrize(
+    ("tensor_lower", "tensor_upper"),
+    [(True, True), (True, False), (False, True), (False, False)],
+    ids=["tensor-tensor", "tensor-scalar", "scalar-tensor", "scalar-scalar"],
+)
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+def test_clamp_tensor_and_scalar_overloads_route_only_tensor_gradients(
+    backend, tensor_lower, tensor_upper
+):
+    tensor = tensor_with_logical_values(
+        CLAMP_INPUT_SAMPLE, DType.Float32, ONE_MODE, backend
+    )
+    lower_tensor = tensor_with_logical_values(
+        CLAMP_LOWER_SAMPLE, DType.Float32, ONE_MODE, backend
+    )
+    upper_tensor = tensor_with_logical_values(
+        CLAMP_UPPER_SAMPLE, DType.Float32, ONE_MODE, backend
+    )
+    lower = lower_tensor if tensor_lower else -1.0
+    upper = upper_tensor if tensor_upper else 1.0
+
+    result = sw.clamp(tensor, lower, upper)
+    result.backward(ones_like(result, backend))
+
+    assert tuple(values_of(result)) == (-1.0, -0.5, 0.5, 1.0)
+    assert tensor.grad is not None
+    assert tuple(values_of(tensor.grad)) == (0.0, 1.0, 1.0, 0.0)
+    if tensor_lower:
+        assert lower_tensor.grad is not None
+        assert tuple(values_of(lower_tensor.grad)) == (1.0, 0.0, 0.0, 0.0)
+    else:
+        assert lower_tensor.grad is None
+    if tensor_upper:
+        assert upper_tensor.grad is not None
+        assert tuple(values_of(upper_tensor.grad)) == (0.0, 0.0, 0.0, 1.0)
+    else:
+        assert upper_tensor.grad is None
+
+
 def test_concrete_storage_rejects_a_placeholder_rather_than_storing_nan():
     # NumPy turns None into NaN rather than raising, so Float32 storage checks
     # the type itself; Int32 already rejected it.
@@ -611,7 +977,7 @@ OVERFLOW_CASES = {
     "elementwise_mul": lambda make: make([50_000], ONE) * make([50_000], ONE),
     "scalar_mul": lambda make: make([INT32_MAX], ONE) * 2,
     "pow": lambda make: sw.pow(make([3], ONE), 40),
-    "reduce": lambda make: sw.reduce(make([INT32_MAX, 1], PAIR)),
+    "reduce_sum": lambda make: sw.reduce_sum(make([INT32_MAX, 1], PAIR), "a b -> a"),
     "matmul": lambda make: make([INT32_MAX], CONTRACTION) @ make([2], CONTRACTION),
     "out_of_range_scalar": lambda make: make([1], ONE) * 2**40,
 }
@@ -637,7 +1003,7 @@ def test_both_backends_accumulate_integers_exactly_before_narrowing():
         tensor = int_tensor([INT32_MAX, INT32_MAX, -INT32_MAX], PAIR, backend)
         wide = Tensor(tensor.carrier, 0, Layout(Shape([1, 3]), Stride([1, 1])))
 
-        assert sw.reduce(wide)[0] == INT32_MAX
+        assert sw.reduce_sum(wide, "a b -> a")[0] == INT32_MAX
 
 
 def contraction(values, backend: str) -> Tensor:
@@ -833,7 +1199,7 @@ def test_reduce_backward_broadcasts_each_row_gradient_to_its_own_row():
     for backend in BACKENDS:
         tensor = float_tensor([1.0, 2.0, 3.0, 4.0], layout, backend)
 
-        result = sw.reduce(tensor)
+        result = sw.reduce_sum(tensor, "a b -> a")
         row_gradient = Tensor(
             BACKENDS[backend]((10.0, 20.0), DType.Float32), 0, result.layout
         )

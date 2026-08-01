@@ -24,6 +24,7 @@ everything else before converting a value.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, nullcontext
 from typing import Any, Final
@@ -33,7 +34,7 @@ from ..operation_capability import require_capability
 from ..operation_helpers import _require_number
 from ..operation_policy import Accumulation as AccumulationKind
 from ..operation_policy import Arithmetic as ArithmeticKind
-from ..operation_policy import OperationPlan, resolve_operation_plan
+from ..operation_policy import OperandRole, OperationPlan, resolve_operation_plan
 from .numerics import (
     binary32,
     checked_int32,
@@ -48,6 +49,7 @@ __all__ = [
     "binary_arithmetic",
     "executable_plan_shape",
     "executing",
+    "extrema_total",
     "gradient_arithmetic",
     "scalar_arithmetic",
     "unary_arithmetic",
@@ -116,63 +118,284 @@ def _sequential_binary32(values: Iterable[Any]) -> Any:
     return result
 
 
+def _sequential_binary32_product(values: Iterable[Any]) -> Any:
+    """Multiply each term in caller order, rounding in binary32 each step."""
+    result = float32_scalar(1.0)
+    for value in values:
+        result = result * value
+    return result
+
+
 def _exact_integer(values: Iterable[Any]) -> Any:
     """Add every term exactly; only the final narrowing is checked."""
     return sum(int(value) for value in values)
 
 
+def _is_nan(value: Any) -> bool:
+    """Return whether a planned Float32 value is NaN."""
+    try:
+        return math.isnan(float(value))
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def _zero_sign(value: Any) -> int:
+    """Return the sign of a numeric zero as ``-1`` or ``1``."""
+    return -1 if math.copysign(1.0, float(value)) < 0 else 1
+
+
+def _prefer_zero(candidate: Any, winner: Any, *, maximum: bool) -> bool:
+    """Return whether a signed-zero candidate wins a max/min tie."""
+    if candidate != 0 or winner != 0:
+        return False
+    candidate_sign = _zero_sign(candidate)
+    winner_sign = _zero_sign(winner)
+    return candidate_sign > winner_sign if maximum else candidate_sign < winner_sign
+
+
+def extrema_total(values: Iterable[Any], *, maximum: bool) -> Any:
+    """Return a NumPy-compatible maximum or minimum in logical order.
+
+    The first NaN is retained. Equal finite values keep the first winner,
+    except that mixed signed zeros select positive zero for a maximum and
+    negative zero for a minimum.
+    """
+    values = list(values)
+    if not values:
+        return float("nan")
+    winner = values[0]
+    winner_is_nan = _is_nan(winner)
+    for value in values[1:]:
+        value_is_nan = _is_nan(value)
+        if winner_is_nan:
+            continue
+        if value_is_nan:
+            winner = value
+            winner_is_nan = True
+        elif (value > winner if maximum else value < winner) or _prefer_zero(
+            value, winner, maximum=maximum
+        ):
+            winner = value
+    return winner
+
+
+def _maximum(values: Iterable[Any]) -> Any:
+    """Return a NumPy-compatible Float32 maximum in logical order."""
+    return extrema_total(values, maximum=True)
+
+
+def _minimum(values: Iterable[Any]) -> Any:
+    """Return a NumPy-compatible Float32 minimum in logical order."""
+    return extrema_total(values, maximum=False)
+
+
+def _argmax(values: Iterable[Any]) -> int:
+    """Return the first Float32 maximum ordinal in logical order.
+
+    NaN wins over all numeric values and the first NaN wins among NaNs. Equal
+    numeric values, including signed zeros, retain their first ordinal.
+    """
+    values = list(values)
+    if not values:
+        return 0
+    winner = 0
+    winner_value = values[0]
+    winner_is_nan = _is_nan(winner_value)
+    for index, value in enumerate(values[1:], 1):
+        value_is_nan = _is_nan(value)
+        if winner_is_nan:
+            continue
+        if value_is_nan or value > winner_value:
+            winner = index
+            winner_value = value
+            winner_is_nan = value_is_nan
+    return winner
+
+
+def _argmin(values: Iterable[Any]) -> int:
+    """Return the first Float32 minimum ordinal in logical order.
+
+    NaN wins over all numeric values and the first NaN wins among NaNs. Equal
+    numeric values, including signed zeros, retain their first ordinal.
+    """
+    values = list(values)
+    if not values:
+        return 0
+    winner = 0
+    winner_value = values[0]
+    winner_is_nan = _is_nan(winner_value)
+    for index, value in enumerate(values[1:], 1):
+        value_is_nan = _is_nan(value)
+        if winner_is_nan:
+            continue
+        if value_is_nan or value < winner_value:
+            winner = index
+            winner_value = value
+            winner_is_nan = value_is_nan
+    return winner
+
+
 # How terms combine, one entry per Accumulation member.
 _ACCUMULATIONS: dict[AccumulationKind, Any] = {
     AccumulationKind.SEQUENTIAL_BINARY32: _sequential_binary32,
+    AccumulationKind.SEQUENTIAL_BINARY32_PRODUCT: _sequential_binary32_product,
     AccumulationKind.EXACT_INTEGER: _exact_integer,
+    AccumulationKind.MAXIMUM: _maximum,
+    AccumulationKind.MINIMUM: _minimum,
+    AccumulationKind.ARGMAX: _argmax,
+    AccumulationKind.ARGMIN: _argmin,
 }
 
 # The operations whose Generic implementations combine many terms into one
 # result. Every other operation writes one result per element and has nowhere to
 # apply an accumulation, so declaring one for it would advertise a loop Generic
 # does not run.
-_ACCUMULATING_OPERATIONS: Final[frozenset[str]] = frozenset({"matmul", "reduce"})
+_ACCUMULATING_OPERATIONS: Final[frozenset[str]] = frozenset(
+    {
+        "reduce_sum",
+        "reduce_prod",
+        "reduce_max",
+        "reduce_min",
+        "argmax",
+        "argmin",
+        "cumsum",
+        "matmul",
+        "conv_general",
+        "scatter_add",
+    }
+)
 
-# The single element representation each compute arithmetic runs in. Generic
-# materializes one representation per operation, so this is simultaneously the
-# dtype every operand converts into and the dtype the result is stored in: a
-# binary32 computation cannot be stored as `Int32` without truncating, and an
-# exact-integer computation cannot be reached from `Float32` operands. Every
-# representation named here is a key of both `_CONVERSIONS` and `_STORES`, which
-# is what keeps an accepted shape assemblable from the primitives above.
+# Gather/scatter and select have intentionally mixed representations: value
+# operands compute in Float32 while logical indices remain Int32 and select's
+# condition remains Bool. The operation policy specifies these exact shapes;
+# Generic merely recognizes them rather than choosing a promotion locally.
+_MIXED_CONVERSION_OPERATIONS: Final[frozenset[str]] = frozenset(
+    {"gather", "scatter", "scatter_add", "select"}
+)
+
+_MIXED_CONVERSION_TARGETS: Final[dict[str, tuple[DType, ...]]] = {
+    "gather": (DType.Float32, DType.Int32),
+    "scatter": (DType.Float32, DType.Int32, DType.Float32),
+    "scatter_add": (DType.Float32, DType.Int32, DType.Float32),
+    "select": (DType.Bool, DType.Float32, DType.Float32),
+}
+
+type _OperandShape = tuple[OperandRole, DType | None, DType]
+
+_EXACT_OPERAND_SHAPES: Final[dict[str, frozenset[tuple[_OperandShape, ...]]]] = {
+    "select": frozenset(
+        {
+            (
+                (OperandRole.TENSOR, DType.Bool, DType.Bool),
+                (OperandRole.TENSOR, DType.Float32, DType.Float32),
+                (OperandRole.TENSOR, DType.Float32, DType.Float32),
+            )
+        }
+    ),
+    "clamp": frozenset(
+        {
+            (
+                (OperandRole.TENSOR, DType.Float32, DType.Float32),
+                (
+                    lower_role,
+                    DType.Float32 if lower_role is OperandRole.TENSOR else None,
+                    DType.Float32,
+                ),
+                (
+                    upper_role,
+                    DType.Float32 if upper_role is OperandRole.TENSOR else None,
+                    DType.Float32,
+                ),
+            )
+            for lower_role in (OperandRole.TENSOR, OperandRole.WEAK_SCALAR)
+            for upper_role in (OperandRole.TENSOR, OperandRole.WEAK_SCALAR)
+        }
+    ),
+}
+
+_SPECIAL_ACCUMULATIONS: Final[dict[str, dict[ArithmeticKind, AccumulationKind]]] = {
+    "reduce_sum": {
+        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
+        ArithmeticKind.INT32_EXACT_CHECKED: AccumulationKind.EXACT_INTEGER,
+    },
+    "reduce_prod": {
+        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32_PRODUCT,
+    },
+    "reduce_max": {ArithmeticKind.BINARY32: AccumulationKind.MAXIMUM},
+    "reduce_min": {ArithmeticKind.BINARY32: AccumulationKind.MINIMUM},
+    "argmax": {ArithmeticKind.BINARY32: AccumulationKind.ARGMAX},
+    "argmin": {ArithmeticKind.BINARY32: AccumulationKind.ARGMIN},
+    "cumsum": {ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32},
+    "matmul": {
+        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
+        ArithmeticKind.INT32_EXACT: AccumulationKind.EXACT_INTEGER,
+    },
+    "conv_general": {
+        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
+    },
+    "scatter_add": {
+        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
+    },
+}
+
+_DIFFERENT_OUTPUT_OPERATIONS: Final[dict[str, DType]] = {
+    "eq": DType.Bool,
+    "ne": DType.Bool,
+    "lt": DType.Bool,
+    "le": DType.Bool,
+    "logical_not": DType.Bool,
+    "argmax": DType.Int32,
+    "argmin": DType.Int32,
+    "_sort_indices": DType.Int32,
+    "_topk_indices": DType.Int32,
+}
+
+# The single element representation each arithmetic kernel computes in. Most
+# Generic operations convert every operand into this dtype and store the result
+# in it. Predicate/index operations intentionally store Bool/Int32 instead,
+# while gather/scatter/select have dedicated mixed operand loops.
 _COMPUTE_DTYPES: Final[dict[ArithmeticKind, DType]] = {
     ArithmeticKind.BINARY32: DType.Float32,
     ArithmeticKind.INT32_EXACT_CHECKED: DType.Int32,
     ArithmeticKind.INT32_EXACT: DType.Int32,
 }
 
-# The accumulation each compute arithmetic combines terms with when it combines
-# them at all. Binary32 terms must round at every step and integer terms must
-# stay exact, so the pairing is the arithmetic's, not the operation's.
+# The default accumulation associated with each compute arithmetic. Operations
+# with specialized reductions (product, extrema, arg reductions, convolution,
+# and scatter-add) are narrowed further by `_SPECIAL_ACCUMULATIONS` below.
 _COMPUTE_ACCUMULATIONS: Final[dict[ArithmeticKind, AccumulationKind]] = {
     ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
     ArithmeticKind.INT32_EXACT_CHECKED: AccumulationKind.EXACT_INTEGER,
     ArithmeticKind.INT32_EXACT: AccumulationKind.EXACT_INTEGER,
 }
 
-# How a computed value is narrowed into the dtype `output` names. Together with
-# `_CONVERSIONS` and `_ACCUMULATIONS` these are Generic's implemented primitives:
-# a plan shape they cannot assemble is one Generic never declares a capability
-# for, so it is refused at the capability boundary rather than approximated here.
+# How a computed value is narrowed into the dtype `output` names. Bool predicate
+# outputs and Int32 index outputs intentionally differ from the Float32 compute
+# representation; these stores are still concrete Generic representations.
 _STORES: dict[DType, Any] = {
+    DType.Bool: bool,
     DType.Float32: binary32,
     DType.Int32: checked_int32,
 }
 
 
 def _plan_conversion(plan: OperationPlan) -> DType:
-    """Return the single dtype every operand of ``plan`` is materialized into.
+    """Return the compute dtype for a plan's arithmetic adapter.
 
-    Generic computes one element representation per operation, so a uniform
-    conversion target is part of what makes a plan shape executable at all.
+    Most Generic arithmetic uses one conversion target for every operand.
+    Gather, scatter, and select are deliberate exceptions: their dedicated
+    loops preserve Int32 indices or Bool conditions while values use Float32.
     """
-    (target,) = {operand.convert_to for operand in plan.operands}
-    return target
+    conversions = {operand.convert_to for operand in plan.operands}
+    if len(conversions) == 1:
+        return conversions.pop()
+    # Mixed plans are executed by dedicated indexing/selection loops that
+    # convert operands independently. Returning the value representation keeps
+    # their capability adapters inspectable; they never route through the
+    # single-conversion GenericArithmetic.convert path.
+    if plan.operation in _MIXED_CONVERSION_OPERATIONS:
+        return DType.Float32
+    raise ValueError("Generic plans must use one compute representation")
 
 
 def _plan_store(plan: OperationPlan) -> Any:
@@ -180,8 +403,9 @@ def _plan_store(plan: OperationPlan) -> Any:
 
     ``output`` selects the representation; ``compute`` says whether reaching it
     needs a check. :attr:`Arithmetic.INT32_EXACT` is the policy's promise that
-    the result provably fits, and the one accumulating exception is explicit
-    below, so nothing here re-derives the result dtype from the arithmetic.
+    the result provably fits, except that exact integer accumulations still
+    check their final narrowing; Bool predicates and Int32 indices are selected
+    explicitly by the resolved output dtype.
     """
     if plan.output is DType.Int32 and plan.compute is ArithmeticKind.INT32_EXACT:
         # An accumulated integer result is still checked at its final narrowing,
@@ -218,27 +442,48 @@ def executable_plan_shape(plan: OperationPlan) -> bool:
         plan: A resolved operation plan.
 
     Returns:
-        ``True`` when every operand converts into the single representation
-        ``compute`` runs in, the result is stored in that same representation,
-        and an accumulation of that arithmetic's kind is present exactly for the
-        operations whose Generic loops combine terms.
+        ``True`` when the operation's operand conversions, compute arithmetic,
+        output dtype, and accumulation agree with a Generic implementation.
+        Gather/scatter/select use their explicit mixed conversion shapes;
+        predicates return Bool and arg/selection index operations return Int32
+        while computing their comparison or ordering in Float32. Clamp accepts
+        exactly its four tensor/weak-scalar role signatures.
 
     Examples:
         >>> from strideweave.carriers.dtype import DType
         >>> from strideweave.carriers.operation_policy import resolve_operation_plan
         >>> from strideweave.carriers.generic.execution import executable_plan_shape
-        >>> executable_plan_shape(resolve_operation_plan("reduce", DType.Int32))
+        >>> executable_plan_shape(resolve_operation_plan("reduce_sum", DType.Int32))
         True
     """
+    exact_shapes = _EXACT_OPERAND_SHAPES.get(plan.operation)
+    operand_shape = tuple(
+        (operand.role, operand.dtype, operand.convert_to) for operand in plan.operands
+    )
+    if exact_shapes is not None and operand_shape not in exact_shapes:
+        return False
+
     representation = _COMPUTE_DTYPES.get(plan.compute)
     if representation is None:
         return False
-    if any(operand.convert_to is not representation for operand in plan.operands):
+    if plan.operation not in _MIXED_CONVERSION_OPERATIONS and any(
+        operand.convert_to is not representation for operand in plan.operands
+    ):
         return False
-    if plan.output is not representation:
+    if plan.operation in _MIXED_CONVERSION_OPERATIONS:
+        expected = _MIXED_CONVERSION_TARGETS[plan.operation]
+        if tuple(operand.convert_to for operand in plan.operands) != expected:
+            return False
+    expected_output = _DIFFERENT_OUTPUT_OPERATIONS.get(plan.operation, representation)
+    if plan.output is not expected_output:
         return False
     if plan.operation not in _ACCUMULATING_OPERATIONS:
         return plan.accumulation is None
+    if plan.operation in _SPECIAL_ACCUMULATIONS:
+        return (
+            _SPECIAL_ACCUMULATIONS[plan.operation].get(plan.compute)
+            is plan.accumulation
+        )
     return plan.accumulation is _COMPUTE_ACCUMULATIONS[plan.compute]
 
 
