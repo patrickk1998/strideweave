@@ -203,7 +203,9 @@ The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
   of subtensors, so a single carrier could store it homogeneously, and each
   reports an exact `bits` width. `DType.Float32`, `DType.Int32`, and
   `DType.Bool` (8 bits) are the concrete simple storage dtypes carriers support
-  today; the registry also defines the simple encodings `Int8`, `E8M0`, `E5M2`, `E4M3`,
+  today; `DType.Float64` is an accumulator-only descriptor used by operation
+  plans and is not accepted as carrier storage; the registry also defines the
+  simple encodings `Int8`, `E8M0`, `E5M2`, `E4M3`,
   `E3M2`, `E2M3`, and `E2M1`, which are structural only. Being simple describes
   the encoding, not carrier support.
 - `DTypeCategory` is an abstract relationship with no bit width. `DType.Any` is
@@ -235,8 +237,9 @@ computes in or returns. That policy is specified in
 [`design/SimpleDType-operation-policy.md`](design/SimpleDType-operation-policy.md)
 and implemented by the backend-independent planner in
 `strideweave.carriers.operation_policy`, which resolves overload selection,
-promotion, arithmetic, accumulation, and result dtype for the supported simple
-dtype operands. The registry declares each operation once, including overloads
+promotion, arithmetic, accumulation kind and accumulator dtype, and result dtype
+for the supported simple dtype operands. Floating reduction association order is
+backend-defined. The registry declares each operation once, including overloads
 such as tensor/tensor versus tensor/weak-scalar `mul` and `pow`, mixed-output
 operations such as Float32 predicates returning Bool or index reductions
 returning Int32, and the `dtype_operand_positions` that identify which full
@@ -280,7 +283,8 @@ carrier.require_operation_plan(plan)       # the capability, or raises
 
 `operation_capabilities(operation_name=None)` returns immutable
 `OperationCapability` descriptors — operation, per-operand source dtype and
-conversion target, compute arithmetic, accumulation, and output dtype — in a
+conversion target, compute arithmetic, accumulation kind and accumulator dtype,
+and output dtype — in a
 deterministic order. The four queries answer from whichever set owns that
 carrier: an independent carrier's exact class declarations, or the frozen
 snapshot a dependent carrier generated for that instance. A caller asks the
@@ -430,6 +434,11 @@ approximating them with Python's own numeric types:
   exceptions, in forward and backward alike: dividing by zero yields `±inf`,
   `0.0 / 0.0` and `0.0 ** -1` follow IEEE-754, and an overflowing magnitude
   saturates to an infinity instead of raising.
+- Floating `reduce` and `matmul` advertise both the default `Float32`
+  accumulator and an explicit `Float64` accumulator. Widening happens only
+  after loading already encoded `Float32` terms; products and stored outputs
+  remain `Float32`. A matmul backward contraction reuses that call's retained
+  accumulator choice without treating the option as a tensor input.
 - `Int32` storage holds in-range integers. Arithmetic is exact and narrowing is
   checked, so an out-of-range result raises `OverflowError` rather than
   wrapping. A reduction accumulates exactly and checks only the final sum, so a
@@ -756,6 +765,8 @@ a carrier that could hold only one of its planes. Every carrier gives that same 
 the native CPU parser. Multi-plane storage — one carrier per entry of
 `simple_types` — is future work; carrier-authoring code can reuse
 `strideweave.carriers.dtype.validate_storage_dtype` to get the same behavior.
+`Float64` is likewise outside every row: it currently names widened accumulator
+arithmetic only, not storage any carrier may allocate.
 
 The same table is readable at run time, without allocating anything:
 
@@ -860,6 +871,19 @@ The public functional API includes the following v0 surface:
   Float32 values and Int32 indices.
 - storage movement: `move`.
 
+`reduce_sum(..., accumulator_dtype=...)` and
+`matmul(..., accumulator_dtype=...)` select the floating accumulator without
+changing input encoding or planned output dtype. `None` uses the backend's
+default `Float32` accumulator; `DType.Float64` requests widened accumulation and
+must match an advertised backend capability. `Generic` advertises both choices
+for `reduce_sum` and `matmul`; native `CPU` implements the `Float32` accumulator
+only and refuses an undeclared `Float64` request before it allocates. The
+`tensor @ other` spelling keeps the default; callers requesting `Float64` use
+`sw.matmul`. Exact-integer plans reject a floating accumulator request, and the
+operations whose accumulation order is normative — `cumsum`, `conv_general`,
+`scatter_add`, the product and extrema reductions, and the arg reductions —
+accept no accumulator option at all.
+
 Binary pointwise operations (`add`, `sub`, `mul`, `elementwise_mul`, `div`,
 `pow`, `maximum`, `minimum`, `rem`, and the Float32 predicates) align
 operands structurally before dispatch. Their shape trees must share the same
@@ -938,7 +962,8 @@ sole visible autograd node and wraps primary results and gradients back into the
 same hierarchy. CPU and Generic implementations therefore do not need
 composition-specific code. Before it lowers anything, the adapter resolves the
 logical plan the central policy gives for its operation name and its *outer*
-operands and requires that plan against the hierarchy's own frozen
+operands plus typed execution options and requires that plan against the
+hierarchy's own frozen
 capabilities, so no plan the hierarchy does not advertise reaches a nested
 allocation or a kernel. Only an operation name the policy does not register and
 legacy opaque operand storage skip planning and keep their documented behavior;
@@ -978,6 +1003,8 @@ and self synchronous host wall time, thread identity, parent relationship, and
 success status. With `record_shapes=True`, tensor argument positions also carry
 immutable snapshots of their hierarchical shapes; non-tensor positions are
 represented by `None`.
+Typed execution options travel through the profiled call separately and are not
+reported as positional inputs or saved as autograd tensors.
 
 ```python
 import strideweave as sw
@@ -1182,6 +1209,8 @@ to `Generic`, because the container remains an alias of Generic storage.
 ## Current Boundaries
 
 - No CUDA, Metal, or other accelerator carriers.
+- No carrier stores `Float64`; it is currently an accumulator-only descriptor
+  whose execution remains gated by each backend's exact capabilities.
 - High-level tensor creation lives only in `strideweave.friendly` and is
   CPU-backed; other carriers are constructed from primitives.
 - Explicit structural views are available through `as_strided`, `reshape`,
@@ -1213,6 +1242,47 @@ to `Generic`, because the container remains an alias of Generic storage.
 - `strideweave.nn` covers only `Linear`, elementwise activations, `MSELoss`, and
   `SGD`; there are no buffers, state dictionaries, training/evaluation modes,
   or hooks.
+
+## Local Kernel Verification
+
+`test_backend(output=None)` verifies the installed CPU backend without CI,
+network, or database access. It reruns Stage One over the active native kernel
+capability plans, including mixed and exact-integer plans and the public CPU
+Float64 accumulator capabilities for reduce and matmul. A kernel certificate
+requires every class assigned to every active plan to pass. Stage Two then runs
+ordinary CPU Float32 target execution only where the corresponding local oracle
+certificate passed. Its contraction catalog includes multi-output flat and
+hierarchical layouts, recording each operand's effective matrix shape and
+contraction length.
+Movement verification emits separate bit-exact cases for move, view, permute,
+rearrange, and broadcast-to views, each using an adversarial Float32 payload.
+Exactly representable structural cases are likewise bit-exact; numerical Stage
+One cases use the analytic, order-independent
+`stage-one-two-path-gamma-v1` envelope, while Stage Two uses the versioned,
+case-specific `stage-two-float32-gamma-k-v1` envelope. Every evidence case also
+records its explicit operation name with its kernel ID and variant. Target and
+oracle decode one payload encoded once at its declared
+Float32 or Int32 storage dtype, so source quantization error is outside the
+comparison.
+Floating `pow`, vendor-transcendental kernels, and autograd certification remain
+visible v0 deferrals rather than being reported as passes.
+
+```python
+report = sw.test_backend()
+sw.test_backend("kernel-evidence.jsonl")
+```
+
+The returned immutable report contains passed, failed, errored, blocked, and
+deferred attempts. Stage Two currently covers movement, reduce, and matmul. A
+missing Stage One certificate blocks its dependent Stage Two cases
+without executing them. JSONL output is deterministic and versioned; it
+intentionally contains no CI status, Dolt state, toolchain hash, transitive
+closure hash, autotune cache, or status-aggregation record.
+Recoverable public `RuntimeError` and `ValueError` execution failures are
+recorded case by case, so independent witnesses continue. Their records retain
+the prepared operation, kernel, plan, payload hashes, logical shapes,
+contraction length, seed, and tolerance; deviation and mismatch measurements
+are `null` because no comparison completed.
 
 ## Development
 

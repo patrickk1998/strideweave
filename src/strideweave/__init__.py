@@ -87,6 +87,7 @@ from .module import Parameter as Parameter
 from .operation import *  # noqa: F403
 from .operation import __all__ as _operation_all
 from .tensor import Tensor as Tensor
+from .verification.api import test_backend as test_backend
 
 _CORE_EXPORTS = [
     "BlockScaledDType",
@@ -115,6 +116,7 @@ _CORE_EXPORTS = [
     "Stride",
     "SymbolicBits",
     "Tensor",
+    "test_backend",
     "Tiler",
     "Tree",
     "UnsupportedOperationPlan",
