@@ -58,7 +58,7 @@ class EvictableOperation(Operation):
 
         return self._primary_operation
 
-    def forward(self, *inputs: Any) -> Any:
+    def forward(self, *inputs: Any, options: Any | None = None) -> Any:
         """Run one delegated forward pass and build its outer autograd node.
 
         Args:
@@ -74,7 +74,7 @@ class EvictableOperation(Operation):
 
         if self._forward_complete:
             raise RuntimeError("EvictableOperation forward may only be called once")
-        result = super().forward(*inputs)
+        result = super().forward(*inputs, options=options)
         self._forward_complete = True
         return result
 
@@ -168,7 +168,9 @@ class EvictableOperation(Operation):
             if not isinstance(dtype, SimpleDType):
                 return None
             operands.append(dtype)
-        return resolve_operation_plan(operation, *operands)
+        return resolve_operation_plan(
+            operation, *operands, options=self._execution_options
+        )
 
     def _forward(self, *inputs: Any) -> Any:
         from ...core.tensor import Tensor
@@ -188,7 +190,9 @@ class EvictableOperation(Operation):
         lowered_tensors = self._tensor_inputs(lowered_arguments)
         self._primary_operation.store_inputs(*lowered_tensors)
         primary_result = execute_lowered_operation(
-            self._primary_operation, *lowered_arguments
+            self._primary_operation,
+            *lowered_arguments,
+            options=self._execution_options,
         )
         wrapped_carrier = hierarchy._wrap_primary(primary_result.carrier)
         self._output_carrier = wrapped_carrier

@@ -19,7 +19,10 @@ from strideweave.carriers.move import (
     ElementwiseMoveOperation,
     registered_move_operation,
 )
-from strideweave.carriers.operation_policy import registered_operations
+from strideweave.carriers.operation_policy import (
+    operation_execution_options,
+    registered_operations,
+)
 
 
 def flat_layout(size):
@@ -360,7 +363,7 @@ def test_transitions_use_lowered_execution_not_autograd_forward():
             calls.append("forward")
             return super().forward(*inputs)
 
-        def _execute_lowered(self, *inputs):
+        def _execute_lowered(self, *inputs, options=None):
             calls.append("shadowed _execute_lowered")
             raise AssertionError("dynamic lowered execution was called")
 
@@ -380,7 +383,7 @@ def test_adapter_uses_sealed_lowered_execution_when_subclass_shadows_method():
     calls = []
 
     class ShadowedLoweredOperation(sw.Operation):
-        def _execute_lowered(self, *inputs):
+        def _execute_lowered(self, *inputs, options=None):
             calls.append("shadowed _execute_lowered")
             return inputs[0]
 
@@ -1043,6 +1046,29 @@ def test_an_unadvertised_plan_is_refused_before_any_work():
     assert secondary.allocations == []
     assert hierarchy.version == version
     assert hierarchy.is_evicted() is False
+
+
+def test_float64_accumulation_is_forwarded_through_evictable_lowering():
+    # The primary decides which accumulator plans the hierarchy advertises, so
+    # this uses a Generic primary: native CPU declares only the Float32
+    # accumulator today.
+    hierarchy = Evictable(
+        Generic([1.0, 2.0, 3.0, 4.0], dtype=DType.Float32),
+        FileBacked(dtype=DType.Float32),
+    )
+    tensor = Tensor(
+        hierarchy,
+        0,
+        Layout(Shape([2, 2]), Stride([1, 2])),
+    )
+    operation = hierarchy.dispatch_op("reduce_sum")
+    options = operation_execution_options("reduce_sum", accumulator_dtype=DType.Float64)
+
+    result = operation.forward(tensor, options=options)
+
+    assert [result[index] for index in range(2)] == [4.0, 6.0]
+    assert operation._execution_options is options
+    assert operation.primary_operation._execution_options is options
 
 
 def test_capabilities_are_structural_across_residency_and_release():

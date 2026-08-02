@@ -1,4 +1,4 @@
-# SimpleDType Operation Policy — v0.2
+# SimpleDType Operation Policy — v0.3
 
 **Status:** current normative specification for simple-dtype operation planning.
 **Stability:** *intentional starting point, not a compatibility promise.* Every rule
@@ -45,6 +45,10 @@ Bool is deliberately a narrow domain: it is not implicitly promoted into
 Float32 or Int32 arithmetic. Ordinary numeric operations reject Bool operands;
 `select` alone consumes a Bool tensor as its condition, while predicates and
 `logical_not` produce Bool results.
+
+`DType.Float64` is additionally registered as an accumulator-only descriptor.
+It may appear in `OperationPlan.accumulator_dtype`, but it is not a tensor
+operand, output, or carrier storage dtype.
 
 ### 2.2 Registered but unsupported simple encodings
 
@@ -127,7 +131,7 @@ backward. Specifically:
 
 ## 4. Arithmetic semantics
 
-The plan names an arithmetic, not merely a width. v0.2 defines exactly three.
+The plan names an arithmetic, not merely a width. v0.3 defines exactly three.
 
 ### 4.1 `BINARY32`
 
@@ -168,7 +172,7 @@ consequence, where a fixed width is a harder constraint.
 ### 4.3 `INT32_EXACT`
 
 Exact integer arithmetic that provably cannot leave `Int32`, so no check is
-required. In v0.2 this is used by `relu` alone, which selects between an existing
+required. In v0.3 this is used by `relu` alone, which selects between an existing
 element and zero and therefore cannot overflow.
 
 ---
@@ -178,17 +182,42 @@ element and zero and therefore cannot overflow.
 ### 5.1 Why accumulation is a separate axis
 
 `reduce_*`, `cumsum`, `matmul`, `conv_general`, and `scatter_add` combine many
-terms. Their observable result depends on the
-*order and width* of that combination, not only on the element arithmetic, and the
-conformance suite must pin it. Elementwise operations combine nothing, so their
-plans carry no accumulation at all.
+terms. Their observable result depends on the *domain, width, and order* of that
+combination, not only on the element arithmetic, and the conformance suite must
+pin whichever of those the operation makes observable. Elementwise operations
+combine nothing, so their plans carry no accumulation at all.
 
-### 5.2 The two accumulation rules
+The policy therefore separates two questions. `reduce_sum` and `matmul` expose
+only the finished sum, so the plan pins the accumulator's arithmetic domain and
+dtype and leaves traversal and association order to the backend; parallel kernels
+are not forced into a sequential schedule, and `accumulator_dtype` is the one
+knob a caller may turn. Every other combining operation makes its per-term
+ordering observable — `cumsum` publishes each prefix, `conv_general` and
+`scatter_add` pin a reference schedule, and the product, extrema, and arg
+reductions pin NaN, signed-zero, and first-winner rules — so their accumulation
+stays fully normative and declares no `accumulator_dtype`.
+
+### 5.2 The accumulation rules
+
+**`FLOATING`** — combine terms in the plan's `accumulator_dtype`. The default is
+`DType.Float32`; an explicit `DType.Float64` request widens already-encoded input
+values before accumulation and narrows once to the unchanged planned output dtype.
+For matmul, each product is still formed in the plan's binary32 compute arithmetic
+before that encoded term widens into the accumulator.
+The backend chooses traversal and association order. A capability therefore claims
+the floating kind and accumulator dtype, not one summation schedule. `reduce_sum`
+and `matmul` are the only operations that use it.
 
 **`SEQUENTIAL_BINARY32`** — initialize to `+0.0`, then add each term in ascending
-logical index order over the reduced mode (`reduce`) or the contracted mode
-(`matmul`), each addition rounding in binary32. Order is normative: pairwise or
-blocked summation is a different, non-conforming result.
+logical index order over the operation's combined mode, each addition rounding in
+binary32. Order is normative: pairwise or blocked summation is a different,
+non-conforming result. `cumsum`, `conv_general`, and `scatter_add` use it, and it
+declares no `accumulator_dtype`.
+
+**`SEQUENTIAL_BINARY32_PRODUCT`, `MAXIMUM`, `MINIMUM`, `ARGMAX`, `ARGMIN`** — the
+ordered product and the extrema and arg reductions, each applying its pinned
+Float32 NaN, signed-zero, and first-winner rules in ascending logical index
+order. They declare no `accumulator_dtype`.
 
 **`EXACT_INTEGER`** — accumulate exactly over the mathematical integers, then
 narrow the final sum to `Int32` with the `INT32_EXACT_CHECKED` check. Two
@@ -211,7 +240,7 @@ consequences are deliberate:
 ## 6. The `OperationPlan` contract
 
 Derived from the distinctions §7's matrix actually makes — no field exists for a
-distinction v0.2 never draws.
+distinction v0.3 never draws.
 
 ```python
 class OperandRole(Enum):
@@ -224,6 +253,7 @@ class Arithmetic(Enum):
     INT32_EXACT = "int32_exact"                  # §4.3
 
 class Accumulation(Enum):
+    FLOATING = "floating"                        # §5.2
     SEQUENTIAL_BINARY32 = "sequential_binary32"  # §5.2
     SEQUENTIAL_BINARY32_PRODUCT = "sequential_binary32_product"
     MAXIMUM = "maximum"
@@ -244,6 +274,7 @@ class OperationPlan:
     operands: tuple[OperandPlan, ...]
     compute: Arithmetic
     accumulation: Accumulation | None
+    accumulator_dtype: SimpleDType | None
     output: SimpleDType
 
 @dataclass(frozen=True, slots=True)
@@ -276,7 +307,12 @@ Field-by-field justification:
   both output `Int32`.
 - **`accumulation`** — `None` for elementwise, predicate, gather, overwrite,
   and ordering entries. Reductions, scans, contraction, and additive scatter
-  name their exact ordered combination rule explicitly.
+  name their combination rule explicitly, and every rule but `FLOATING` fixes
+  the combination order as well.
+- **`accumulator_dtype`** — `Float32` or `Float64` for `FLOATING`; `None` for
+  non-accumulating operations, exact mathematical-integer accumulation, and
+  every order-normative floating rule. It is independent of `output`: widened
+  accumulation still stores the policy's original result dtype.
 - **`output`** — the dtype the result carrier reports. Consumed at allocation time,
   and the sole source of the result's storage narrowing; a backend must not
   re-derive it from `compute`.
@@ -291,9 +327,13 @@ derivation no backend reads is a drift risk, not a contract. The "diff." column 
 field. If a non-differentiable floating dtype is ever registered, the rule that
 changes is the tensor layer's, and that is where the distinction belongs.
 
-**A deliberately absent field:** there is no separate accumulator *dtype*. In v0.2
-no entry accumulates in a dtype the `Accumulation` value does not already imply,
-so a second dtype field would be unjustified. §12.2 records the alternative.
+**A deliberately absent distinction:** `compute` never disagrees with `output`
+about width in v0.3, because there is no mixed-width element compute yet. That
+equality is asserted by the fixtures as a *derived observation*, not assumed by
+the resolver — a mixed-precision revision changes the matrix without changing the
+plan's shape. `accumulator_dtype` is not that distinction: it widens only the
+combination of already-encoded terms, and §12.2 records why it is an execution
+option rather than a storage or compute change.
 
 `compute` and `output` are deliberately independent. Predicate plans consume
 binary32 values and store Bool, while arg-reduction and index-result selection
@@ -314,9 +354,10 @@ selection operations are registered with `public=False`; public `sort` and
 
 ---
 
-## 7. The v0.2 operation policy matrix
+## 7. The v0.3 operation policy matrix
 
-`F32` = `DType.Float32`, `I32` = `DType.Int32`. "conv." lists non-identity operand
+`F32` = `DType.Float32`, `F64` = `DType.Float64`, and `I32` = `DType.Int32`.
+"conv." lists non-identity operand
 conversions. Every listed entry is supported; anything not listed is §8's error.
 
 ### 7.1 Elementwise binary — `add`, `sub`, `elementwise_mul`
@@ -330,7 +371,7 @@ conversions. Every listed entry is supported; anything not listed is §8's error
 
 ### 7.2 Elementwise binary — `div`
 
-Division is always floating; v0.2 has no integer-division semantics.
+Division is always floating; v0.3 has no integer-division semantics.
 
 | lhs | rhs | conv. | compute | accum. | output | diff. |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -397,22 +438,22 @@ overflow.
 
 ### 7.7 Reduction — `reduce_sum` (sum over the second mode)
 
-| input | conv. | compute | accum. | output | diff. |
-| --- | --- | --- | --- | --- | --- |
-| F32 | — | `BINARY32` | `SEQUENTIAL_BINARY32` | F32 | yes |
-| I32 | — | `INT32_EXACT_CHECKED` | `EXACT_INTEGER` | I32 | no |
+| input | conv. | compute | accum. | accum. dtype | output | diff. |
+| --- | --- | --- | --- | --- | --- | --- |
+| F32 | — | `BINARY32` | `FLOATING` | F32 default; F64 explicit | F32 | yes |
+| I32 | — | `INT32_EXACT_CHECKED` | `EXACT_INTEGER` | — | I32 | no |
 
 ### 7.8 Contraction — `matmul`
 
 Category promotion matches §7.1; the accumulation differs because many terms
 combine.
 
-| lhs | rhs | conv. | compute | accum. | output | diff. |
-| --- | --- | --- | --- | --- | --- | --- |
-| F32 | F32 | — | `BINARY32` | `SEQUENTIAL_BINARY32` | F32 | yes |
-| F32 | I32 | rhs→F32 | `BINARY32` | `SEQUENTIAL_BINARY32` | F32 | yes |
-| I32 | F32 | lhs→F32 | `BINARY32` | `SEQUENTIAL_BINARY32` | F32 | yes |
-| I32 | I32 | — | `INT32_EXACT` | `EXACT_INTEGER` | I32 | no |
+| lhs | rhs | conv. | compute | accum. | accum. dtype | output | diff. |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| F32 | F32 | — | `BINARY32` | `FLOATING` | F32 default; F64 explicit | F32 | yes |
+| F32 | I32 | rhs→F32 | `BINARY32` | `FLOATING` | F32 default; F64 explicit | F32 | yes |
+| I32 | F32 | lhs→F32 | `BINARY32` | `FLOATING` | F32 default; F64 explicit | F32 | yes |
+| I32 | I32 | — | `INT32_EXACT` | `EXACT_INTEGER` | — | I32 | no |
 
 The `I32 × I32` element compute is `INT32_EXACT` rather than
 `INT32_EXACT_CHECKED`: an individual product is not required to fit `Int32`, only
@@ -527,6 +568,10 @@ back to a guessed plan.
 | Operand is a registered but unimplemented `SimpleDType` | `NotImplementedError`, naming the supported operation-specific domains (§2.2) | resolution |
 | Weak scalar is not a supported Python number | `TypeError` | resolution |
 | Weak integer outside `Int32` range in an integer plan | `OverflowError` | resolution |
+| Unknown execution option | `TypeError` | option validation |
+| `accumulator_dtype` on a non-accumulating operation | `TypeError` | resolution |
+| Accumulator descriptor is not `Float32` or `Float64` | `TypeError` or `NotImplementedError`, according to whether it is a simple descriptor | resolution |
+| Floating accumulator requested for an exact-integer plan | `TypeError` | resolution |
 | Exact integer result outside `Int32` range | `OverflowError` | execution |
 | Fixed-width accumulator cannot hold an exact partial sum | `OverflowError` | execution |
 
@@ -540,8 +585,11 @@ GIL and then release it (`CPP001`).
 
 The policy fixes the dtype and rounding of backward, not the gradient formulas.
 
-- Every gradient tensor is `Float32` and every backward computation uses
-  `BINARY32`, including its accumulations, which follow §5.2's ordering rule.
+- Every gradient tensor is stored as `Float32`, and every backward operation
+  forms its terms with `BINARY32` arithmetic. A backward contraction combines
+  those already encoded terms in the forward call's accumulator dtype. Forward
+  accumulator options are execution state, not tensor inputs; a backward formula
+  that reuses the forward contraction plan must retain them.
 - Gradients are produced only for operands whose storage dtype is `Float32`. An
   `Int32` operand of a `Float32`-output operation receives none; `Int32` tensors
   reject the gradient APIs entirely.
@@ -579,10 +627,14 @@ The resolver is the single executable statement of this policy. It follows that:
    enumerate registered coverage exhaustively and compare it against explicit
    expected-plan fixtures. An operation added without a fixture fails the
    enumeration rather than passing silently.
-4. **Exactness is the default.** Forward and backward results are compared
-   bit-exactly. A tolerance is admissible only for a transcendental whose
-   difference is a justified libm divergence, and each such tolerance is named and
-   justified individually at its assertion.
+4. **Exactness is the default.** Same-plan forward and backward conformance
+   results are compared bit-exactly. A tolerance is admissible there only for a
+   transcendental whose difference is a justified libm divergence, and each such
+   tolerance is named and justified individually at its assertion. Staged kernel
+   verification is a different comparison: its numerical reduce and matmul cases
+   compare a Float32-accumulator target with a Float64-accumulator oracle under the
+   explicit analytic or versioned conservative envelope in
+   `design/testing-taxonomy.md`.
 5. **A backend may refuse, but may not differ.** A backend that cannot execute a
    plan raises; it never substitutes a nearby plan it can execute. Which plan
    shapes a backend does execute is recorded, per exact carrier class, in
@@ -632,26 +684,26 @@ deliberately rather than by accident. The defensible alternative is to reject
 is the kind of accident a central policy exists to prevent. Deferred because it is
 a user-visible break with no current demand.
 
-**12.2 No accumulator dtype field.** Justified in §6 for v0.2. Mixed-precision
-accumulation (bf16 storage, fp32 accumulate) is the obvious future case that
-splits `Accumulation` into a rule plus a dtype. Adding the field then is a
-mechanical widening of the plan; adding it now would be an unused dimension.
+**12.2 Accumulator dtype is an execution option.** `Float64` is registered as a
+simple descriptor so plans and capabilities can name it, but no carrier accepts it
+as storage. The option changes neither input encoding nor output dtype, and only
+the order-agnostic `FLOATING` rule declares one; mixed-precision element compute
+(bf16 storage, fp32 arithmetic) remains a separate future revision.
 
 **12.3 `div` has no integer path.** `I32 / I32` yields `Float32`. Neither
 truncating nor flooring integer division is offered, because picking one silently
 is worse than not offering one. A future explicit `floor_div` operation is the
 expected resolution, not a change to `div`.
 
-**12.4 Mixed-width compute is unrepresented.** Every v0.2 entry computes at the
+**12.4 Mixed-width element compute is unrepresented.** Every v0.3 entry computes
+at the
 output width. The plan shape anticipates the split (§6) but the matrix does not
 exercise it.
 
-**12.5 `SEQUENTIAL_BINARY32` will constrain GPUs.** A strictly ordered binary32
-accumulation is not what a parallel reduction wants. This is the rule most likely
-to be revised once a CUDA backend exists — probably into an explicitly
-order-unspecified accumulation with a documented tolerance, chosen centrally here
-rather than assumed by the first backend that finds sequential summation
-inconvenient.
+**12.5 Floating order is backend-defined.** Capability exactness covers the
+floating accumulation kind and dtype. Numerical conformance uses the tolerance
+appropriate to the declared kernel class rather than requiring two backends to
+choose the same association order.
 
 **12.6 The `pow` integer bound is policy, not a limit.** `2**31 - 1` is chosen so
 every backend switches to the floating path at the same exponent. It is not

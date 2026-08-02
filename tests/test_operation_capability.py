@@ -63,6 +63,7 @@ def plan(
     operands=None,
     compute=Arithmetic.BINARY32,
     accumulation=None,
+    accumulator_dtype=None,
     output=F32,
 ):
     """Build a plan directly, so a shape the resolver never emits can be tested."""
@@ -76,6 +77,7 @@ def plan(
         ),
         compute=compute,
         accumulation=accumulation,
+        accumulator_dtype=accumulator_dtype,
         output=output,
     )
 
@@ -325,12 +327,20 @@ def test_only_capability_entries_can_be_registered():
     ("overrides", "reason"),
     [
         ({"compute": Arithmetic.INT32_EXACT_CHECKED}, "compute"),
-        ({"accumulation": Accumulation.SEQUENTIAL_BINARY32}, "accumulation"),
+        ({"accumulation": Accumulation.FLOATING}, "accumulation"),
+        ({"accumulator_dtype": DType.Float64}, "accumulator dtype"),
         ({"output": I32}, "output"),
         ({"operands": (((F32, F32), (I32, I32)))}, "conversion"),
         ({"operation": "sub"}, "operation"),
     ],
-    ids=["compute", "accumulation", "output", "conversion", "operation"],
+    ids=[
+        "compute",
+        "accumulation",
+        "accumulator-dtype",
+        "output",
+        "conversion",
+        "operation",
+    ],
 )
 def test_a_plan_differing_in_one_field_does_not_match(overrides, reason):
     backend = carrier_class()
@@ -353,6 +363,19 @@ def test_a_declared_accumulation_is_not_satisfied_by_a_plan_without_one():
     assert not supports_operation_plan(
         backend, dataclasses.replace(accumulating, accumulation=None)
     )
+
+
+def test_accumulator_dtype_is_an_exact_capability_dimension():
+    backend = carrier_class()
+    default = resolve_operation_plan("reduce_sum", F32)
+    widened = resolve_operation_plan("reduce_sum", F32, accumulator_dtype=DType.Float64)
+    register_operation_capabilities(backend, [OperationCapability.from_plan(default)])
+
+    assert supports_operation_plan(backend, default)
+    assert not supports_operation_plan(backend, widened)
+    reason = unsupported_plan_reason(backend, widened)
+    assert reason is not None
+    assert "Float64" in reason
 
 
 def test_a_compute_and_output_mismatch_does_not_match_either_direction():
@@ -773,6 +796,7 @@ def test_a_capability_round_trips_the_plan_it_was_built_from():
         assert entry.operation == resolved.operation
         assert entry.compute is resolved.compute
         assert entry.accumulation is resolved.accumulation
+        assert entry.accumulator_dtype is resolved.accumulator_dtype
         assert entry.output is resolved.output
 
 
@@ -838,10 +862,22 @@ def test_a_malformed_operand_capability_is_rejected(kwargs, message):
             TypeError,
             "accumulation must be an Accumulation",
         ),
+        (
+            {"accumulator_dtype": DType.Floating},
+            TypeError,
+            "accumulator_dtype must be a SimpleDType",
+        ),
         ({"output": DType.Any}, TypeError, "output must be a SimpleDType"),
         ({"operation": 7}, TypeError, "operation must be a str"),
     ],
-    ids=["operands", "compute", "accumulation", "output", "operation"],
+    ids=[
+        "operands",
+        "compute",
+        "accumulation",
+        "accumulator-dtype",
+        "output",
+        "operation",
+    ],
 )
 def test_a_malformed_capability_is_rejected(overrides, error, message):
     fields = {
@@ -851,6 +887,7 @@ def test_a_malformed_capability_is_rejected(overrides, error, message):
         ),
         "compute": Arithmetic.BINARY32,
         "accumulation": None,
+        "accumulator_dtype": None,
         "output": F32,
         **overrides,
     }

@@ -19,6 +19,7 @@ _install(
 )
 _install("Integer", DTypeCategory("Integer", supertype=DType.Any))
 _install("Float32", SimpleDType("Float32", bits=32, supertype=DType.Floating))
+_install("Float64", SimpleDType("Float64", bits=64, supertype=DType.Floating))
 _install("Int32", SimpleDType("Int32", bits=32, supertype=DType.Integer))
 # Bool is a concrete logical encoding, deliberately outside the numeric
 # Floating/Integer categories.  It is rooted at Any so it remains a first-class

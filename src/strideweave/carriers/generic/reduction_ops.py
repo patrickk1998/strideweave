@@ -24,6 +24,7 @@ from ..operation_helpers import (
     _require_two_mode_tensor,
     _tensor_with_layout_like,
 )
+from ..operation_policy import OperationExecutionOptions
 from .execution import executing, extrema_total, gradient_arithmetic, unary_arithmetic
 
 __all__ = [
@@ -95,6 +96,7 @@ def _reduce_forward(
     combine: Callable[[Any, list[Any]], Any],
     *,
     output_dtype: DType | None = None,
+    options: OperationExecutionOptions | None = None,
 ) -> Any:
     tensor = _require_two_mode_tensor(tensor, "tensor")
     n_size = _mode_logical_size(tensor.layout, 0)
@@ -102,7 +104,7 @@ def _reduce_forward(
     _require_nonempty_fiber(m_size)
     output_layout = _canonical_layout_for_shape(Shape(_mode_shape(tensor.layout, 0)))
     owner.ctx["output_layout"] = output_layout
-    arithmetic = unary_arithmetic(operation, tensor, None)
+    arithmetic = unary_arithmetic(operation, tensor, None, options=options)
     with executing(arithmetic):
         values = []
         for i in range(n_size):
@@ -122,6 +124,7 @@ class GenericReduceSumOperation(Operation):
             tensor,
             "reduce_sum",
             lambda arithmetic, values: _sum_values(arithmetic, values),
+            options=self._execution_options,
         )
 
     def backward(self, gradient: Any) -> tuple[Any]:

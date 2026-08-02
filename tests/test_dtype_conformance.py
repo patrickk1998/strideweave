@@ -65,6 +65,17 @@ CONV_KERNEL_LAYOUT = Layout(Shape([1, 1, 1]), Stride([1, 1, 1]))
 # representable in binary32) and both signs; the integers stay small enough that
 # every integer plan produces a representable result.
 FLOAT_SAMPLE = (1.5, -2.25, 0.1, 3.0)
+# Accumulating operations use integer-valued binary32 terms whose products and
+# every possible partial sum are exact. Their bit comparison therefore checks
+# structure and addressing without requiring Generic and CPU to associate a
+# floating reduction in the same order.
+FLOAT_ACCUMULATION_SAMPLE = (1.0, -2.0, 3.0, 4.0)
+
+# The operations whose floating accumulation declares no normative association
+# order, and therefore need the order-independent payload above. Every other
+# combining operation pins its own order, so both backends must already agree
+# on the ordinary sample.
+FLOATING_ACCUMULATION_OPERATIONS = frozenset({"reduce_sum", "matmul"})
 INT_SAMPLE = (1, -2, 3, 4)
 BOOL_SAMPLE = (True, False, True, False)
 SELECT_TRUE_SAMPLE = (1.0, 2.0, 3.0, 4.0)
@@ -129,9 +140,9 @@ def cpu_carrier(values: tuple[Any, ...], dtype: DType) -> CPU:
 BACKENDS = {"generic": generic_carrier, "cpu": cpu_carrier}
 
 
-def sample_for(dtype: DType) -> tuple[Any, ...]:
+def sample_for(dtype: DType, *, accumulating: bool = False) -> tuple[Any, ...]:
     if dtype is DType.Float32:
-        return FLOAT_SAMPLE
+        return FLOAT_ACCUMULATION_SAMPLE if accumulating else FLOAT_SAMPLE
     if dtype is DType.Bool:
         return BOOL_SAMPLE
     return INT_SAMPLE
@@ -210,7 +221,7 @@ def values_for_tensor(
         if overload_index in {0, 1} and tensor_index == 1:
             return CLAMP_LOWER_SAMPLE
         return CLAMP_UPPER_SAMPLE
-    return sample_for(dtype)
+    return sample_for(dtype, accumulating=operation in FLOATING_ACCUMULATION_OPERATIONS)
 
 
 def invoke(operation: str, arguments: list[Any], backend: str) -> Tensor:
@@ -594,12 +605,14 @@ GAPPED_TWO_MODE = Layout(Shape([2, 2]), Stride([1, 4]))
 GAPPED_OFFSET = 1
 
 
-def gapped_tensor(dtype: DType, layout: Layout, backend: str) -> Tensor:
+def gapped_tensor(
+    dtype: DType, layout: Layout, backend: str, *, accumulating: bool = False
+) -> Tensor:
     """Build a tensor at a non-zero offset over a layout with storage holes."""
     zero = 0.0 if dtype is DType.Float32 else 0
     size = GAPPED_OFFSET + layout._cache.cosize
     carrier = BACKENDS[backend]((zero,) * size, dtype)
-    sample = sample_for(dtype)
+    sample = sample_for(dtype, accumulating=accumulating)
     for logical_index in range(layout.shape.logical_size):
         carrier[GAPPED_OFFSET + layout.index(logical_index)] = sample[logical_index]
     return Tensor(carrier, GAPPED_OFFSET, layout)
@@ -643,7 +656,15 @@ def test_backends_agree_over_a_layout_with_storage_holes(dtype, operation):
     )
 
     results = {
-        backend: invoke(gapped_tensor(dtype, layout, backend)) for backend in BACKENDS
+        backend: invoke(
+            gapped_tensor(
+                dtype,
+                layout,
+                backend,
+                accumulating=operation in FLOATING_ACCUMULATION_OPERATIONS,
+            )
+        )
+        for backend in BACKENDS
     }
 
     assert results["cpu"].dtype() is results["generic"].dtype()

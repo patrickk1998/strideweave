@@ -1007,8 +1007,14 @@ class GenericMatmulOperation(Operation):
 
         self.ctx["output_layout"] = output_layout
         arithmetic = binary_arithmetic(
-            "matmul", lhs, rhs, _generic_binary_dtype(lhs, rhs)
+            "matmul",
+            lhs,
+            rhs,
+            _generic_binary_dtype(lhs, rhs),
+            options=self._execution_options,
         )
+        if arithmetic.plan is not None:
+            self.ctx["accumulator_dtype"] = arithmetic.plan.accumulator_dtype
         with executing(arithmetic):
             values = [
                 arithmetic.store(
@@ -1033,8 +1039,9 @@ class GenericMatmulOperation(Operation):
         k_size = _mode_logical_size(lhs.layout, 1)
         m_size = _mode_logical_size(rhs.layout, 0)
 
-        lhs_arithmetic = gradient_arithmetic(lhs)
-        rhs_arithmetic = gradient_arithmetic(rhs)
+        accumulator_dtype = self.ctx.get("accumulator_dtype") or DType.Float32
+        lhs_arithmetic = gradient_arithmetic(lhs, accumulator_dtype)
+        rhs_arithmetic = gradient_arithmetic(rhs, accumulator_dtype)
         with executing(lhs_arithmetic):
             lhs_values = [
                 lhs_arithmetic.store(

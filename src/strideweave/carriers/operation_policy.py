@@ -35,19 +35,24 @@ from typing import Any, Final
 from .dtype import DType, SimpleDType
 
 __all__ = [
+    "ACCUMULATOR_CONFIGURABLE_OPERATIONS",
     "INT32_MAX",
     "INT32_MIN",
     "POW_INTEGER_EXPONENT_MAX",
+    "SUPPORTED_ACCUMULATOR_DTYPES",
     "SUPPORTED_TENSOR_DTYPES",
     "WEAK_SCALAR_PROBES",
     "Accumulation",
     "Arithmetic",
     "OperandPlan",
     "OperandRole",
+    "OperationExecutionOptions",
     "OperationOverload",
     "OperationPlan",
     "OperationSpec",
     "WeakScalarKind",
+    "operation_execution_options",
+    "plan_accumulator_variants",
     "registered_operations",
     "resolvable_plans",
     "resolve_operation_plan",
@@ -101,9 +106,17 @@ class Arithmetic(Enum):
 class Accumulation(Enum):
     """How an operation that combines many terms combines them.
 
+    ``FLOATING`` combines floating terms in the separately declared
+    ``accumulator_dtype``. The traversal and association order are backend
+    implementation choices rather than dtype policy, so a backend may sum
+    pairwise or in blocks. It is used by the sum reductions whose order is not
+    observable through a per-term result: ``reduce_sum`` and ``matmul``.
     ``SEQUENTIAL_BINARY32`` initializes to ``+0.0`` and adds each term in
     ascending logical index order, rounding in binary32 at every step; the order
-    is normative, so pairwise or blocked summation does not conform.
+    is normative, so pairwise or blocked summation does not conform. It remains
+    the accumulation of operations whose per-term ordering is part of their
+    observable result or their pinned reference semantics: ``cumsum``,
+    ``conv_general``, and ``scatter_add``.
     ``SEQUENTIAL_BINARY32_PRODUCT`` is the corresponding ordered product.
     ``MAXIMUM`` and ``MINIMUM`` apply the operation's pinned Float32 NaN and
     signed-zero rules in logical order. ``ARGMAX`` and ``ARGMIN`` additionally
@@ -112,6 +125,7 @@ class Accumulation(Enum):
     ``Int32``, so an intermediate partial sum may leave ``Int32`` range.
     """
 
+    FLOATING = "floating"
     SEQUENTIAL_BINARY32 = "sequential_binary32"
     SEQUENTIAL_BINARY32_PRODUCT = "sequential_binary32_product"
     MAXIMUM = "maximum"
@@ -148,6 +162,9 @@ class OperationPlan:
         compute: Arithmetic for the per-element computation.
         accumulation: How terms combine, or ``None`` for an operation that
             combines no terms.
+        accumulator_dtype: Concrete dtype used by a floating accumulation.
+            ``None`` for non-accumulating operations and exact mathematical
+            integer accumulation.
         output: The dtype the result carrier reports. Autograd eligibility is
             not a separate field: a result participates in autograd exactly
             when its dtype is floating, which is the framework-wide rule the
@@ -158,6 +175,7 @@ class OperationPlan:
     operands: tuple[OperandPlan, ...]
     compute: Arithmetic
     accumulation: Accumulation | None
+    accumulator_dtype: SimpleDType | None
     output: SimpleDType
 
 
@@ -196,6 +214,27 @@ class OperationOverload:
             not domain for domain in self.tensor_domains
         ):
             raise ValueError("a tensor dtype domain must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationExecutionOptions:
+    """Typed non-tensor options for one operation execution.
+
+    Args:
+        operation: Operation name these options were validated for.
+        accumulator_dtype: Requested floating accumulator dtype, or ``None`` to
+            select the policy default.
+    """
+
+    operation: str
+    accumulator_dtype: SimpleDType | None = None
+
+    def __post_init__(self) -> None:
+        """Apply the same option contract to direct construction and factories."""
+        validated = _validated_accumulator_dtype(
+            self.operation, self.accumulator_dtype, execution_options=True
+        )
+        object.__setattr__(self, "accumulator_dtype", validated)
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +317,20 @@ SUPPORTED_TENSOR_DTYPES: Final[tuple[SimpleDType, ...]] = (DType.Float32, DType.
 # floating path, and a weak float sends both there. Enumerating coverage with
 # these probes reaches every plan a weak scalar can produce.
 WEAK_SCALAR_PROBES: Final[tuple[Any, ...]] = (3, -1, 0.5)
+
+# The operations whose floating accumulator dtype callers may choose. Only the
+# sum reductions whose association order is already a backend implementation
+# choice are configurable; every other accumulating operation keeps the pinned
+# accumulation its reference semantics declare.
+ACCUMULATOR_CONFIGURABLE_OPERATIONS: Final[frozenset[str]] = frozenset(
+    {"reduce_sum", "matmul"}
+)
+
+# The accumulator dtypes a floating accumulation may declare, widest last.
+SUPPORTED_ACCUMULATOR_DTYPES: Final[tuple[SimpleDType, ...]] = (
+    DType.Float32,
+    DType.Float64,
+)
 
 _DEFERRED_COMPOUND_MESSAGE: Final = (
     "operation planning is not implemented for compound dtype {name!r}: a "
@@ -374,6 +427,7 @@ def _plan(
     compute: Arithmetic,
     output: SimpleDType,
     accumulation: Accumulation | None = None,
+    accumulator_dtype: SimpleDType | None = None,
 ) -> OperationPlan:
     """Build a plan from the decisions one rule made."""
     return OperationPlan(
@@ -381,6 +435,7 @@ def _plan(
         operands=operands,
         compute=compute,
         accumulation=accumulation,
+        accumulator_dtype=accumulator_dtype,
         output=output,
     )
 
@@ -721,9 +776,8 @@ def _resolve_reduce_sum(tensor_dtype: object) -> OperationPlan:
         (_tensor_operand(tensor, tensor),),
         compute=Arithmetic.INT32_EXACT_CHECKED if integer else Arithmetic.BINARY32,
         output=tensor,
-        accumulation=(
-            Accumulation.EXACT_INTEGER if integer else Accumulation.SEQUENTIAL_BINARY32
-        ),
+        accumulation=(Accumulation.EXACT_INTEGER if integer else Accumulation.FLOATING),
+        accumulator_dtype=None if integer else DType.Float32,
     )
 
 
@@ -744,13 +798,15 @@ def _resolve_matmul(lhs_dtype: object, rhs_dtype: object) -> OperationPlan:
             compute=Arithmetic.INT32_EXACT,
             output=DType.Int32,
             accumulation=Accumulation.EXACT_INTEGER,
+            accumulator_dtype=None,
         )
     return _plan(
         "matmul",
         _floating_binary_operands(lhs, rhs),
         compute=Arithmetic.BINARY32,
         output=DType.Float32,
-        accumulation=Accumulation.SEQUENTIAL_BINARY32,
+        accumulation=Accumulation.FLOATING,
+        accumulator_dtype=DType.Float32,
     )
 
 
@@ -1187,7 +1243,8 @@ def resolvable_plans(
             for operands in product(*operand_candidates):
                 plan = overload.rule(*operands)
                 _validate_overload_plan(spec, overload, plan)
-                plans[plan] = None
+                for variant in plan_accumulator_variants(plan):
+                    plans[variant] = None
     return tuple(plans)
 
 
@@ -1271,7 +1328,88 @@ def _validate_overload_plan(
         )
 
 
-def resolve_operation_plan(operation: str, *operands: object) -> OperationPlan:
+def _validated_accumulator_dtype(
+    operation: str,
+    accumulator_dtype: object | None,
+    *,
+    execution_options: bool,
+) -> SimpleDType | None:
+    """Validate one requested accumulator dtype against the operation."""
+    if operation not in ACCUMULATOR_CONFIGURABLE_OPERATIONS:
+        subject = "execution options" if execution_options else "accumulator_dtype"
+        raise TypeError(f"operation {operation!r} does not accept {subject}")
+    if accumulator_dtype is None:
+        return None
+    if not isinstance(accumulator_dtype, DType):
+        raise TypeError("accumulator_dtype must be a DType or None")
+    if not isinstance(accumulator_dtype, SimpleDType):
+        raise TypeError("accumulator_dtype must be a SimpleDType or None")
+    if accumulator_dtype not in SUPPORTED_ACCUMULATOR_DTYPES:
+        raise NotImplementedError(
+            f"DType.{accumulator_dtype.name} is not a supported accumulator dtype"
+        )
+    return accumulator_dtype
+
+
+def plan_accumulator_variants(plan: OperationPlan) -> tuple[OperationPlan, ...]:
+    """Return ``plan`` and every other accumulator dtype it also resolves under.
+
+    A backend enumerating the plans it may be asked to execute has to include
+    the caller-selectable accumulators, not only the operation's default. The
+    expansion lives here so each backend's enumeration and
+    :func:`resolvable_plans` agree by construction.
+
+    Args:
+        plan: A resolved operation plan.
+
+    Returns:
+        A tuple beginning with ``plan``, followed by one plan per remaining
+        supported accumulator dtype when the operation's accumulator is
+        caller-selectable, and just ``(plan,)` otherwise.
+
+    Examples:
+        >>> from strideweave.carriers.dtype import DType
+        >>> from strideweave.carriers.operation_policy import (
+        ...     plan_accumulator_variants,
+        ...     resolve_operation_plan,
+        ... )
+        >>> plans = plan_accumulator_variants(
+        ...     resolve_operation_plan("reduce_sum", DType.Float32)
+        ... )
+        >>> tuple(entry.accumulator_dtype.name for entry in plans)
+        ('Float32', 'Float64')
+    """
+    if plan.operation not in ACCUMULATOR_CONFIGURABLE_OPERATIONS:
+        return (plan,)
+    if plan.accumulation is not Accumulation.FLOATING:
+        return (plan,)
+    return (plan,) + tuple(
+        _with_accumulator_dtype(plan, dtype)
+        for dtype in SUPPORTED_ACCUMULATOR_DTYPES
+        if dtype is not plan.accumulator_dtype
+    )
+
+
+def _with_accumulator_dtype(
+    plan: OperationPlan, accumulator_dtype: SimpleDType
+) -> OperationPlan:
+    """Return ``plan`` with its floating accumulator replaced."""
+    return OperationPlan(
+        operation=plan.operation,
+        operands=plan.operands,
+        compute=plan.compute,
+        accumulation=plan.accumulation,
+        accumulator_dtype=accumulator_dtype,
+        output=plan.output,
+    )
+
+
+def resolve_operation_plan(
+    operation: str,
+    *operands: object,
+    accumulator_dtype: object | None = None,
+    options: OperationExecutionOptions | None = None,
+) -> OperationPlan:
     """Resolve the shared :class:`OperationPlan` for one operation invocation.
 
     This is the single entry point every backend uses. Tensor operands are given
@@ -1284,6 +1422,11 @@ def resolve_operation_plan(operation: str, *operands: object) -> OperationPlan:
             ``"relu"``, or ``"exp"``).
         *operands: One value per operand position: a ``SimpleDType`` for a
             tensor operand, a real Python number for a weak scalar operand.
+        accumulator_dtype: Optional accumulator dtype for ``reduce_sum`` and
+            ``matmul``. ``DType.Float64`` selects widened floating accumulation;
+            ``None`` preserves the default accumulator.
+        options: Validated execution options supplied by operation dispatch.
+            This is mutually exclusive with ``accumulator_dtype``.
 
     Returns:
         The resolved immutable plan.
@@ -1306,6 +1449,23 @@ def resolve_operation_plan(operation: str, *operands: object) -> OperationPlan:
         >>> plan.compute
         <Arithmetic.BINARY32: 'binary32'>
     """
+    if options is not None:
+        if not isinstance(options, OperationExecutionOptions):
+            raise TypeError("options must be OperationExecutionOptions or None")
+        if options.operation != operation:
+            raise ValueError(
+                f"execution options for {options.operation!r} cannot be used for "
+                f"operation {operation!r}"
+            )
+        if accumulator_dtype is not None:
+            raise TypeError("pass either options or accumulator_dtype, not both")
+        accumulator_dtype = _validated_accumulator_dtype(
+            operation, options.accumulator_dtype, execution_options=True
+        )
+    elif accumulator_dtype is not None:
+        accumulator_dtype = _validated_accumulator_dtype(
+            operation, accumulator_dtype, execution_options=False
+        )
     spec = _REGISTRY.get(operation)
     if spec is None:
         raise NotImplementedError(
@@ -1314,4 +1474,49 @@ def resolve_operation_plan(operation: str, *operands: object) -> OperationPlan:
     overload = _select_overload(spec, operands)
     plan = overload.rule(*operands)
     _validate_overload_plan(spec, overload, plan)
-    return plan
+    if accumulator_dtype is None:
+        return plan
+    if plan.accumulation is not Accumulation.FLOATING:
+        raise TypeError(
+            f"operation {operation!r} uses exact-integer accumulation for these "
+            "operands and cannot use a floating accumulator_dtype"
+        )
+    return _with_accumulator_dtype(plan, accumulator_dtype)
+
+
+def operation_execution_options(
+    operation: str, *, accumulator_dtype: object | None = None
+) -> OperationExecutionOptions:
+    """Validate and return typed non-tensor options for one execution.
+
+    Args:
+        operation: Operation name the options apply to. Only the operations in
+            ``ACCUMULATOR_CONFIGURABLE_OPERATIONS`` accept execution options.
+        accumulator_dtype: Requested floating accumulator dtype, or ``None`` to
+            keep the policy default.
+
+    Returns:
+        The validated :class:`OperationExecutionOptions`.
+
+    Raises:
+        TypeError: If the operation accepts no execution options or the
+            requested accumulator dtype is not a ``SimpleDType``.
+        NotImplementedError: If the accumulator dtype is not supported.
+
+    Examples:
+        >>> from strideweave.carriers.dtype import DType
+        >>> from strideweave.carriers.operation_policy import (
+        ...     operation_execution_options,
+        ... )
+        >>> options = operation_execution_options(
+        ...     "reduce_sum", accumulator_dtype=DType.Float64
+        ... )
+        >>> options.accumulator_dtype is DType.Float64
+        True
+    """
+    return OperationExecutionOptions(
+        operation,
+        _validated_accumulator_dtype(
+            operation, accumulator_dtype, execution_options=True
+        ),
+    )
