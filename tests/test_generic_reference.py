@@ -180,6 +180,40 @@ def test_exp_overflow_saturates_to_infinity():
     assert result[1] == 1.0
 
 
+def test_reduce_can_widen_only_its_float32_accumulation():
+    layout = Layout(Shape([1, 4]), Stride([1, 1]))
+    values = [2**24, 1.0, 1.0, -(2**24)]
+    tensor = generic_tensor(values, DType.Float32, layout)
+    stored_before = values_of(tensor)
+
+    widened = sw.reduce_sum(tensor, "a b -> a", accumulator_dtype=DType.Float64)
+    explicit_default = sw.reduce_sum(
+        tensor, "a b -> a", accumulator_dtype=DType.Float32
+    )
+    default = sw.reduce_sum(tensor, "a b -> a")
+
+    assert stored_before == [binary32(value) for value in values]
+    assert values_of(tensor) == stored_before
+    assert tensor.dtype() is DType.Float32
+    assert widened.dtype() is DType.Float32
+    assert widened[0] == 2.0
+    assert explicit_default[0] == default[0] == 0.0
+
+
+def test_matmul_can_widen_only_its_float32_accumulation():
+    layout = Layout(Shape([1, 4]), Stride([1, 1]))
+    lhs = generic_tensor([2**24, 1.0, 1.0, -(2**24)], DType.Float32, layout)
+    rhs = generic_tensor([1.0, 1.0, 1.0, 1.0], DType.Float32, layout)
+
+    widened = sw.matmul(lhs, rhs, accumulator_dtype=DType.Float64)
+    default = sw.matmul(lhs, rhs)
+
+    assert lhs.dtype() is rhs.dtype() is DType.Float32
+    assert widened.dtype() is default.dtype() is DType.Float32
+    assert widened[0, 0] == 2.0
+    assert default[0, 0] == 0.0
+
+
 def test_int32_arithmetic_is_exact_and_checked():
     lhs = generic_tensor([2**31 - 1, 2], DType.Int32)
     rhs = generic_tensor([1, 3], DType.Int32)
@@ -311,6 +345,19 @@ def test_matmul_gradients_accumulate_in_binary32():
     assert values_of(require_grad(lhs)) == [3.0, 4.0]
 
 
+def test_matmul_backward_reuses_the_forward_accumulator_dtype():
+    lhs_layout = Layout(Shape([1, 1]), Stride([1, 1]))
+    rhs_layout = Layout(Shape([4, 1]), Stride([1, 1]))
+    lhs = generic_tensor([1.0], DType.Float32, lhs_layout)
+    rhs = generic_tensor([2**24, 1.0, 1.0, -(2**24)], DType.Float32, rhs_layout)
+
+    result = sw.matmul(lhs, rhs, accumulator_dtype=DType.Float64)
+    result.backward(generic_tensor([1.0] * 4, DType.Float32, result.layout))
+
+    assert require_grad(lhs).dtype() is DType.Float32
+    assert require_grad(lhs)[0, 0] == 2.0
+
+
 # --- The legacy boundary ---------------------------------------------------
 
 
@@ -359,7 +406,14 @@ def test_generic_and_cpu_agree_on_concrete_results():
 # widen the shipped backend to reach the adapter.
 
 
-def plan_of(compute, output, accumulation=None, convert_to=None, operation="relu"):
+def plan_of(
+    compute,
+    output,
+    accumulation=None,
+    accumulator_dtype=None,
+    convert_to=None,
+    operation="relu",
+):
     """Build a plan directly, bypassing the resolver's own correlations."""
     convert_to = output if convert_to is None else convert_to
     return OperationPlan(
@@ -371,6 +425,7 @@ def plan_of(compute, output, accumulation=None, convert_to=None, operation="relu
         ),
         compute=compute,
         accumulation=accumulation,
+        accumulator_dtype=accumulator_dtype,
         output=output,
     )
 
@@ -387,6 +442,7 @@ def plan_of_capability(capability):
         ),
         compute=capability.compute,
         accumulation=capability.accumulation,
+        accumulator_dtype=capability.accumulator_dtype,
         output=capability.output,
     )
 
@@ -401,6 +457,7 @@ MIXED_CONVERSION_PLAN = OperationPlan(
     ),
     compute=Arithmetic.BINARY32,
     accumulation=None,
+    accumulator_dtype=None,
     output=DType.Float32,
 )
 
@@ -426,19 +483,35 @@ ACCUMULATING_OPERATIONS = frozenset(
     }
 )
 
+# One accumulator shape per (accumulation, accumulator_dtype) pair a capability
+# may declare. Generic implements both floating accumulators for the two sum
+# reductions whose association order the policy leaves to the backend; every
+# other combining operation pins one order-normative rule and no accumulator
+# dtype.
+_FLOATING = frozenset(
+    {
+        (Accumulation.FLOATING, DType.Float32),
+        (Accumulation.FLOATING, DType.Float64),
+    }
+)
+_EXACT_INTEGER = frozenset({(Accumulation.EXACT_INTEGER, None)})
+
+
+def _pinned(accumulation):
+    return frozenset({(accumulation, None)})
+
+
 EXPECTED_ACCUMULATIONS = {
-    "argmax": frozenset({Accumulation.ARGMAX}),
-    "argmin": frozenset({Accumulation.ARGMIN}),
-    "conv_general": frozenset({Accumulation.SEQUENTIAL_BINARY32}),
-    "cumsum": frozenset({Accumulation.SEQUENTIAL_BINARY32}),
-    "matmul": frozenset({Accumulation.SEQUENTIAL_BINARY32, Accumulation.EXACT_INTEGER}),
-    "reduce_max": frozenset({Accumulation.MAXIMUM}),
-    "reduce_min": frozenset({Accumulation.MINIMUM}),
-    "reduce_prod": frozenset({Accumulation.SEQUENTIAL_BINARY32_PRODUCT}),
-    "reduce_sum": frozenset(
-        {Accumulation.SEQUENTIAL_BINARY32, Accumulation.EXACT_INTEGER}
-    ),
-    "scatter_add": frozenset({Accumulation.SEQUENTIAL_BINARY32}),
+    "argmax": _pinned(Accumulation.ARGMAX),
+    "argmin": _pinned(Accumulation.ARGMIN),
+    "conv_general": _pinned(Accumulation.SEQUENTIAL_BINARY32),
+    "cumsum": _pinned(Accumulation.SEQUENTIAL_BINARY32),
+    "matmul": _FLOATING | _EXACT_INTEGER,
+    "reduce_max": _pinned(Accumulation.MAXIMUM),
+    "reduce_min": _pinned(Accumulation.MINIMUM),
+    "reduce_prod": _pinned(Accumulation.SEQUENTIAL_BINARY32_PRODUCT),
+    "reduce_sum": _FLOATING | _EXACT_INTEGER,
+    "scatter_add": _pinned(Accumulation.SEQUENTIAL_BINARY32),
 }
 
 
@@ -581,12 +654,14 @@ INCOHERENT_PLANS = {
         Arithmetic.BINARY32,
         DType.Float32,
         accumulation=Accumulation.EXACT_INTEGER,
+        accumulator_dtype=None,
         operation="reduce_sum",
     ),
     "integer-compute-binary32-accumulation": plan_of(
         Arithmetic.INT32_EXACT_CHECKED,
         DType.Int32,
-        accumulation=Accumulation.SEQUENTIAL_BINARY32,
+        accumulation=Accumulation.FLOATING,
+        accumulator_dtype=DType.Float32,
         operation="reduce_sum",
     ),
     # An operation whose loop combines terms needs an accumulation to combine
@@ -601,7 +676,8 @@ INCOHERENT_PLANS = {
     "accumulating-elementwise": plan_of(
         Arithmetic.BINARY32,
         DType.Float32,
-        accumulation=Accumulation.SEQUENTIAL_BINARY32,
+        accumulation=Accumulation.FLOATING,
+        accumulator_dtype=DType.Float32,
         operation="relu",
     ),
     "mixed-conversion": MIXED_CONVERSION_PLAN,
@@ -672,10 +748,12 @@ def test_generic_advertises_no_cross_field_incoherent_capability():
                 ) == expected_mixed
         if capability.operation in ACCUMULATING_OPERATIONS:
             assert (
-                capability.accumulation in EXPECTED_ACCUMULATIONS[capability.operation]
-            )
+                capability.accumulation,
+                capability.accumulator_dtype,
+            ) in EXPECTED_ACCUMULATIONS[capability.operation]
         else:
             assert capability.accumulation is None
+            assert capability.accumulator_dtype is None
 
 
 def test_a_binary32_reduction_is_never_accumulated_as_exact_integers():

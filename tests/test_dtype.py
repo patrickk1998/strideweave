@@ -36,6 +36,7 @@ BUILT_IN_CATEGORIES = (
 )
 BUILT_IN_SIMPLE_DTYPES = (
     DType.Float32,
+    DType.Float64,
     DType.Int32,
     DType.Int8,
     DType.Bool,
@@ -144,6 +145,7 @@ def test_built_in_categories_are_categories():
 def test_built_in_simple_dtypes_declare_exact_bit_widths():
     expected_bits = {
         DType.Float32: 32,
+        DType.Float64: 64,
         DType.Int32: 32,
         DType.Int8: 8,
         DType.Bool: 8,
@@ -168,9 +170,11 @@ def test_built_in_supertype_relationships():
     assert DType.Floating.supertype is DType.Any
     assert DType.Integer.supertype is DType.Any
     assert DType.Float32.supertype is DType.Floating
+    assert DType.Float64.supertype is DType.Floating
     assert DType.Int32.supertype is DType.Integer
 
     assert DType.Float32.supertypes() == (DType.Floating, DType.Any)
+    assert DType.Float64.supertypes() == (DType.Floating, DType.Any)
     assert DType.Int32.supertypes() == (DType.Integer, DType.Any)
     assert DType.Any.supertypes() == ()
 
@@ -182,6 +186,10 @@ def test_built_in_supertype_relationships():
         (DType.Float32, DType.Floating, True),
         (DType.Float32, DType.Any, True),
         (DType.Float32, DType.Integer, False),
+        (DType.Float64, DType.Float64, True),
+        (DType.Float64, DType.Floating, True),
+        (DType.Float64, DType.Any, True),
+        (DType.Float64, DType.Integer, False),
         (DType.Int32, DType.Integer, True),
         (DType.Int32, DType.Any, True),
         (DType.Int32, DType.Floating, False),
@@ -338,7 +346,8 @@ def test_carrier_dtype_tags_expose_the_value_alias():
 
 def test_registry_lookup_rejects_unknown_and_mistyped_names():
     with pytest.raises(LookupError, match="No StrideWeave dtype named"):
-        DType.from_name("Float64")
+        DType.from_name("Float16")
+    assert DType.from_name("Float64") is DType.Float64
     with pytest.raises(LookupError, match="not a SimpleDType descriptor"):
         SimpleDType.from_name("Floating")
 

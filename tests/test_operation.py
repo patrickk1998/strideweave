@@ -4,7 +4,9 @@ from typing import Any
 import pytest
 
 import strideweave as sw
-from strideweave import Generic, Layout, Operation, Shape, Stride, Tensor
+import strideweave.functional.api as functional_api
+from strideweave import FileBacked, Generic, Layout, Operation, Shape, Stride, Tensor
+from strideweave.carriers.operation_policy import operation_execution_options
 from strideweave.operation import is_grad_enabled, set_grad_enabled
 
 
@@ -82,6 +84,123 @@ def test_python_operation_forward_stores_tensor_inputs_and_context():
     assert operation.inputs() == (lhs, rhs)
     assert operation.ctx["input_count"] == 3
     assert operation.backward("grad") == ("grad", "grad")
+
+
+def test_execution_options_are_not_positional_or_saved_autograd_inputs():
+    operation = EchoOperation()
+    tensor = make_tensor([1, 2])
+    options = operation_execution_options("reduce_sum")
+
+    result = operation.forward(tensor, "label", options=options)
+
+    assert result.autograd_ctx is operation
+    assert operation.ctx["input_count"] == 2
+    assert operation.inputs() == (tensor,)
+    assert operation.input_versions() == (tensor._version_token(),)
+    assert operation._execution_options is options
+
+
+def test_operation_forward_rejects_unknown_execution_option_names():
+    with pytest.raises(TypeError, match="unknown operation execution option"):
+        EchoOperation().forward(
+            make_tensor([1, 2]),
+            accumulator_dtype=sw.DType.Float64,  # pyright: ignore[reportCallIssue]
+        )
+
+
+def test_lowered_execution_preserves_typed_options_outside_inputs():
+    operation = EchoOperation()
+    saved = make_tensor([1, 2])
+    options = operation_execution_options("matmul")
+    operation.store_inputs(saved)
+
+    operation._execute_lowered(  # strideweave-lint: ignore=RT011
+        make_tensor([3, 4]), options=options
+    )
+
+    assert operation.inputs() == (saved,)
+    assert operation._execution_options is options
+
+
+def test_default_accumulations_use_the_positional_forward_path(monkeypatch):
+    calls = []
+
+    class SpyOperation:
+        def forward(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "result"
+
+    monkeypatch.setattr(functional_api, "_dispatch_unary", lambda *_: SpyOperation())
+    monkeypatch.setattr(functional_api, "_dispatch_binary", lambda *_: SpyOperation())
+    monkeypatch.setattr(
+        functional_api,
+        "operation_execution_options",
+        lambda *_args, **_kwargs: pytest.fail("default path allocated options"),
+    )
+
+    assert functional_api._reduce_second_mode("tensor") == "result"
+    assert functional_api._matmul_2mode("lhs", "rhs") == "result"
+    assert calls == [(("tensor",), {}), (("lhs", "rhs"), {})]
+
+
+def test_explicit_accumulations_pass_typed_options(monkeypatch):
+    options = object()
+    calls = []
+
+    class SpyOperation:
+        def forward(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "result"
+
+    monkeypatch.setattr(functional_api, "_dispatch_unary", lambda *_: SpyOperation())
+    monkeypatch.setattr(functional_api, "_dispatch_binary", lambda *_: SpyOperation())
+    monkeypatch.setattr(
+        functional_api, "operation_execution_options", lambda *_args, **_kwargs: options
+    )
+
+    functional_api._reduce_second_mode("tensor", accumulator_dtype=sw.DType.Float64)
+    functional_api._matmul_2mode("lhs", "rhs", accumulator_dtype=sw.DType.Float32)
+    assert calls == [
+        (("tensor",), {"options": options}),
+        (("lhs", "rhs"), {"options": options}),
+    ]
+
+
+def test_explicit_invalid_accumulators_are_rejected_before_dispatch(monkeypatch):
+    monkeypatch.setattr(
+        functional_api,
+        "_dispatch_unary",
+        lambda *_: pytest.fail("reduce dispatched before validating its accumulator"),
+    )
+    monkeypatch.setattr(
+        functional_api,
+        "_dispatch_binary",
+        lambda *_: pytest.fail("matmul dispatched before validating its accumulator"),
+    )
+
+    with pytest.raises(TypeError, match="accumulator_dtype must be a DType or None"):
+        functional_api._reduce_second_mode(
+            "tensor",
+            accumulator_dtype="Float64",  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="accumulator_dtype must be a DType or None"):
+        functional_api._matmul_2mode(
+            "lhs",
+            "rhs",
+            accumulator_dtype="Float64",  # type: ignore[arg-type]
+        )
+
+
+def test_public_reduce_validates_an_invalid_accumulator_before_file_backed_dispatch():
+    carrier = FileBacked(dtype=sw.DType.Float32).new_like([1.0, 2.0])
+    tensor = Tensor(carrier, 0, Layout(Shape([1, 2]), Stride([1, 1])))
+
+    with pytest.raises(TypeError, match="accumulator_dtype must be a DType or None"):
+        sw.reduce_sum(
+            tensor,
+            "a b -> a",
+            accumulator_dtype="Float64",  # type: ignore[arg-type]
+        )
 
 
 def test_no_grad_skips_input_storage_and_autograd_context():

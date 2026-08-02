@@ -67,29 +67,47 @@ _COMPUTE_DTYPES: Final[dict[Arithmetic, SimpleDType]] = {
     Arithmetic.INT32_EXACT: DType.Int32,
 }
 
-# The accumulator each compute arithmetic's combining kernel uses: a sequential
-# binary32 sum, or the exact 128-bit integer accumulator narrowed once at the
-# end.
-_COMPUTE_ACCUMULATIONS: Final[dict[Arithmetic, Accumulation]] = {
-    Arithmetic.BINARY32: Accumulation.SEQUENTIAL_BINARY32,
-    Arithmetic.INT32_EXACT_CHECKED: Accumulation.EXACT_INTEGER,
-    Arithmetic.INT32_EXACT: Accumulation.EXACT_INTEGER,
+# One accumulator shape is the pair a plan declares: how terms combine and, for
+# a floating accumulation, the dtype they combine in. A non-floating
+# accumulation names no accumulator dtype.
+_AccumulatorShape = tuple[Accumulation, SimpleDType | None]
+
+# The accumulator shapes each compute arithmetic's combining kernel implements
+# when the operation declares no more specific accumulation: binary32 terms
+# combine in a Float32 accumulator, and integer terms use the exact 128-bit
+# accumulator narrowed once at the end.
+_COMPUTE_ACCUMULATIONS: Final[dict[Arithmetic, frozenset[_AccumulatorShape]]] = {
+    Arithmetic.BINARY32: frozenset({(Accumulation.FLOATING, DType.Float32)}),
+    Arithmetic.INT32_EXACT_CHECKED: frozenset({(Accumulation.EXACT_INTEGER, None)}),
+    Arithmetic.INT32_EXACT: frozenset({(Accumulation.EXACT_INTEGER, None)}),
 }
 
 
-_SPECIAL_ACCUMULATIONS: Final[dict[str, frozenset[Accumulation]]] = {
+# The accumulator shapes the operations with pinned reference accumulation
+# implement, independently of their compute arithmetic. Native CPU currently
+# executes only the Float32 accumulator for the configurable sum reductions, so
+# it deliberately does not advertise their Float64 plans.
+_SPECIAL_ACCUMULATIONS: Final[dict[str, frozenset[_AccumulatorShape]]] = {
     "reduce_sum": frozenset(
-        {Accumulation.SEQUENTIAL_BINARY32, Accumulation.EXACT_INTEGER}
+        {
+            (Accumulation.FLOATING, DType.Float32),
+            (Accumulation.EXACT_INTEGER, None),
+        }
     ),
-    "reduce_prod": frozenset({Accumulation.SEQUENTIAL_BINARY32_PRODUCT}),
-    "reduce_max": frozenset({Accumulation.MAXIMUM}),
-    "reduce_min": frozenset({Accumulation.MINIMUM}),
-    "argmax": frozenset({Accumulation.ARGMAX}),
-    "argmin": frozenset({Accumulation.ARGMIN}),
-    "cumsum": frozenset({Accumulation.SEQUENTIAL_BINARY32}),
-    "matmul": frozenset({Accumulation.SEQUENTIAL_BINARY32, Accumulation.EXACT_INTEGER}),
-    "conv_general": frozenset({Accumulation.SEQUENTIAL_BINARY32}),
-    "scatter_add": frozenset({Accumulation.SEQUENTIAL_BINARY32}),
+    "reduce_prod": frozenset({(Accumulation.SEQUENTIAL_BINARY32_PRODUCT, None)}),
+    "reduce_max": frozenset({(Accumulation.MAXIMUM, None)}),
+    "reduce_min": frozenset({(Accumulation.MINIMUM, None)}),
+    "argmax": frozenset({(Accumulation.ARGMAX, None)}),
+    "argmin": frozenset({(Accumulation.ARGMIN, None)}),
+    "cumsum": frozenset({(Accumulation.SEQUENTIAL_BINARY32, None)}),
+    "matmul": frozenset(
+        {
+            (Accumulation.FLOATING, DType.Float32),
+            (Accumulation.EXACT_INTEGER, None),
+        }
+    ),
+    "conv_general": frozenset({(Accumulation.SEQUENTIAL_BINARY32, None)}),
+    "scatter_add": frozenset({(Accumulation.SEQUENTIAL_BINARY32, None)}),
 }
 
 
@@ -124,8 +142,9 @@ def executable_plan_shape(plan: OperationPlan) -> bool:
     Returns:
         ``True`` when the operands convert uniformly into the element type
         ``compute`` names, the result is stored in that same type, and the
-        accumulation is present exactly for the operations whose kernels
-        combine terms.
+        accumulation and its accumulator dtype together name a combining kernel
+        this backend has written. Accumulation is present exactly for the
+        operations whose kernels combine terms.
 
     Examples:
         >>> from strideweave.carriers.dtype import DType
@@ -154,10 +173,11 @@ def executable_plan_shape(plan: OperationPlan) -> bool:
     if plan.output is not expected_output:
         return False
     if plan.operation not in _ACCUMULATING_OPERATIONS:
-        return plan.accumulation is None
+        return plan.accumulation is None and plan.accumulator_dtype is None
+    shape = (plan.accumulation, plan.accumulator_dtype)
     if plan.operation in _SPECIAL_ACCUMULATIONS:
-        return plan.accumulation in _SPECIAL_ACCUMULATIONS[plan.operation]
-    return plan.accumulation is _COMPUTE_ACCUMULATIONS[plan.compute]
+        return shape in _SPECIAL_ACCUMULATIONS[plan.operation]
+    return shape in _COMPUTE_ACCUMULATIONS[plan.compute]
 
 
 def cpu_capabilities() -> tuple[OperationCapability, ...]:

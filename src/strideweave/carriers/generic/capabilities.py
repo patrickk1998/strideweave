@@ -27,6 +27,7 @@ from ..operation_policy import (
     WEAK_SCALAR_PROBES,
     OperandRole,
     OperationPlan,
+    plan_accumulator_variants,
     registered_operations,
 )
 from .execution import executable_plan_shape
@@ -85,7 +86,8 @@ def _resolvable_generic_plans() -> tuple[OperationPlan, ...]:
                     )
                 tensor_domain_index += 1
             for operands in product(*candidates):
-                plans[overload.rule(*operands)] = None
+                for plan in plan_accumulator_variants(overload.rule(*operands)):
+                    plans[plan] = None
     return tuple(plans)
 
 

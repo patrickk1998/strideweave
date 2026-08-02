@@ -156,6 +156,8 @@ class OperationCapability:
             no terms. This distinction is operation-specific and is matched
             exactly: an accumulating backend branch must not be reached by a
             plan that declares no accumulation.
+        accumulator_dtype: Concrete dtype used by a floating accumulation, or
+            ``None`` for non-accumulating and exact-integer shapes.
         output: The dtype the result carrier reports.
 
     Examples:
@@ -171,6 +173,7 @@ class OperationCapability:
     operands: tuple[OperandCapability, ...]
     compute: Arithmetic
     accumulation: Accumulation | None
+    accumulator_dtype: SimpleDType | None
     output: SimpleDType
 
     def __post_init__(self) -> None:
@@ -188,6 +191,10 @@ class OperationCapability:
             self.accumulation, Accumulation
         ):
             raise TypeError("accumulation must be an Accumulation or None")
+        if self.accumulator_dtype is not None and not isinstance(
+            self.accumulator_dtype, SimpleDType
+        ):
+            raise TypeError("accumulator_dtype must be a SimpleDType or None")
         if not isinstance(self.output, SimpleDType):
             raise TypeError("output must be a SimpleDType")
 
@@ -229,6 +236,7 @@ class OperationCapability:
             ),
             compute=plan.compute,
             accumulation=plan.accumulation,
+            accumulator_dtype=plan.accumulator_dtype,
             output=plan.output,
         )
 
@@ -269,6 +277,7 @@ _CapabilityKey = tuple[
     tuple[tuple[OperandRole, SimpleDType | None, SimpleDType], ...],
     Arithmetic,
     Accumulation | None,
+    SimpleDType | None,
     SimpleDType,
 ]
 
@@ -282,6 +291,7 @@ def _capability_key(capability: OperationCapability) -> _CapabilityKey:
         ),
         capability.compute,
         capability.accumulation,
+        capability.accumulator_dtype,
         capability.output,
     )
 
@@ -295,6 +305,7 @@ def _plan_key(plan: OperationPlan) -> _CapabilityKey:
         ),
         plan.compute,
         plan.accumulation,
+        plan.accumulator_dtype,
         plan.output,
     )
 
@@ -315,6 +326,11 @@ def _sort_key(capability: OperationCapability) -> tuple[str, ...]:
         ),
         capability.compute.value,
         "" if capability.accumulation is None else capability.accumulation.value,
+        (
+            ""
+            if capability.accumulator_dtype is None
+            else capability.accumulator_dtype.name
+        ),
         capability.output.name,
     )
 
@@ -1266,12 +1282,17 @@ def _describe(
     operands: str,
     compute: Arithmetic,
     accumulation: Accumulation | None,
+    accumulator_dtype: SimpleDType | None,
     output: SimpleDType,
 ) -> str:
     combination = (
         "no accumulation"
         if accumulation is None
-        else f"{accumulation.value} accumulation"
+        else (
+            f"{accumulation.value} accumulation"
+            if accumulator_dtype is None
+            else f"{accumulation.value} {accumulator_dtype.name} accumulation"
+        )
     )
     return (
         f"{operation} with operands ({operands}), {compute.value} compute, "
@@ -1289,6 +1310,7 @@ def _describe_capability(capability: OperationCapability) -> str:
         operands,
         capability.compute,
         capability.accumulation,
+        capability.accumulator_dtype,
         capability.output,
     )
 
@@ -1299,5 +1321,10 @@ def _describe_plan(plan: OperationPlan) -> str:
         for operand in plan.operands
     )
     return _describe(
-        plan.operation, operands, plan.compute, plan.accumulation, plan.output
+        plan.operation,
+        operands,
+        plan.compute,
+        plan.accumulation,
+        plan.accumulator_dtype,
+        plan.output,
     )

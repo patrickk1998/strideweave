@@ -337,7 +337,12 @@ def rearrange(tensor: Any, description: str) -> Any:
     return _rearrange_tree(tensor, spec.output, spec.selection)
 
 
-def reduce(tensor: Any, description: str) -> Any:
+def reduce(
+    tensor: Any,
+    description: str,
+    *,
+    accumulator_dtype: Any | None = None,
+) -> Any:
     """Sum-reduce a tensor using a StrideWeave layout description.
 
     Dimensions omitted from the output reference are grouped into the reduction
@@ -362,6 +367,8 @@ def reduce(tensor: Any, description: str) -> Any:
     Args:
         tensor: Tensor to reduce.
         description: Reduce command such as ``"a b -> a"``.
+        accumulator_dtype: Floating accumulator dtype forwarded to the
+            two-mode reduction primitive. ``None`` selects its default.
 
     Returns:
         Tensor containing the kept dimensions after summing omitted dimensions.
@@ -381,7 +388,7 @@ def reduce(tensor: Any, description: str) -> Any:
     from ..functional.api import _rearrange_tree, _reduce_second_mode
 
     intermediate = _rearrange_tree(tensor, spec.rearrange_output, spec.selection)
-    return _reduce_second_mode(intermediate)
+    return _reduce_second_mode(intermediate, accumulator_dtype=accumulator_dtype)
 
 
 def einsum(lhs: Any, rhs: Any, description: str) -> Any:

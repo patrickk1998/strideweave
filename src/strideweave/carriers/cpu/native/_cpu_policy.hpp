@@ -43,6 +43,7 @@ enum class CpuArithmetic { Binary32, Int32ExactChecked, Int32Exact };
 // operation that combines no terms.
 enum class CpuAccumulation {
     None,
+    Floating,
     SequentialBinary32,
     SequentialBinary32Product,
     Maximum,
@@ -52,17 +53,23 @@ enum class CpuAccumulation {
     ExactInteger,
 };
 
+// Mirrors the plan's accumulator_dtype, which a floating accumulation declares
+// and every other accumulation leaves unset.
+enum class CpuAccumulatorDType { None, Float32, Float64 };
+
 struct CpuBindings {
     py::object resolve_operation_plan;
     py::object require_capability;
     py::object tensor_type;
     py::object compound_dtype;
     py::object float32;
+    py::object float64;
     py::object int32;
     py::object boolean;
     py::object binary32;
     py::object int32_exact_checked;
     py::object int32_exact;
+    py::object floating_accumulation;
     py::object sequential_binary32;
     py::object sequential_binary32_product;
     py::object maximum;
@@ -91,11 +98,13 @@ inline const CpuBindings& cpu_bindings() {
             py::module_::import("strideweave.tensor").attr("Tensor"),
             carriers.attr("CompoundDType"),
             dtype.attr("Float32"),
+            dtype.attr("Float64"),
             dtype.attr("Int32"),
             dtype.attr("Bool"),
             arithmetic.attr("BINARY32"),
             arithmetic.attr("INT32_EXACT_CHECKED"),
             arithmetic.attr("INT32_EXACT"),
+            accumulation.attr("FLOATING"),
             accumulation.attr("SEQUENTIAL_BINARY32"),
             accumulation.attr("SEQUENTIAL_BINARY32_PRODUCT"),
             accumulation.attr("MAXIMUM"),
@@ -161,6 +170,7 @@ inline py::object cpu_dtype_object(CpuDType dtype) {
 struct CpuPlan {
     CpuArithmetic compute;
     CpuAccumulation accumulation;
+    CpuAccumulatorDType accumulator_dtype;
     CpuDType output;
 
     // Whether this operation's elements are computed as integers. The plan's
@@ -188,6 +198,9 @@ inline CpuAccumulation parse_cpu_accumulation(py::handle value) {
     if (value.is_none()) {
         return CpuAccumulation::None;
     }
+    if (value.is(bindings.floating_accumulation)) {
+        return CpuAccumulation::Floating;
+    }
     if (value.is(bindings.sequential_binary32)) {
         return CpuAccumulation::SequentialBinary32;
     }
@@ -212,6 +225,20 @@ inline CpuAccumulation parse_cpu_accumulation(py::handle value) {
     throw py::value_error("CPU does not implement this plan's accumulation");
 }
 
+inline CpuAccumulatorDType parse_cpu_accumulator_dtype(py::handle value) {
+    const CpuBindings& bindings = cpu_bindings();
+    if (value.is_none()) {
+        return CpuAccumulatorDType::None;
+    }
+    if (value.is(bindings.float32)) {
+        return CpuAccumulatorDType::Float32;
+    }
+    if (value.is(bindings.float64)) {
+        return CpuAccumulatorDType::Float64;
+    }
+    throw py::value_error("CPU does not implement this plan's accumulator dtype");
+}
+
 // The exact carrier class whose declared capabilities decide whether this
 // operation may run. Dispatch reaches an operation through one carrier, so a CPU
 // subclass is asked about its own declarations rather than its base's.
@@ -228,8 +255,10 @@ inline CpuPlan cpu_plan_from_capability(py::handle capability) {
     const CpuArithmetic compute = parse_cpu_arithmetic(capability.attr("compute"));
     const CpuAccumulation accumulation =
         parse_cpu_accumulation(capability.attr("accumulation"));
+    const CpuAccumulatorDType accumulator_dtype =
+        parse_cpu_accumulator_dtype(capability.attr("accumulator_dtype"));
     const CpuDType output = parse_cpu_dtype(capability.attr("output"));
-    return CpuPlan{compute, accumulation, output};
+    return CpuPlan{compute, accumulation, accumulator_dtype, output};
 }
 
 // Resolve one operation's plan and require a capability for it. Tensor operands
@@ -242,6 +271,16 @@ inline CpuPlan resolve_cpu_plan(py::handle carrier_class, const char* operation,
     const CpuBindings& bindings = cpu_bindings();
     py::object plan =
         bindings.resolve_operation_plan(operation, std::forward<Operands>(operands)...);
+    return cpu_plan_from_capability(bindings.require_capability(carrier_class, plan));
+}
+
+template <typename... Operands>
+inline CpuPlan resolve_cpu_plan_with_options(py::handle carrier_class,
+                                             const char* operation, py::handle options,
+                                             Operands&&... operands) {
+    const CpuBindings& bindings = cpu_bindings();
+    py::object plan = bindings.resolve_operation_plan(
+        operation, std::forward<Operands>(operands)..., py::arg("options") = options);
     return cpu_plan_from_capability(bindings.require_capability(carrier_class, plan));
 }
 

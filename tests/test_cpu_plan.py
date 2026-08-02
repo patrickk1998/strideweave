@@ -126,6 +126,38 @@ def test_cpu_declares_only_shapes_its_kernels_implement():
             assert capability.accumulation is None
 
 
+def test_cpu_declares_only_the_float32_floating_accumulator():
+    # Native CPU implements one floating accumulator today. Declaring the
+    # Float64 plan before a kernel executes it would advertise a loop that does
+    # not exist, so the wider plan stays resolvable but undeclared here.
+    for operation in ("reduce_sum", "matmul"):
+        floating = {
+            capability.accumulator_dtype
+            for capability in capabilities_for_carrier_class(CPU, operation)
+            if capability.compute is Arithmetic.BINARY32
+        }
+        assert floating == {DType.Float32}
+
+    widened = resolve_operation_plan(
+        "reduce_sum", DType.Float32, accumulator_dtype=DType.Float64
+    )
+    assert not supports_operation_plan(CPU, widened)
+    with pytest.raises(UnsupportedOperationPlan, match="CPU declares no"):
+        require_capability(CPU, widened)
+
+
+def test_public_cpu_reduce_sum_rejects_an_undeclared_accumulator_before_running():
+    layout = Layout(Shape([1, 4]), Stride([1, 1]))
+    carrier = CPU(4, dtype=DType.Float32)
+    for index, value in enumerate((2**24, 1.0, 1.0, -(2**24))):
+        carrier[index] = value
+    tensor = Tensor(carrier, 0, layout)
+
+    assert sw.reduce_sum(tensor, "a b -> a")[0] == 0.0
+    with pytest.raises(UnsupportedOperationPlan, match="CPU declares no"):
+        sw.reduce_sum(tensor, "a b -> a", accumulator_dtype=DType.Float64)
+
+
 @pytest.mark.parametrize("operation", ["reduce_sum", "matmul"])
 def test_an_accumulating_plan_without_an_accumulation_is_unsupported(operation):
     # The confirmed bug this boundary exists for: an Int32 reduce plan carrying
@@ -146,7 +178,7 @@ def test_an_accumulating_plan_without_an_accumulation_is_unsupported(operation):
     [
         {"compute": Arithmetic.BINARY32},
         {"output": DType.Float32},
-        {"accumulation": Accumulation.SEQUENTIAL_BINARY32},
+        {"accumulation": Accumulation.FLOATING},
     ],
     ids=["compute", "output", "accumulation"],
 )
@@ -173,8 +205,8 @@ from strideweave.carriers.operation_capability import UnsupportedOperationPlan
 resolve = operation_policy.resolve_operation_plan
 
 
-def injected(operation, *operands):
-    plan = resolve(operation, *operands)
+def injected(operation, *operands, **options):
+    plan = resolve(operation, *operands, **options)
     if operation == "reduce_sum":
         return dataclasses.replace(plan, accumulation=None)
     return plan

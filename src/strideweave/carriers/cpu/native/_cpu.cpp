@@ -2912,10 +2912,11 @@ public:
 
         // The plan's accumulation decides how the terms combine: an exact
         // integer accumulator whose only checked step is the final narrowing,
-        // or a sequential binary32 sum that rounds at every step.
-        const CpuPlan plan =
-            resolve_cpu_plan(executing_carrier_class(tensor), "reduce_sum",
-                             cpu_dtype_object(tensor_view.carrier->cpu_dtype()));
+        // or a floating accumulator in the dtype the plan declares. This
+        // backend currently declares only the Float32 floating accumulator.
+        const CpuPlan plan = resolve_cpu_plan_with_options(
+            executing_carrier_class(tensor), "reduce_sum", execution_options(),
+            cpu_dtype_object(tensor_view.carrier->cpu_dtype()));
         CpuTensorAllocation result = allocate_cpu_tensor(output_layout_, plan.output);
         {
             py::gil_scoped_release release;
@@ -3013,7 +3014,10 @@ public:
         // Matmul promotes like binary arithmetic but accumulates: two Int32
         // operands compute each product exactly and check only the narrowing of
         // the finished sum, so terms that legitimately cancel are not rejected.
-        const CpuPlan plan = resolve_binary_plan(lhs, "matmul", lhs_view, rhs_view);
+        const CpuPlan plan = resolve_cpu_plan_with_options(
+            executing_carrier_class(lhs), "matmul", execution_options(),
+            cpu_dtype_object(lhs_view.carrier->cpu_dtype()),
+            cpu_dtype_object(rhs_view.carrier->cpu_dtype()));
         CpuTensorAllocation result = allocate_cpu_tensor(output_layout_, plan.output);
         {
             py::gil_scoped_release release;

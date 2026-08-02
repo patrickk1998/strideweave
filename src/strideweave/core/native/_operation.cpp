@@ -342,17 +342,20 @@ PYBIND11_MODULE(_operation, module) {
 
     py::class_<Operation, PyOperation>(module, "Operation")
         .def(py::init<>())
-        .def("forward", [](Operation& operation,
-                           py::args inputs) { return operation.forward(inputs); })
+        .def("forward",
+             [](Operation& operation, py::args inputs, py::kwargs kwargs) {
+                 return operation.forward(inputs, kwargs);
+             })
         .def("_forward", [](Operation& operation,
                             py::args inputs) { return operation._forward(inputs); })
         .def("_execute_lowered",
-             [](Operation& operation, py::args inputs) {
-                 return operation.execute_lowered(inputs);
+             [](Operation& operation, py::args inputs, py::kwargs kwargs) {
+                 return operation.execute_lowered(inputs, kwargs);
              })
         .def("backward", &Operation::backward, py::arg("gradient"))
         .def_property_readonly("ctx", &Operation::ctx)
         .def_property_readonly("_operation_name", &Operation::operation_name)
+        .def_property_readonly("_execution_options", &Operation::execution_options)
         .def_property_readonly("_dispatch_carrier_class",
                                &Operation::dispatch_carrier_class)
         .def("store_inputs", [](Operation& operation,
@@ -366,8 +369,8 @@ PYBIND11_MODULE(_operation, module) {
 
     module.def(
         "_execute_lowered",
-        [](Operation& operation, py::args inputs) {
-            return operation.execute_lowered(inputs);
+        [](Operation& operation, py::args inputs, py::kwargs kwargs) {
+            return operation.execute_lowered(inputs, kwargs);
         },
         py::arg("operation"));
 }
