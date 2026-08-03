@@ -10,10 +10,14 @@ import strideweave as sw
 from strideweave import DType, Layout, Shape, Stride
 from strideweave.carriers.operation_policy import operation_execution_options
 
+from .classification import classify_cpu_kernel_plans
 from .comparison import compare_float32, gamma_bound
 from .model import (
+    ClassificationDisposition,
     Deviations,
     KernelDescriptor,
+    OracleCertificate,
+    PlanKey,
     Tolerance,
     VerificationClass,
     VerificationOutcome,
@@ -153,7 +157,12 @@ def _target_cases() -> tuple[_TargetCase, ...]:
     )
 
 
-def _blocked(kernel: KernelDescriptor, test_class: VerificationClass, suffix: str):
+def _blocked(
+    kernel: KernelDescriptor,
+    test_class: VerificationClass,
+    suffix: str,
+    diagnostic: str,
+):
     payload = EncodedFloat32Payload.from_values(())
     return replace(
         _case(
@@ -164,10 +173,63 @@ def _blocked(kernel: KernelDescriptor, test_class: VerificationClass, suffix: st
             VerificationOutcome.BLOCKED,
             Deviations(0.0, 0.0, 0),
             0,
-            diagnostic="Stage One Float64 oracle certificate is absent",
+            diagnostic=diagnostic,
         ),
         stage=VerificationStage.TARGET,
     )
+
+
+def _float64_oracle_requirements(
+    kernel: KernelDescriptor,
+) -> tuple[tuple[PlanKey, tuple[VerificationClass, ...]], ...]:
+    """Return the active Float64 oracle plan/classes required by one target."""
+    return tuple(
+        (descriptor.plan, descriptor.classes)
+        for descriptor in classify_cpu_kernel_plans()
+        if (descriptor.kernel.kernel_id, descriptor.kernel.variant)
+        == (kernel.kernel_id, kernel.variant)
+        and descriptor.disposition is ClassificationDisposition.ACTIVE
+        and descriptor.plan.accumulator_dtype == "Float64"
+    )
+
+
+def _certificate_authorizes(
+    stage_one: StageOneResult, kernel: KernelDescriptor
+) -> bool:
+    """Require an evidence-backed certificate for this exact target kernel."""
+    required_plan_classes = _float64_oracle_requirements(kernel)
+    if not required_plan_classes:
+        return False
+    records = tuple(
+        record
+        for record in stage_one.report.records
+        if record.case.kernel_id == kernel.kernel_id
+        and record.case.variant == kernel.variant
+    )
+    for certificate in stage_one.certificates:
+        if (certificate.kernel_id, certificate.variant) != (
+            kernel.kernel_id,
+            kernel.variant,
+        ):
+            continue
+        try:
+            reconstructed = OracleCertificate.from_records(
+                kernel,
+                certificate.certified_classes,
+                records,
+                required_plan_classes=certificate.certified_plan_classes,
+            )
+        except ValueError:
+            continue
+        if reconstructed != certificate:
+            continue
+        certified = dict(certificate.certified_plan_classes)
+        if all(
+            set(certified.get(plan, ())).issuperset(classes)
+            for plan, classes in required_plan_classes
+        ):
+            return True
+    return False
 
 
 def _maximum_term_sum(
@@ -313,7 +375,6 @@ def _target_case(kernel: KernelDescriptor, target_case: _TargetCase):
 
 
 def run_stage_two(stage_one: StageOneResult) -> VerificationReport:
-    certified = {certificate.kernel_id for certificate in stage_one.certificates}
     records = [
         replace(
             movement,
@@ -333,13 +394,21 @@ def run_stage_two(stage_one: StageOneResult) -> VerificationReport:
         ("matmul", "cpu.matmul"),
     ):
         kernel = KernelDescriptor(operation, kernel_id, "default", "")
-        if kernel_id not in certified:
+        if not _certificate_authorizes(stage_one, kernel):
             records.extend(
                 (
                     _blocked(
-                        kernel, VerificationClass.STRUCTURAL, "structural-blocked"
+                        kernel,
+                        VerificationClass.STRUCTURAL,
+                        "structural-blocked",
+                        "Stage One Float64 oracle certificate is absent, invalid, or lacks required scope",
                     ),
-                    _blocked(kernel, VerificationClass.NUMERICAL, "numerical-blocked"),
+                    _blocked(
+                        kernel,
+                        VerificationClass.NUMERICAL,
+                        "numerical-blocked",
+                        "Stage One Float64 oracle certificate is absent, invalid, or lacks required scope",
+                    ),
                 )
             )
             continue

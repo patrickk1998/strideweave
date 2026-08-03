@@ -23,11 +23,15 @@ def _json_safe(value: Any) -> Any:
 
 
 class VerificationStage(Enum):
+    """Evidence pipeline stage that produced a verification record."""
+
     ORACLE = "stage_one"
     TARGET = "stage_two"
 
 
 class VerificationClass(Enum):
+    """Semantic class of verification evidence required for certification."""
+
     BIT_EXACT = "bit_exact"
     EXACT_ARITHMETIC = "exact_arithmetic"
     STRUCTURAL = "structural"
@@ -37,6 +41,8 @@ class VerificationClass(Enum):
 
 
 class VerificationOutcome(Enum):
+    """Result state emitted for an attempted verification case."""
+
     PASSED = "passed"
     FAILED = "failed"
     ERROR = "error"
@@ -45,12 +51,16 @@ class VerificationOutcome(Enum):
 
 
 class ClassificationDisposition(Enum):
+    """Whether a kernel plan is executable now or explicitly deferred."""
+
     ACTIVE = "active"
     DEFERRED = "deferred"
 
 
 @dataclass(frozen=True, slots=True)
 class KernelDescriptor:
+    """Stable native kernel identity and its public binding name."""
+
     operation: str
     kernel_id: str
     variant: str
@@ -59,6 +69,8 @@ class KernelDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class PlanKey:
+    """Immutable normalized identity of one resolved operation capability plan."""
+
     operation: str
     operands: tuple[tuple[str, str | None, str | None], ...]
     compute: str
@@ -89,6 +101,8 @@ class PlanKey:
 
 @dataclass(frozen=True, slots=True)
 class KernelPlanDescriptor:
+    """Native kernel paired with its resolved plan and evidence requirements."""
+
     kernel: KernelDescriptor
     plan: PlanKey
     classes: tuple[VerificationClass, ...]
@@ -98,6 +112,8 @@ class KernelPlanDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class CaseDescriptor:
+    """Deterministic operation, input, shape, and plan metadata for one case."""
+
     operation: str
     kernel_id: str
     variant: str
@@ -113,6 +129,8 @@ class CaseDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class Tolerance:
+    """Versioned numerical thresholds attached to one evidence record."""
+
     absolute: float = 0.0
     relative: float = 0.0
     ulps: int = 0
@@ -121,6 +139,8 @@ class Tolerance:
 
 @dataclass(frozen=True, slots=True)
 class Deviations:
+    """Maximum absolute, relative, and ULP differences observed in a case."""
+
     maximum_absolute: float | None
     maximum_relative: float | None
     maximum_ulps: int | None
@@ -128,6 +148,8 @@ class Deviations:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceRecord:
+    """Immutable JSON-serializable evidence for one verification attempt."""
+
     stage: VerificationStage
     test_class: VerificationClass
     case: CaseDescriptor
@@ -162,6 +184,8 @@ class EvidenceRecord:
 
 @dataclass(frozen=True, slots=True)
 class VerificationReport:
+    """Collection of deterministic evidence records from a local run."""
+
     records: tuple[EvidenceRecord, ...]
     schema_version: str = "strideweave.kernel-verification.v1"
 
@@ -183,10 +207,15 @@ class VerificationReport:
 
 @dataclass(frozen=True, slots=True)
 class OracleCertificate:
+    """Digest-backed proof that a kernel's required oracle cases passed."""
+
     kernel_id: str
     variant: str
     certified_classes: tuple[VerificationClass, ...]
     evidence_digest: str
+    certified_plan_classes: tuple[
+        tuple[PlanKey, tuple[VerificationClass, ...]], ...
+    ] = ()
 
     @classmethod
     def from_records(
@@ -262,4 +291,5 @@ class OracleCertificate:
             kernel.variant,
             required_classes,
             hashlib.sha256(serialized).hexdigest(),
+            required_plan_classes,
         )

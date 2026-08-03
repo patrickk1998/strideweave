@@ -1,11 +1,13 @@
 import subprocess
 import sys
+from dataclasses import replace
 
 import strideweave as sw
 import strideweave.verification.stage_one as stage_one_module
 import strideweave.verification.stage_two as stage_two_module
 from strideweave.verification import (
     Deviations,
+    OracleCertificate,
     StageOneResult,
     VerificationClass,
     VerificationOutcome,
@@ -56,6 +58,59 @@ def test_stage_two_blocks_operations_without_local_oracle_certificates():
         "reduce_sum",
         "matmul",
     }
+
+
+def test_stage_two_rejects_forged_variant_certificate_without_target_execution(
+    monkeypatch,
+):
+    stage_one = run_stage_one()
+    forged = replace(
+        next(
+            certificate
+            for certificate in stage_one.certificates
+            if certificate.kernel_id == "cpu.reduce_sum"
+        ),
+        variant="forged",
+    )
+    target_called = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal target_called
+        target_called = True
+        raise AssertionError("unauthorized target executed")
+
+    monkeypatch.setattr(stage_two_module, "_target_case", fail_if_called)
+    report = run_stage_two(replace(stage_one, certificates=(forged,)))
+
+    reduce_records = [
+        record for record in report.records if record.case.kernel_id == "cpu.reduce_sum"
+    ]
+    assert not target_called
+    assert all(
+        record.outcome is VerificationOutcome.BLOCKED for record in reduce_records
+    )
+
+
+def test_stage_two_rejects_certificate_without_float64_plan_scope(monkeypatch):
+    stage_one = run_stage_one()
+    forged = OracleCertificate("cpu.reduce_sum", "default", (), "forged")
+    target_called = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal target_called
+        target_called = True
+        raise AssertionError("unauthorized target executed")
+
+    monkeypatch.setattr(stage_two_module, "_target_case", fail_if_called)
+    report = run_stage_two(replace(stage_one, certificates=(forged,)))
+
+    reduce_records = [
+        record for record in report.records if record.case.kernel_id == "cpu.reduce_sum"
+    ]
+    assert not target_called
+    assert all(
+        record.outcome is VerificationOutcome.BLOCKED for record in reduce_records
+    )
 
 
 def test_stage_two_emits_each_declared_movement_subject():
