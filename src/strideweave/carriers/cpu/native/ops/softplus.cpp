@@ -11,14 +11,15 @@ struct CpuSoftplusScalar {
     static float gradient_multiplier(float input) { return sigmoid_value(input); }
 };
 
-using CpuSoftplusOperation = CpuUnaryElementwiseOperation<CpuSoftplusScalar>;
+using CpuOperation = CpuUnaryElementwiseOperation<CpuSoftplusScalar>;
+
 constexpr CpuKernelMetadata kMetadata{"softplus", "cpu.softplus", "default",
                                       "_CPUSoftplusOperation"};
 
 }  // namespace
 
 void register_cpu_softplus(py::module_& module) {
-    bind_and_register_cpu_operation<CpuSoftplusOperation>(module, kMetadata);
+    bind_and_register_cpu_operation<CpuOperation>(module, kMetadata);
 }
 
 }  // namespace strideweave::carrier

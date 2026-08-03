@@ -875,11 +875,12 @@ The public functional API includes the following v0 surface:
 `matmul(..., accumulator_dtype=...)` select the floating accumulator without
 changing input encoding or planned output dtype. `None` uses the backend's
 default `Float32` accumulator; `DType.Float64` requests widened accumulation and
-must match an advertised backend capability. `Generic` advertises both choices
-for `reduce_sum` and `matmul`; native `CPU` implements the `Float32` accumulator
-only and refuses an undeclared `Float64` request before it allocates. The
-`tensor @ other` spelling keeps the default; callers requesting `Float64` use
-`sw.matmul`. Exact-integer plans reject a floating accumulator request, and the
+must match an advertised backend capability. `Generic` and native `CPU` both
+advertise and execute the two choices for `reduce_sum` and `matmul`; CPU widens
+already encoded Float32 terms into a native `double` accumulator without adding
+Float64 carrier storage, and matmul backward reuses the accumulator its forward
+call selected. The `tensor @ other` spelling keeps the default; callers
+requesting `Float64` use `sw.matmul`. Exact-integer plans reject a floating accumulator request, and the
 operations whose accumulation order is normative — `cumsum`, `conv_general`,
 `scatter_add`, the product and extrema reductions, and the arg reductions —
 accept no accumulator option at all.

@@ -1,5 +1,3 @@
-#include <cmath>
-
 #include "_cpu_registry.hpp"
 #include "ops/_ops.hpp"
 
@@ -15,13 +13,14 @@ struct CpuELUScalar {
     }
 };
 
-using CpuELUOperation = CpuUnaryElementwiseOperation<CpuELUScalar>;
+using CpuOperation = CpuUnaryElementwiseOperation<CpuELUScalar>;
+
 constexpr CpuKernelMetadata kMetadata{"elu", "cpu.elu", "default", "_CPUELUOperation"};
 
 }  // namespace
 
 void register_cpu_elu(py::module_& module) {
-    bind_and_register_cpu_operation<CpuELUOperation>(module, kMetadata);
+    bind_and_register_cpu_operation<CpuOperation>(module, kMetadata);
 }
 
 }  // namespace strideweave::carrier

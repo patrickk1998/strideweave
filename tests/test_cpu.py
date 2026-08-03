@@ -1,6 +1,7 @@
 import math
 from array import array
 from collections.abc import Iterable
+from importlib import import_module
 from typing import Any
 
 import pytest
@@ -20,8 +21,78 @@ from strideweave import (
     Stride,
     UnsqueezeOperation,
 )
+from strideweave.carriers.cpu.capabilities import cpu_capabilities
 from strideweave.carriers.operation_helpers import execute_lowered_operation
 from strideweave.tensor import Tensor
+
+_carrier = import_module("strideweave._carrier")
+
+# The complete native kernel manifest, stated here independently of the
+# registry so a kernel added, renamed, or dropped in C++ fails this test rather
+# than silently changing what CPU dispatches.
+CPU_KERNEL_METADATA = (
+    ("_sort_indices", "cpu.sort_indices", "default", "_CPUSortOperation"),
+    ("_sort_values", "cpu.sort_values", "default", "_CPUSortOperation"),
+    ("_topk_indices", "cpu.topk_indices", "default", "_CPUSortOperation"),
+    ("_topk_values", "cpu.topk_values", "default", "_CPUSortOperation"),
+    ("abs", "cpu.abs", "default", "_CPUAbsOperation"),
+    ("add", "cpu.add", "default", "_CPUAddOperation"),
+    ("argmax", "cpu.argmax", "default", "_CPUArgmaxOperation"),
+    ("argmin", "cpu.argmin", "default", "_CPUArgminOperation"),
+    ("ceil", "cpu.ceil", "default", "_CPUCeilOperation"),
+    ("clamp", "cpu.clamp", "default", "_CPUClampOperation"),
+    ("conv_general", "cpu.conv_general", "default", "_CPUConvGeneralOperation"),
+    ("cos", "cpu.cos", "default", "_CPUCosOperation"),
+    ("cumsum", "cpu.cumsum", "default", "_CPUCumsumOperation"),
+    ("div", "cpu.div", "default", "_CPUDivOperation"),
+    (
+        "elementwise_mul",
+        "cpu.elementwise_mul",
+        "default",
+        "_CPUElementwiseMulOperation",
+    ),
+    ("elu", "cpu.elu", "default", "_CPUELUOperation"),
+    ("eq", "cpu.eq", "default", "_CPUEqOperation"),
+    ("erf", "cpu.erf", "default", "_CPUErfOperation"),
+    ("exp", "cpu.exp", "default", "_CPUExpOperation"),
+    ("exp2", "cpu.exp2", "default", "_CPUExp2Operation"),
+    ("floor", "cpu.floor", "default", "_CPUFloorOperation"),
+    ("gather", "cpu.gather", "default", "_CPUGatherOperation"),
+    ("gelu", "cpu.gelu", "default", "_CPUGELUOperation"),
+    ("le", "cpu.le", "default", "_CPULeOperation"),
+    ("leaky_relu", "cpu.leaky_relu", "default", "_CPULeakyReLUOperation"),
+    ("log", "cpu.log", "default", "_CPULogOperation"),
+    ("log2", "cpu.log2", "default", "_CPULog2Operation"),
+    ("logical_not", "cpu.logical_not", "default", "_CPULogicalNotOperation"),
+    ("lt", "cpu.lt", "default", "_CPULtOperation"),
+    ("matmul", "cpu.matmul", "default", "_CPUMatmulOperation"),
+    ("maximum", "cpu.maximum", "default", "_CPUMaximumOperation"),
+    ("minimum", "cpu.minimum", "default", "_CPUMinimumOperation"),
+    ("mul", "cpu.mul", "default", "_CPUScalarMulOperation"),
+    ("ne", "cpu.ne", "default", "_CPUNeOperation"),
+    ("neg", "cpu.neg", "default", "_CPUNegOperation"),
+    ("pow", "cpu.pow", "default", "_CPUPowOperation"),
+    ("recip", "cpu.recip", "default", "_CPURecipOperation"),
+    ("reduce_max", "cpu.reduce_max", "default", "_CPUReduceMaxOperation"),
+    ("reduce_min", "cpu.reduce_min", "default", "_CPUReduceMinOperation"),
+    ("reduce_prod", "cpu.reduce_prod", "default", "_CPUReduceProdOperation"),
+    ("reduce_sum", "cpu.reduce_sum", "default", "_CPUReduceSumOperation"),
+    ("relu", "cpu.relu", "default", "_CPUReLUOperation"),
+    ("rem", "cpu.rem", "default", "_CPURemOperation"),
+    ("round", "cpu.round", "default", "_CPURoundOperation"),
+    ("rsqrt", "cpu.rsqrt", "default", "_CPURsqrtOperation"),
+    ("scatter", "cpu.scatter", "default", "_CPUScatterOperation"),
+    ("scatter_add", "cpu.scatter_add", "default", "_CPUScatterOperation"),
+    ("select", "cpu.select", "default", "_CPUSelectOperation"),
+    ("sigmoid", "cpu.sigmoid", "default", "_CPUSigmoidOperation"),
+    ("sign", "cpu.sign", "default", "_CPUSignOperation"),
+    ("silu", "cpu.silu", "default", "_CPUSiLUOperation"),
+    ("sin", "cpu.sin", "default", "_CPUSinOperation"),
+    ("softplus", "cpu.softplus", "default", "_CPUSoftplusOperation"),
+    ("sqrt", "cpu.sqrt", "default", "_CPUSqrtOperation"),
+    ("sub", "cpu.sub", "default", "_CPUSubOperation"),
+    ("tanh", "cpu.tanh", "default", "_CPUTanhOperation"),
+)
 
 
 def make_cpu_carrier(
@@ -211,35 +282,24 @@ def test_cpu_int32_tensor_disables_autograd_interfaces():
 
 def test_cpu_dispatch_op_returns_supported_operations():
     carrier = CPU(1)
-    native_cases = {
-        "add": "_CPUAddOperation",
-        "div": "_CPUDivOperation",
-        "elu": "_CPUELUOperation",
-        "elementwise_mul": "_CPUElementwiseMulOperation",
-        "exp": "_CPUExpOperation",
-        "gelu": "_CPUGELUOperation",
-        "leaky_relu": "_CPULeakyReLUOperation",
-        "matmul": "_CPUMatmulOperation",
-        "mul": "_CPUScalarMulOperation",
-        "pow": "_CPUPowOperation",
-        "reduce_sum": "_CPUReduceSumOperation",
-        "relu": "_CPUReLUOperation",
-        "sigmoid": "_CPUSigmoidOperation",
-        "silu": "_CPUSiLUOperation",
-        "softplus": "_CPUSoftplusOperation",
-        "tanh": "_CPUTanhOperation",
-    }
 
-    for operation_name, operation_type_name in native_cases.items():
+    for (
+        operation_name,
+        _kernel_id,
+        _variant,
+        operation_type_name,
+    ) in CPU_KERNEL_METADATA:
         first = carrier.dispatch_op(operation_name)
         second = carrier.dispatch_op(operation_name)
         assert type(first).__name__ == operation_type_name
+        assert getattr(_carrier, operation_type_name) is type(first)
         assert type(second) is type(first)
         assert isinstance(first, Operation)
         assert first is not second
         assert first._operation_name == operation_name
         assert first._dispatch_carrier_class is CPU
 
+    assert type(carrier.dispatch_op("broadcast_to")).__name__ == "BroadcastOperation"
     assert isinstance(carrier.dispatch_op("permute"), PermuteOperation)
     assert isinstance(carrier.dispatch_op("rearrange"), RearrangeOperation)
     assert isinstance(carrier.dispatch_op("squeeze"), SqueezeOperation)
@@ -248,6 +308,52 @@ def test_cpu_dispatch_op_returns_supported_operations():
 
     with pytest.raises(NotImplementedError):
         carrier.dispatch_op("unknown")
+
+
+def test_cpu_native_kernel_metadata_is_complete_stable_and_unique():
+    metadata = _carrier._cpu_native_kernel_metadata()
+
+    assert metadata == CPU_KERNEL_METADATA
+    assert tuple(entry[0] for entry in metadata) == tuple(
+        sorted(entry[0] for entry in metadata)
+    )
+    assert len({entry[0] for entry in metadata}) == len(metadata)
+    # Sort and top-k share one operation class, so their four dispatch names
+    # carry four distinct kernel IDs rather than one shared ID.
+    assert len({entry[1] for entry in metadata}) == len(metadata)
+    assert {entry[2] for entry in metadata} == {"default"}
+    # Structural operations preserve dtype and layout instead of computing, so
+    # they are Python-backed and carry no native kernel metadata.
+    assert not {
+        "as_strided",
+        "broadcast_to",
+        "permute",
+        "rearrange",
+        "reshape",
+        "squeeze",
+        "unsqueeze",
+        "view",
+    } & {entry[0] for entry in metadata}
+
+
+def test_every_executable_cpu_capability_has_a_native_kernel():
+    dispatch_names = {entry[0] for entry in CPU_KERNEL_METADATA}
+
+    assert {capability.operation for capability in cpu_capabilities()} <= dispatch_names
+
+
+def test_cpu_registry_rejects_duplicate_dispatch_names_and_kernel_ids():
+    first = ("first", "cpu.first", "default", "_CPUFirstOperation")
+
+    with pytest.raises(RuntimeError, match="duplicate CPU dispatch name 'first'"):
+        _carrier._validate_cpu_native_registry_for_test(
+            (first, ("first", "cpu.second", "default", "_CPUSecondOperation"))
+        )
+
+    with pytest.raises(RuntimeError, match=r"duplicate CPU kernel ID 'cpu\.first'"):
+        _carrier._validate_cpu_native_registry_for_test(
+            (first, ("second", "cpu.first", "default", "_CPUSecondOperation"))
+        )
 
 
 def test_cpu_is_a_closed_carrier_implementation():

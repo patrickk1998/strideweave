@@ -1,6 +1,4 @@
-#include <cstdint>
-#include <vector>
-
+#include "_cpu_binary.hpp"
 #include "_cpu_registry.hpp"
 #include "ops/_ops.hpp"
 
@@ -16,6 +14,8 @@ public:
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
 
+        // ReLU preserves its input dtype, and selecting between an element and
+        // zero cannot overflow, so the integer plan is exact and unchecked.
         const CpuPlan plan =
             resolve_cpu_plan(executing_carrier_class(tensor), "relu",
                              cpu_dtype_object(tensor_view.carrier->cpu_dtype()));

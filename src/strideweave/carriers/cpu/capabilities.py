@@ -84,28 +84,30 @@ _COMPUTE_ACCUMULATIONS: Final[dict[Arithmetic, frozenset[_AccumulatorShape]]] = 
 
 
 # The accumulator shapes the operations with pinned reference accumulation
-# implement, independently of their compute arithmetic. Native CPU currently
-# executes only the Float32 accumulator for the configurable sum reductions, so
-# it deliberately does not advertise their Float64 plans.
+# implement, independently of their compute arithmetic. The configurable sum
+# reductions execute both floating accumulators from identical encoded Float32
+# storage: the wider one widens already encoded terms and narrows once to the
+# planned Float32 output, so it changes precision rather than storage.
+_FLOATING_ACCUMULATORS: Final[frozenset[_AccumulatorShape]] = frozenset(
+    {
+        (Accumulation.FLOATING, DType.Float32),
+        (Accumulation.FLOATING, DType.Float64),
+    }
+)
+
+_EXACT_INTEGER_ACCUMULATOR: Final[frozenset[_AccumulatorShape]] = frozenset(
+    {(Accumulation.EXACT_INTEGER, None)}
+)
+
 _SPECIAL_ACCUMULATIONS: Final[dict[str, frozenset[_AccumulatorShape]]] = {
-    "reduce_sum": frozenset(
-        {
-            (Accumulation.FLOATING, DType.Float32),
-            (Accumulation.EXACT_INTEGER, None),
-        }
-    ),
+    "reduce_sum": _FLOATING_ACCUMULATORS | _EXACT_INTEGER_ACCUMULATOR,
     "reduce_prod": frozenset({(Accumulation.SEQUENTIAL_BINARY32_PRODUCT, None)}),
     "reduce_max": frozenset({(Accumulation.MAXIMUM, None)}),
     "reduce_min": frozenset({(Accumulation.MINIMUM, None)}),
     "argmax": frozenset({(Accumulation.ARGMAX, None)}),
     "argmin": frozenset({(Accumulation.ARGMIN, None)}),
     "cumsum": frozenset({(Accumulation.SEQUENTIAL_BINARY32, None)}),
-    "matmul": frozenset(
-        {
-            (Accumulation.FLOATING, DType.Float32),
-            (Accumulation.EXACT_INTEGER, None),
-        }
-    ),
+    "matmul": _FLOATING_ACCUMULATORS | _EXACT_INTEGER_ACCUMULATOR,
     "conv_general": frozenset({(Accumulation.SEQUENTIAL_BINARY32, None)}),
     "scatter_add": frozenset({(Accumulation.SEQUENTIAL_BINARY32, None)}),
 }

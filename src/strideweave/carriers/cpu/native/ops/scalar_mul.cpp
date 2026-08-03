@@ -1,6 +1,4 @@
-#include <cstdint>
-#include <vector>
-
+#include "_cpu_binary.hpp"
 #include "_cpu_registry.hpp"
 #include "ops/_ops.hpp"
 
@@ -14,7 +12,20 @@ public:
             throw py::type_error("CPU scalar multiply requires a tensor and scalar");
         }
         py::object tensor = py::reinterpret_borrow<py::object>(inputs[0]);
+        py::object other = py::reinterpret_borrow<py::object>(inputs[1]);
+        // ``mul`` has both tensor-tensor and tensor/weak-scalar policy
+        // overloads.  Keep the historical scalar operation class as the
+        // dispatch target, but route tensor-tensor through the same structural
+        // alignment and integer-overflow checks as elementwise_mul.
+        if (py::isinstance(other, tensor_type())) {
+            return cpu_binary_elementwise_forward(
+                *this, inputs, "mul", "CPU multiply requires lhs and rhs tensors",
+                [](float lhs, float rhs) { return lhs * rhs; },
+                [](long long lhs, long long rhs) { return lhs * rhs; });
+        }
         CpuTensorView tensor_view = cpu_tensor_view(tensor, "tensor");
+        // The scalar is weak: it selects the plan but never forces a width, so
+        // the plan — not the scalar's Python type — decides the result dtype.
         const CpuPlan plan = resolve_cpu_plan(
             executing_carrier_class(tensor), "mul",
             cpu_dtype_object(tensor_view.carrier->cpu_dtype()), inputs[1]);
@@ -49,6 +60,32 @@ public:
     py::object backward(py::object gradient) override {
         py::tuple input_tensors = inputs();
         py::object tensor = py::reinterpret_borrow<py::object>(input_tensors[0]);
+        if (py::len(input_tensors) == 2) {
+            py::object rhs = py::reinterpret_borrow<py::object>(input_tensors[1]);
+            require_same_shape(tensor, gradient);
+            require_same_shape(rhs, gradient);
+            CpuTensorView lhs_view = cpu_tensor_view(tensor, "lhs");
+            CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
+            CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
+            CpuTensorAllocation lhs_result = allocate_gradient_for(tensor);
+            CpuTensorAllocation rhs_result = allocate_gradient_for(rhs);
+            {
+                py::gil_scoped_release release;
+                std::vector<Index> key(lhs_view.leaf_rank(), 0);
+                for (Index i = 0; i < lhs_view.logical_size; ++i) {
+                    const float g = gradient_view.read_float_expanded(key);
+                    lhs_result.view.write_float_expanded(
+                        key, g * rhs_view.read_float_expanded(key));
+                    rhs_result.view.write_float_expanded(
+                        key, g * lhs_view.read_float_expanded(key));
+                    lhs_view.cache->increment_key(key.data(), key.size());
+                }
+            }
+            return py::make_tuple(make_tensor(std::move(lhs_result.carrier_object),
+                                              std::move(lhs_result.layout_object)),
+                                  make_tensor(std::move(rhs_result.carrier_object),
+                                              std::move(rhs_result.layout_object)));
+        }
         require_same_shape(tensor, gradient);
         CpuTensorView gradient_view = cpu_tensor_view(gradient, "gradient");
 
@@ -70,7 +107,7 @@ private:
     float scalar_ = 0.0f;
 };
 
-constexpr CpuKernelMetadata kMetadata{"mul", "cpu.scalar_mul", "default",
+constexpr CpuKernelMetadata kMetadata{"mul", "cpu.mul", "default",
                                       "_CPUScalarMulOperation"};
 
 }  // namespace

@@ -1,5 +1,3 @@
-#include <cmath>
-
 #include "_cpu_registry.hpp"
 #include "ops/_ops.hpp"
 
@@ -16,14 +14,15 @@ struct CpuTanhScalar {
     }
 };
 
-using CpuTanhOperation = CpuUnaryElementwiseOperation<CpuTanhScalar>;
+using CpuOperation = CpuUnaryElementwiseOperation<CpuTanhScalar>;
+
 constexpr CpuKernelMetadata kMetadata{"tanh", "cpu.tanh", "default",
                                       "_CPUTanhOperation"};
 
 }  // namespace
 
 void register_cpu_tanh(py::module_& module) {
-    bind_and_register_cpu_operation<CpuTanhOperation>(module, kMetadata);
+    bind_and_register_cpu_operation<CpuOperation>(module, kMetadata);
 }
 
 }  // namespace strideweave::carrier

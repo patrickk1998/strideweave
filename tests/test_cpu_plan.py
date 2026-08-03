@@ -126,36 +126,103 @@ def test_cpu_declares_only_shapes_its_kernels_implement():
             assert capability.accumulation is None
 
 
-def test_cpu_declares_only_the_float32_floating_accumulator():
-    # Native CPU implements one floating accumulator today. Declaring the
-    # Float64 plan before a kernel executes it would advertise a loop that does
-    # not exist, so the wider plan stays resolvable but undeclared here.
+def test_cpu_declares_both_floating_accumulator_plans():
+    # The accumulator dtype is an exact capability dimension, so CPU declares
+    # one capability per accumulator its kernels implement rather than one
+    # floating capability a kernel then reinterprets.
     for operation in ("reduce_sum", "matmul"):
         floating = {
             capability.accumulator_dtype
             for capability in capabilities_for_carrier_class(CPU, operation)
             if capability.compute is Arithmetic.BINARY32
         }
-        assert floating == {DType.Float32}
-
-    widened = resolve_operation_plan(
-        "reduce_sum", DType.Float32, accumulator_dtype=DType.Float64
-    )
-    assert not supports_operation_plan(CPU, widened)
-    with pytest.raises(UnsupportedOperationPlan, match="CPU declares no"):
-        require_capability(CPU, widened)
+        assert floating == {DType.Float32, DType.Float64}
 
 
-def test_public_cpu_reduce_sum_rejects_an_undeclared_accumulator_before_running():
-    layout = Layout(Shape([1, 4]), Stride([1, 1]))
-    carrier = CPU(4, dtype=DType.Float32)
-    for index, value in enumerate((2**24, 1.0, 1.0, -(2**24))):
+def _float32_row(values):
+    carrier = CPU(len(values), dtype=DType.Float32)
+    for index, value in enumerate(values):
         carrier[index] = value
-    tensor = Tensor(carrier, 0, layout)
+    return Tensor(carrier, 0, Layout(Shape([1, len(values)]), Stride([1, 1])))
 
-    assert sw.reduce_sum(tensor, "a b -> a")[0] == 0.0
+
+# Summing these four Float32 terms left to right cancels to exactly zero in
+# binary32 and to exactly 2.0 in binary64, so the two accumulators are
+# distinguishable from identical encoded storage.
+CANCELLING_TERMS = (2**24, 1.0, 1.0, -(2**24))
+
+
+def test_public_cpu_reduce_sum_widens_only_the_accumulation():
+    tensor = _float32_row(CANCELLING_TERMS)
+    stored = [tensor[0, index] for index in range(4)]
+
+    widened = sw.reduce_sum(tensor, "a b -> a", accumulator_dtype=DType.Float64)
+    explicit = sw.reduce_sum(tensor, "a b -> a", accumulator_dtype=DType.Float32)
+    default = sw.reduce_sum(tensor, "a b -> a")
+
+    assert [tensor[0, index] for index in range(4)] == stored
+    assert tensor.dtype() is widened.dtype() is DType.Float32
+    assert widened[0] == 2.0
+    assert explicit[0] == default[0] == 0.0
+
+
+def test_public_cpu_matmul_widens_only_the_accumulation():
+    lhs = _float32_row(CANCELLING_TERMS)
+    rhs = _float32_row((1.0, 1.0, 1.0, 1.0))
+
+    widened = sw.matmul(lhs, rhs, accumulator_dtype=DType.Float64)
+    default = sw.matmul(lhs, rhs)
+
+    assert widened.dtype() is default.dtype() is DType.Float32
+    assert widened[0, 0] == 2.0
+    assert default[0, 0] == 0.0
+
+
+def test_cpu_accumulator_selection_is_execution_local():
+    tensor = _float32_row(CANCELLING_TERMS)
+
+    widened = sw.reduce_sum(tensor, "a b -> a", accumulator_dtype=DType.Float64)
+    default = sw.reduce_sum(tensor, "a b -> a")
+    widened_again = sw.reduce_sum(tensor, "a b -> a", accumulator_dtype=DType.Float64)
+
+    assert widened[0] == 2.0
+    assert default[0] == 0.0
+    assert widened_again[0] == 2.0
+
+
+def test_cpu_matmul_backward_reuses_the_forward_accumulator():
+    # Backward contracts the same terms, so a forward that asked for the wider
+    # accumulator must not silently narrow its gradient contraction.
+    lhs_carrier = CPU(1, dtype=DType.Float32)
+    lhs_carrier[0] = 1.0
+    lhs = Tensor(lhs_carrier, 0, Layout(Shape([1, 1]), Stride([1, 1])))
+    rhs_carrier = CPU(4, dtype=DType.Float32)
+    for index, value in enumerate(CANCELLING_TERMS):
+        rhs_carrier[index] = value
+    rhs = Tensor(rhs_carrier, 0, Layout(Shape([4, 1]), Stride([1, 1])))
+
+    result = sw.matmul(lhs, rhs, accumulator_dtype=DType.Float64)
+    gradient_carrier = CPU(4, dtype=DType.Float32)
+    for index in range(4):
+        gradient_carrier[index] = 1.0
+    result.backward(Tensor(gradient_carrier, 0, result.layout))
+
+    assert lhs.grad is not None
+    assert lhs.grad.dtype() is DType.Float32
+    assert lhs.grad[0, 0] == 2.0
+
+
+def test_cpu_rejects_an_unimplemented_accumulator_before_allocation():
+    # An accumulator dtype CPU has no kernel for is refused by the same exact
+    # capability match, not approximated by the nearest floating kernel.
+    unsupported = dataclasses.replace(
+        resolve_operation_plan("reduce_sum", DType.Float32),
+        accumulator_dtype=DType.Int32,
+    )
+
+    assert not supports_operation_plan(CPU, unsupported)
     with pytest.raises(UnsupportedOperationPlan, match="CPU declares no"):
-        sw.reduce_sum(tensor, "a b -> a", accumulator_dtype=DType.Float64)
+        require_capability(CPU, unsupported)
 
 
 @pytest.mark.parametrize("operation", ["reduce_sum", "matmul"])

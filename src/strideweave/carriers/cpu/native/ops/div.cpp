@@ -1,5 +1,3 @@
-#include <vector>
-
 #include "_cpu_binary.hpp"
 #include "_cpu_registry.hpp"
 #include "ops/_ops.hpp"
@@ -26,6 +24,8 @@ public:
         CpuTensorView lhs_view = cpu_tensor_view(lhs, "lhs");
         CpuTensorView rhs_view = cpu_tensor_view(rhs, "rhs");
 
+        // Division has no integer path: the plan converts two Int32 operands to
+        // Float32 rather than truncating.
         const CpuPlan plan = resolve_binary_plan(lhs, "div", lhs_view, rhs_view);
         CpuTensorAllocation result =
             allocate_cpu_tensor(std::move(aligned.result_layout), plan.output);
