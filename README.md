@@ -135,7 +135,14 @@ StrideWeave currently provides four carrier implementations:
   `Float32`, `Int32`, and `Bool` (one byte per Boolean). Owned storage is
   zero-initialized unless `empty=True`
   opts into unspecified initial values; `empty` never initializes or changes
-  caller-owned memory supplied through `pointer`.
+  caller-owned memory supplied through `pointer`. Its native sources are
+  organized per operation: `carriers/cpu/native/_cpu.cpp` owns only carrier
+  storage and module glue, each numerical operation owns a translation unit
+  under `carriers/cpu/native/ops` carrying its formula, stable kernel ID,
+  binding, and single explicit registration, and the shared traversal,
+  alignment, reduction, and accumulator mechanics live in the neighbouring
+  headers. Duplicate dispatch names or kernel IDs are rejected rather than
+  overwritten.
 - `FileBacked(filename=None, mutable=True, dtype=DType.Floating)` stores raw
   numeric values in a temporary binary file. It is intended for storage and
   movement rather than direct tensor computation.
@@ -434,7 +441,7 @@ approximating them with Python's own numeric types:
   exceptions, in forward and backward alike: dividing by zero yields `±inf`,
   `0.0 / 0.0` and `0.0 ** -1` follow IEEE-754, and an overflowing magnitude
   saturates to an infinity instead of raising.
-- Floating `reduce` and `matmul` advertise both the default `Float32`
+- Floating `reduce_sum` and `matmul` advertise both the default `Float32`
   accumulator and an explicit `Float64` accumulator. Widening happens only
   after loading already encoded `Float32` terms; products and stored outputs
   remain `Float32`. A matmul backward contraction reuses that call's retained
@@ -1249,15 +1256,23 @@ to `Generic`, because the container remains an alias of Generic storage.
 `test_backend(output=None)` verifies the installed CPU backend without CI,
 network, or database access. It reruns Stage One over the active native kernel
 capability plans, including mixed and exact-integer plans and the public CPU
-Float64 accumulator capabilities for reduce and matmul. A kernel certificate
-requires every class assigned to every active plan to pass. Stage Two then runs
+Float64 accumulator capabilities for `reduce_sum` and `matmul`. Coverage is
+enumerated from the native kernel manifest, so every registered kernel is either
+actively certified or explicitly deferred with a stated reason; a kernel added
+in C++ without a classification fails the manifest check rather than passing
+silently. A kernel certificate requires every class assigned to every active
+plan to pass. Stage Two then runs
 ordinary CPU Float32 target execution only where the corresponding local oracle
 certificate passed. Its contraction catalog includes multi-output flat and
 hierarchical layouts, recording each operand's effective matrix shape and
 contraction length.
 Movement verification emits separate bit-exact cases for move, view, permute,
 rearrange, and broadcast-to views, each using an adversarial Float32 payload.
-Exactly representable structural cases are likewise bit-exact; numerical Stage
+The correctly rounded and exact-integer kernels are compared bit for bit against
+`Generic` on seeded arbitrary finite encoded inputs, while the operations whose
+accumulation order is normative — `cumsum`, `conv_general`, `scatter_add`, and
+`reduce_prod` — use payloads whose every legal partial result is exactly
+representable. Exactly representable structural cases are likewise bit-exact; numerical Stage
 One cases use the analytic, order-independent
 `stage-one-two-path-gamma-v1` envelope, while Stage Two uses the versioned,
 case-specific `stage-two-float32-gamma-k-v1` envelope. Every evidence case also
