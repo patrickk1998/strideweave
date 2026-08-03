@@ -52,7 +52,10 @@ def test_stage_two_blocks_operations_without_local_oracle_certificates():
         "cpu.matmul",
     }
     assert all(record.diagnostic for record in blocked)
-    assert {record.case.operation for record in blocked} == {"reduce", "matmul"}
+    assert {record.case.operation for record in blocked} == {
+        "reduce_sum",
+        "matmul",
+    }
 
 
 def test_stage_two_emits_each_declared_movement_subject():
