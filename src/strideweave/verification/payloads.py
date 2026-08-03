@@ -21,6 +21,8 @@ def _float32_bits(value: float) -> int:
 
 @dataclass(frozen=True, slots=True)
 class EncodedFloat32Payload:
+    """Immutable Float32 operand represented by canonical words and a hash."""
+
     bits: tuple[int, ...]
     bit_hash: str
 
@@ -48,6 +50,8 @@ class EncodedFloat32Payload:
 
 @dataclass(frozen=True, slots=True)
 class EncodedInt32Payload:
+    """Immutable Int32 operand represented by canonical words and a hash."""
+
     bits: tuple[int, ...]
     bit_hash: str
 
@@ -103,6 +107,8 @@ class EncodedBoolPayload:
 
 @dataclass(frozen=True, slots=True)
 class EncodedInputs:
+    """Collection of encoded operands shared by target and oracle execution."""
+
     operands: tuple[
         EncodedFloat32Payload | EncodedInt32Payload | EncodedBoolPayload, ...
     ]
@@ -119,7 +125,19 @@ class EncodedInputs:
 
 
 def arbitrary_float32_payload(seed: int, count: int) -> EncodedFloat32Payload:
-    """Create deterministic finite Float32 words with varied exponents."""
+    """Create deterministic finite Float32 words with varied exponents.
+
+    Args:
+        seed: Seed for the deterministic pseudo-random generator.
+        count: Number of encoded values to produce.
+
+    Returns:
+        Encoded finite Float32 payload.
+
+    Examples:
+        >>> len(arbitrary_float32_payload(7, 3).bits)
+        3
+    """
 
     if count < 0:
         raise ValueError("payload count must be non-negative")
@@ -133,6 +151,19 @@ def arbitrary_float32_payload(seed: int, count: int) -> EncodedFloat32Payload:
 
 
 def wide_exponent_float32_payload(seed: int, count: int) -> EncodedFloat32Payload:
+    """Create deterministic finite Float32 words spanning wide exponents.
+
+    Args:
+        seed: Seed for the deterministic pseudo-random generator.
+        count: Number of encoded values to produce.
+
+    Returns:
+        Encoded finite Float32 payload with varied signs and exponents.
+
+    Examples:
+        >>> len(wide_exponent_float32_payload(7, 3).values())
+        3
+    """
     if count < 0:
         raise ValueError("payload count must be non-negative")
     generator = random.Random(seed)
@@ -146,6 +177,18 @@ def wide_exponent_float32_payload(seed: int, count: int) -> EncodedFloat32Payloa
 
 
 def adversarial_float32_payload() -> EncodedFloat32Payload:
+    """Return a fixed payload covering zeros, subnormals, infinities, and NaNs.
+
+    Args:
+        None.
+
+    Returns:
+        Encoded Float32 payload for bit-preservation checks.
+
+    Examples:
+        >>> len(adversarial_float32_payload().bits)
+        10
+    """
     return EncodedFloat32Payload.from_bits(
         (
             0x0000_0000,
@@ -164,6 +207,8 @@ def adversarial_float32_payload() -> EncodedFloat32Payload:
 
 @dataclass(frozen=True, slots=True)
 class ExactStructuralPayload:
+    """Encoded operands whose legal partial results are exact in binary32."""
+
     lhs: EncodedFloat32Payload
     rhs: EncodedFloat32Payload | None
     contraction_length: int
@@ -179,6 +224,22 @@ def exact_structural_payload(
     rows: int = 1,
     mantissa_bits: int = 24,
 ) -> ExactStructuralPayload:
+    """Prepare a deterministic exact structural reduction or product witness.
+
+    Args:
+        seed: Seed for deterministic operand generation.
+        contraction_length: Number of terms in each reduction fiber.
+        product: Whether to generate a pair of operands for multiplication.
+        rows: Number of fibers to generate.
+        mantissa_bits: Exact-integer mantissa budget used to bound operands.
+
+    Returns:
+        Encoded operands and the exactness bounds used to construct them.
+
+    Examples:
+        >>> exact_structural_payload(1, 4, product=False).rhs is None
+        True
+    """
     if contraction_length <= 0 or rows <= 0:
         raise ValueError("contraction length and rows must be positive")
     maximum_exact_integer = 2**mantissa_bits
@@ -206,6 +267,8 @@ def exact_structural_payload(
 
 @dataclass(frozen=True, slots=True)
 class AnalyticCase:
+    """Independent expected result for a small analytic witness."""
+
     case_id: str
     operation: str
     inputs: tuple[tuple[float, ...], ...]
@@ -213,6 +276,18 @@ class AnalyticCase:
 
 
 def analytic_cases() -> tuple[AnalyticCase, ...]:
+    """Return the deterministic analytic witnesses used by Stage One.
+
+    Args:
+        None.
+
+    Returns:
+        Tuple of small reduction and matmul cases with independent results.
+
+    Examples:
+        >>> {case.operation for case in analytic_cases()}
+        {'matmul', 'reduce_sum'}
+    """
     return (
         AnalyticCase(
             "reduce-balanced", "reduce_sum", ((1.0, -1.0, 2.0, -2.0),), (0.0,)

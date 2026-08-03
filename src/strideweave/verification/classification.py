@@ -112,6 +112,18 @@ _CLASSIFICATIONS: dict[tuple[str, str], tuple[VerificationClass, ...]] = {
 
 
 def native_cpu_kernel_manifest() -> tuple[KernelDescriptor, ...]:
+    """Return the native CPU kernel metadata exposed by the compiled carrier.
+
+    Args:
+        None.
+
+    Returns:
+        Tuple of operation descriptors with stable kernel IDs and variants.
+
+    Examples:
+        >>> bool(native_cpu_kernel_manifest())
+        True
+    """
     return tuple(
         KernelDescriptor(*entry) for entry in _carrier._cpu_native_kernel_metadata()
     )
@@ -120,6 +132,18 @@ def native_cpu_kernel_manifest() -> tuple[KernelDescriptor, ...]:
 def classifications_for_kernel(
     kernel: KernelDescriptor,
 ) -> tuple[VerificationClass, ...]:
+    """Return the required verification classes for one native kernel.
+
+    Args:
+        kernel: Native kernel descriptor to classify.
+
+    Returns:
+        Ordered verification classes required for certification.
+
+    Examples:
+        >>> bool(classifications_for_kernel(native_cpu_kernel_manifest()[0]))
+        True
+    """
     try:
         return _CLASSIFICATIONS[(kernel.kernel_id, kernel.variant)]
     except KeyError as error:
@@ -131,6 +155,18 @@ def classifications_for_kernel(
 def require_complete_classification(
     kernels: Iterable[KernelDescriptor],
 ) -> tuple[tuple[KernelDescriptor, tuple[VerificationClass, ...]], ...]:
+    """Validate and return a one-to-one manifest/classification pairing.
+
+    Args:
+        kernels: Native kernel descriptors to check.
+
+    Returns:
+        Descriptors paired with their declared verification classes.
+
+    Examples:
+        >>> bool(require_complete_classification(native_cpu_kernel_manifest()))
+        True
+    """
     materialized = tuple(kernels)
     keys = tuple((kernel.kernel_id, kernel.variant) for kernel in materialized)
     if len(set(keys)) != len(keys):
@@ -154,6 +190,18 @@ MOVEMENT_CLASSIFICATIONS = {
 
 
 def classify_cpu_kernel_plans() -> tuple[KernelPlanDescriptor, ...]:
+    """Resolve executable CPU capability plans and their dispositions.
+
+    Args:
+        None.
+
+    Returns:
+        Tuple of active or explicitly deferred kernel plan descriptors.
+
+    Examples:
+        >>> all(plan.kernel.operation for plan in classify_cpu_kernel_plans())
+        True
+    """
     manifest = native_cpu_kernel_manifest()
     require_complete_classification(manifest)
     by_operation = {kernel.operation: kernel for kernel in manifest}
