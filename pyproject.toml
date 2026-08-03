@@ -27,6 +27,9 @@ Homepage = "https://github.com/patrickk1998/strideweave"
 Issues = "https://github.com/patrickk1998/strideweave/issues"
 Repository = "https://github.com/patrickk1998/strideweave.git"
 
+[project.scripts]
+strideweave-verify-report = "strideweave.verification.cli:main"
+
 [dependency-groups]
 dev = [
     "clang-format==22.1.8",

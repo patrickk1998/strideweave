@@ -29,6 +29,7 @@ from .model import (
     VerificationOutcome,
     VerificationReport,
     VerificationStage,
+    VerificationSummary,
 )
 from .payloads import (
     AnalyticCase,
@@ -66,6 +67,7 @@ __all__ = [
     "VerificationOutcome",
     "VerificationReport",
     "VerificationStage",
+    "VerificationSummary",
     "adversarial_float32_payload",
     "analytic_cases",
     "arbitrary_float32_payload",
