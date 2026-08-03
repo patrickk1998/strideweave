@@ -67,17 +67,54 @@ class EncodedInt32Payload:
 
 
 @dataclass(frozen=True, slots=True)
+class EncodedBoolPayload:
+    """One immutable Bool operand, encoded as one byte per element.
+
+    Args:
+        bits: One ``0`` or ``1`` per element, in logical order.
+        bit_hash: SHA-256 of the canonical encoded bytes.
+    """
+
+    bits: tuple[int, ...]
+    bit_hash: str
+
+    @classmethod
+    def from_values(cls, values: Iterable[bool]) -> EncodedBoolPayload:
+        """Encode Python bools into a hashed immutable payload.
+
+        Args:
+            values: Bool elements in logical order.
+
+        Returns:
+            The encoded payload.
+
+        Examples:
+            >>> EncodedBoolPayload.from_values((True, False)).bits
+            (1, 0)
+        """
+        encoded = tuple(1 if bool(value) else 0 for value in values)
+        raw = bytes(encoded)
+        return cls(encoded, hashlib.sha256(raw).hexdigest())
+
+    def values(self) -> tuple[bool, ...]:
+        """Return the decoded Bool elements in logical order."""
+        return tuple(bool(value) for value in self.bits)
+
+
+@dataclass(frozen=True, slots=True)
 class EncodedInputs:
-    operands: tuple[EncodedFloat32Payload | EncodedInt32Payload, ...]
+    operands: tuple[
+        EncodedFloat32Payload | EncodedInt32Payload | EncodedBoolPayload, ...
+    ]
 
     @property
     def input_hashes(self) -> tuple[str, ...]:
         return tuple(operand.bit_hash for operand in self.operands)
 
-    def target_values(self) -> tuple[tuple[float | int, ...], ...]:
+    def target_values(self) -> tuple[tuple[float | int | bool, ...], ...]:
         return tuple(operand.values() for operand in self.operands)
 
-    def oracle_values(self) -> tuple[tuple[float | int, ...], ...]:
+    def oracle_values(self) -> tuple[tuple[float | int | bool, ...], ...]:
         return tuple(operand.values() for operand in self.operands)
 
 
@@ -177,8 +214,12 @@ class AnalyticCase:
 
 def analytic_cases() -> tuple[AnalyticCase, ...]:
     return (
-        AnalyticCase("reduce-balanced", "reduce", ((1.0, -1.0, 2.0, -2.0),), (0.0,)),
-        AnalyticCase("reduce-geometric", "reduce", ((1.0, 2.0, 4.0, 8.0),), (15.0,)),
+        AnalyticCase(
+            "reduce-balanced", "reduce_sum", ((1.0, -1.0, 2.0, -2.0),), (0.0,)
+        ),
+        AnalyticCase(
+            "reduce-geometric", "reduce_sum", ((1.0, 2.0, 4.0, 8.0),), (15.0,)
+        ),
         AnalyticCase("matmul-dot", "matmul", ((1.0, 2.0), (3.0, 4.0)), (11.0,)),
         AnalyticCase("matmul-orthogonal", "matmul", ((1.0, 1.0), (1.0, -1.0)), (0.0,)),
         AnalyticCase("matmul-signed", "matmul", ((-2.0, 3.0), (4.0, 5.0)), (7.0,)),

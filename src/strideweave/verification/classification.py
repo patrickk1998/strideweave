@@ -17,35 +17,97 @@ from .model import (
 
 _carrier = import_module("strideweave._carrier")
 
+_EXACT = (VerificationClass.EXACT_ARITHMETIC,)
+_DEFERRED = (VerificationClass.DEFERRED,)
+_STRUCTURAL = (VerificationClass.STRUCTURAL,)
+_CERTIFIED_SUM = (
+    VerificationClass.STRUCTURAL,
+    VerificationClass.ANALYTIC,
+    VerificationClass.NUMERICAL,
+)
+
+# The reason attached to every plan deferred because its result is produced by
+# the platform math library rather than by an arithmetic StrideWeave pins.
+VENDOR_TRANSCENDENTAL_REASON = "vendor transcendental implementation"
+
+# Kernels whose result is a correctly rounded composition of pinned binary32 or
+# exact-integer operations, so `Generic` and native CPU must agree bit for bit
+# on arbitrary finite encoded inputs.
+_EXACT_KERNELS = (
+    "abs",
+    "add",
+    "argmax",
+    "argmin",
+    "ceil",
+    "clamp",
+    "div",
+    "elementwise_mul",
+    "eq",
+    "floor",
+    "gather",
+    "le",
+    "leaky_relu",
+    "logical_not",
+    "lt",
+    "maximum",
+    "minimum",
+    "ne",
+    "neg",
+    "recip",
+    "reduce_max",
+    "reduce_min",
+    "relu",
+    "rem",
+    "round",
+    "rsqrt",
+    "scalar_mul",
+    "scatter",
+    "select",
+    "sign",
+    "sort_indices",
+    "sort_values",
+    "sqrt",
+    "sub",
+    "topk_indices",
+    "topk_values",
+)
+
+# Kernels that combine many floating terms under a normative order. Their
+# payloads are chosen so every partial result is exactly representable, which
+# checks traversal and addressing without pinning a particular association.
+_STRUCTURAL_KERNELS = ("conv_general", "cumsum", "reduce_prod", "scatter_add")
+
+# Kernels whose value comes from the platform math library. StrideWeave pins no
+# accuracy contract for them yet, so they are deferred with a concrete reason
+# rather than compared against a second implementation of the same library.
+_TRANSCENDENTAL_KERNELS = (
+    "cos",
+    "elu",
+    "erf",
+    "exp",
+    "exp2",
+    "gelu",
+    "log",
+    "log2",
+    "sigmoid",
+    "silu",
+    "sin",
+    "softplus",
+    "tanh",
+)
+
 _CLASSIFICATIONS: dict[tuple[str, str], tuple[VerificationClass, ...]] = {
-    ("cpu.add", "default"): (VerificationClass.EXACT_ARITHMETIC,),
-    ("cpu.div", "default"): (VerificationClass.EXACT_ARITHMETIC,),
-    ("cpu.elementwise_mul", "default"): (VerificationClass.EXACT_ARITHMETIC,),
-    ("cpu.elu", "default"): (VerificationClass.DEFERRED,),
-    ("cpu.exp", "default"): (VerificationClass.DEFERRED,),
-    ("cpu.gelu", "default"): (VerificationClass.DEFERRED,),
-    ("cpu.leaky_relu", "default"): (VerificationClass.EXACT_ARITHMETIC,),
-    ("cpu.matmul", "default"): (
-        VerificationClass.STRUCTURAL,
-        VerificationClass.ANALYTIC,
-        VerificationClass.NUMERICAL,
-    ),
-    ("cpu.scalar_mul", "default"): (VerificationClass.EXACT_ARITHMETIC,),
+    **{(f"cpu.{name}", "default"): _EXACT for name in _EXACT_KERNELS},
+    **{(f"cpu.{name}", "default"): _STRUCTURAL for name in _STRUCTURAL_KERNELS},
+    **{(f"cpu.{name}", "default"): _DEFERRED for name in _TRANSCENDENTAL_KERNELS},
+    ("cpu.matmul", "default"): _CERTIFIED_SUM,
+    ("cpu.reduce_sum", "default"): _CERTIFIED_SUM,
+    # `pow` is one kernel with two dispositions: the checked-integer plan is
+    # exact, while the floating plan calls the vendor `pow`.
     ("cpu.pow", "default"): (
         VerificationClass.EXACT_ARITHMETIC,
         VerificationClass.DEFERRED,
     ),
-    ("cpu.reduce_sum", "default"): (
-        VerificationClass.STRUCTURAL,
-        VerificationClass.ANALYTIC,
-        VerificationClass.NUMERICAL,
-    ),
-    ("cpu.relu", "default"): (VerificationClass.EXACT_ARITHMETIC,),
-    ("cpu.sigmoid", "default"): (VerificationClass.DEFERRED,),
-    ("cpu.silu", "default"): (VerificationClass.DEFERRED,),
-    ("cpu.softplus", "default"): (VerificationClass.DEFERRED,),
-    ("cpu.sub", "default"): (VerificationClass.EXACT_ARITHMETIC,),
-    ("cpu.tanh", "default"): (VerificationClass.DEFERRED,),
 }
 
 
@@ -108,10 +170,10 @@ def classify_cpu_kernel_plans() -> tuple[KernelPlanDescriptor, ...]:
         classes = classifications_for_kernel(kernel)
         deferred_reason = None
         disposition = ClassificationDisposition.ACTIVE
-        if classes == (VerificationClass.DEFERRED,):
+        if classes == _DEFERRED:
             disposition = ClassificationDisposition.DEFERRED
             classes = ()
-            deferred_reason = "vendor transcendental implementation"
+            deferred_reason = VENDOR_TRANSCENDENTAL_REASON
         elif capability.operation == "pow" and capability.compute.name == "BINARY32":
             disposition = ClassificationDisposition.DEFERRED
             classes = ()

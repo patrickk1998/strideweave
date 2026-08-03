@@ -39,6 +39,7 @@ from .model import (
 )
 from .payloads import (
     AnalyticCase,
+    EncodedBoolPayload,
     EncodedFloat32Payload,
     EncodedInputs,
     EncodedInt32Payload,
@@ -50,7 +51,7 @@ from .payloads import (
 )
 
 ResultTransform = Callable[[str, tuple[float | int, ...]], tuple[float | int, ...]]
-Payload = EncodedFloat32Payload | EncodedInt32Payload
+Payload = EncodedFloat32Payload | EncodedInt32Payload | EncodedBoolPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +82,11 @@ def _dtype(name: str) -> SimpleDType:
 def _tensor(
     values: Iterable[float | int], dtype: SimpleDType, layout: Layout, cpu: bool
 ) -> Tensor:
-    zero = 0 if dtype is DType.Int32 else 0.0
+    zero: bool | int | float = 0.0
+    if dtype is DType.Bool:
+        zero = False
+    elif dtype is DType.Int32:
+        zero = 0
     physical: list[float | int] = [zero] * layout.cosize
     for logical_index, value in enumerate(values):
         physical[layout.index(logical_index)] = value
@@ -109,8 +114,16 @@ def _tensor_dtypes(plan: PlanKey) -> tuple[SimpleDType, ...]:
     return tuple(dtypes)
 
 
+def _payload_dtype_name(payload: Payload) -> str:
+    if isinstance(payload, EncodedFloat32Payload):
+        return "Float32"
+    return "Bool" if isinstance(payload, EncodedBoolPayload) else "Int32"
+
+
 def _payload(dtype: SimpleDType, values: Iterable[float | int]) -> Payload:
     materialized = tuple(values)
+    if dtype is DType.Bool:
+        return EncodedBoolPayload.from_values(bool(value) for value in materialized)
     if dtype is DType.Int32:
         return EncodedInt32Payload.from_values(int(value) for value in materialized)
     return EncodedFloat32Payload.from_values(materialized)
@@ -145,10 +158,7 @@ def _case(
 ) -> EvidenceRecord:
     hashes = EncodedInputs(payloads).input_hashes
     if plan is None:
-        input_dtypes = tuple(
-            "Float32" if isinstance(item, EncodedFloat32Payload) else "Int32"
-            for item in payloads
-        )
+        input_dtypes = tuple(_payload_dtype_name(item) for item in payloads)
         output_dtype = "Float32"
         accumulator_dtype = None
     else:
@@ -235,7 +245,138 @@ def _weak_scalar(plan: PlanKey) -> float | int:
     ]
     if len(weak_operands) != 1:
         raise ValueError("expected one weak scalar in this execution plan")
-    return 2 if weak_operands[0] == "Int32" else 0.5
+    return _weak_scalar_value(weak_operands[0], 0)
+
+
+def _weak_scalar_value(convert_to: str | None, position: int) -> float | int:
+    """Return the pinned weak scalar one plan position materializes.
+
+    Weak scalars select a plan rather than carrying a dtype, so the value is
+    fixed per position: a bound pair uses distinct values so a `clamp` case
+    exercises an ordered interval rather than a degenerate point.
+    """
+    if convert_to == "Int32":
+        return (2, -1)[position % 2]
+    return (0.5, -0.5)[position % 2]
+
+
+def _call_arguments(plan: PlanKey, tensors: tuple[Tensor, ...]) -> tuple[object, ...]:
+    """Interleave tensor and weak scalar operands in the operation's own order."""
+    arguments: list[object] = []
+    tensor_index = 0
+    weak_index = 0
+    for role, _, convert_to in plan.operands:
+        if role == "TENSOR":
+            arguments.append(tensors[tensor_index])
+            tensor_index += 1
+            continue
+        arguments.append(_weak_scalar_value(convert_to, weak_index))
+        weak_index += 1
+    return tuple(arguments)
+
+
+# The operations that combine one two-mode tensor along its second mode. Each
+# is addressed through its public description form so the verified path is the
+# one a caller uses rather than a private two-mode primitive.
+DESCRIBED_REDUCTIONS = frozenset(
+    {
+        "reduce_sum",
+        "reduce_prod",
+        "reduce_max",
+        "reduce_min",
+        "argmax",
+        "argmin",
+    }
+)
+
+# The operations whose kernel combines many terms, and which therefore need a
+# two-mode contraction layout rather than the flat elementwise one.
+CONTRACTING_OPERATIONS = DESCRIBED_REDUCTIONS | {
+    "matmul",
+    "cumsum",
+    "conv_general",
+}
+
+# Selection operations are dispatched by their internal names because `sort`
+# and `topk` package a value call and an index call as one public result.
+_SELECTION_OPERATIONS = frozenset(
+    {"_sort_values", "_sort_indices", "_topk_values", "_topk_indices"}
+)
+
+# Operations whose second operand is a logical index rather than a value, so
+# its payload must stay inside the addressed extent.
+INDEX_OPERAND_POSITIONS: dict[str, tuple[int, ...]] = {
+    "gather": (1,),
+    "scatter": (1,),
+    "scatter_add": (1,),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _CaseShape:
+    """The layouts, element counts, and reported shapes one case executes on."""
+
+    operand_layouts: tuple[Layout, ...]
+    counts: tuple[int, ...]
+    shapes: tuple[tuple[int, ...], ...]
+    contraction_length: int | None
+
+
+def _flat(count: int) -> Layout:
+    return Layout(Shape(count), Stride(1))
+
+
+def _two_mode(rows: int, columns: int) -> Layout:
+    return Layout(Shape([rows, columns]), Stride([1, rows]))
+
+
+def _case_shape(operation: str, operand_count: int, k: int) -> _CaseShape:
+    """Return the case geometry one operation's public call accepts.
+
+    Args:
+        operation: Dispatch name of the operation under certification.
+        operand_count: Number of tensor operands its plan declares.
+        k: Contraction or fiber length for the operations that combine terms.
+
+    Returns:
+        The per-operand layouts, element counts, reported shapes, and
+        contraction length for one case.
+    """
+    if operation == "conv_general":
+        lhs = Layout(Shape([1, 1, k]), Stride([1, 1, 1]))
+        kernel = Layout(Shape([1, 1, 1]), Stride([1, 1, 1]))
+        return _CaseShape((lhs, kernel), (k, 1), ((1, 1, k), (1, 1, 1)), k)
+    if operation == "gather":
+        source = _two_mode(2, 2)
+        return _CaseShape((source, _flat(1)), (4, 1), ((2, 2), (1,)), None)
+    if operation in {"scatter", "scatter_add"}:
+        base = _two_mode(2, 2)
+        updates = Layout(Shape([1, 2]), Stride([1, 1]))
+        return _CaseShape(
+            (base, _flat(1), updates), (4, 1, 2), ((2, 2), (1,), (1, 2)), None
+        )
+    if operation in _SELECTION_OPERATIONS:
+        layout = _two_mode(2, 2)
+        return _CaseShape(
+            (layout,) * operand_count, (4,) * operand_count, ((2, 2),), None
+        )
+    if operation in CONTRACTING_OPERATIONS:
+        layout = Layout(Shape([1, k]), Stride([1, 1]))
+        return _CaseShape(
+            (layout,) * operand_count,
+            (k,) * operand_count,
+            ((1, k),) * operand_count,
+            k,
+        )
+    layout = _flat(4)
+    return _CaseShape(
+        (layout,) * operand_count, (4,) * operand_count, ((4,),) * operand_count, None
+    )
+
+
+def _dispatched(operation: str, tensors: tuple[Tensor, ...], *arguments: object):
+    """Invoke an internal operation through the carrier that owns it."""
+    return tensors[0].carrier.dispatch_op(operation).forward(*tensors, *arguments)
 
 
 def _execute(
@@ -243,25 +384,37 @@ def _execute(
     payloads: tuple[Payload, ...],
     layout: Layout,
     cpu: bool,
+    *,
+    operand_layouts: tuple[Layout, ...] | None = None,
 ) -> tuple[float | int, ...]:
+    dtypes = _tensor_dtypes(descriptor.plan)
+    layouts = operand_layouts or (layout,) * len(dtypes)
     tensors = tuple(
-        _tensor(payload.values(), dtype, layout, cpu)
-        for payload, dtype in zip(
-            payloads, _tensor_dtypes(descriptor.plan), strict=True
+        _tensor(payload.values(), dtype, operand_layout, cpu)
+        for payload, dtype, operand_layout in zip(
+            payloads, dtypes, layouts, strict=True
         )
     )
     operation = descriptor.kernel.operation
     options = _operation_options(descriptor.plan)
-    if operation in {"add", "sub", "elementwise_mul", "div"}:
-        result = getattr(sw, operation)(*tensors)
-    elif operation in {"mul", "pow"}:
-        result = getattr(sw, operation)(tensors[0], _weak_scalar(descriptor.plan))
-    elif operation == "reduce":
-        result = sw.reduce(tensors[0], **options)
+    if operation in DESCRIBED_REDUCTIONS:
+        result = getattr(sw, operation)(tensors[0], "a b -> a", **options)
     elif operation == "matmul":
         result = sw.matmul(*tensors, **options)
+    elif operation == "cumsum":
+        result = sw.cumsum(tensors[0], 1)
+    elif operation == "conv_general":
+        result = _dispatched(operation, tensors, (1,), ((0, 0),))
+    elif operation == "gather":
+        result = sw.gather(tensors[0], tensors[1], 0)
+    elif operation in {"scatter", "scatter_add"}:
+        result = getattr(sw, operation)(*tensors, 0)
+    elif operation in {"_sort_values", "_sort_indices"}:
+        result = _dispatched(operation, tensors, 1, False)
+    elif operation in {"_topk_values", "_topk_indices"}:
+        result = _dispatched(operation, tensors, 1, 1, True)
     else:
-        result = getattr(sw, operation)(tensors[0])
+        result = getattr(sw, operation)(*_call_arguments(descriptor.plan, tensors))
     return _values(result)
 
 
@@ -281,14 +434,46 @@ def _comparison(
     )
 
 
+def _pinned_payloads(descriptor: KernelPlanDescriptor) -> tuple[Payload, ...]:
+    """Prepare the small signed witness every exact plan is checked on first."""
+    shape = _descriptor_shape(descriptor)
+    operation = descriptor.kernel.operation
+    index_positions = INDEX_OPERAND_POSITIONS.get(operation, ())
+    values: list[tuple[float | int, ...]] = []
+    for position, count in enumerate(shape.counts):
+        if position in index_positions:
+            values.append((0,) * count)
+            continue
+        pinned = (-2, -1, 1, 2)
+        values.append(tuple(pinned[index % len(pinned)] for index in range(count)))
+    return _payloads_for_plan(descriptor.plan, tuple(values))
+
+
+def _descriptor_shape(descriptor: KernelPlanDescriptor) -> _CaseShape:
+    return _case_shape(
+        descriptor.kernel.operation, len(_tensor_dtypes(descriptor.plan)), 4
+    )
+
+
 def _exact_record(
     descriptor: KernelPlanDescriptor, transform: ResultTransform | None
 ) -> EvidenceRecord:
-    values = tuple((-2, -1, 1, 2) for _ in _tensor_dtypes(descriptor.plan))
-    payloads = _payloads_for_plan(descriptor.plan, values)
-    layout = Layout(Shape(4), Stride(1))
-    expected = _execute(descriptor, payloads, layout, False)
-    actual = _execute(descriptor, payloads, layout, True)
+    shape = _descriptor_shape(descriptor)
+    payloads = _pinned_payloads(descriptor)
+    expected = _execute(
+        descriptor,
+        payloads,
+        shape.operand_layouts[0],
+        False,
+        operand_layouts=shape.operand_layouts,
+    )
+    actual = _execute(
+        descriptor,
+        payloads,
+        shape.operand_layouts[0],
+        True,
+        operand_layouts=shape.operand_layouts,
+    )
     if transform is not None:
         actual = transform(descriptor.kernel.kernel_id, actual)
     matches, deviations, mismatches = _comparison(
@@ -302,8 +487,9 @@ def _exact_record(
         VerificationOutcome.PASSED if matches else VerificationOutcome.FAILED,
         deviations,
         mismatches,
+        k=shape.contraction_length,
         plan=descriptor.plan,
-        shapes=((4,),) * len(payloads),
+        shapes=shape.shapes,
     )
 
 
@@ -311,10 +497,22 @@ def _arbitrary_exact_record(
     descriptor: KernelPlanDescriptor, transform: ResultTransform | None
 ) -> EvidenceRecord:
     seed = 1000 + sum(ord(character) for character in _plan_id(descriptor.plan))
+    shape = _descriptor_shape(descriptor)
     materialized = _arbitrary_payloads(descriptor, seed)
-    layout = Layout(Shape(4), Stride(1))
-    expected = _execute(descriptor, materialized, layout, False)
-    actual = _execute(descriptor, materialized, layout, True)
+    expected = _execute(
+        descriptor,
+        materialized,
+        shape.operand_layouts[0],
+        False,
+        operand_layouts=shape.operand_layouts,
+    )
+    actual = _execute(
+        descriptor,
+        materialized,
+        shape.operand_layouts[0],
+        True,
+        operand_layouts=shape.operand_layouts,
+    )
     if transform is not None:
         actual = transform(descriptor.kernel.kernel_id, actual)
     matches, deviations, mismatches = _comparison(
@@ -328,8 +526,9 @@ def _arbitrary_exact_record(
         VerificationOutcome.PASSED if matches else VerificationOutcome.FAILED,
         deviations,
         mismatches,
+        k=shape.contraction_length,
         plan=descriptor.plan,
-        shapes=((4,),) * len(materialized),
+        shapes=shape.shapes,
         seed=seed,
         tolerance=Tolerance(version="bit-exact-arbitrary-finite-v1"),
     )
@@ -339,15 +538,35 @@ def _arbitrary_payloads(
     descriptor: KernelPlanDescriptor, seed: int
 ) -> tuple[Payload, ...]:
     """Prepare the deterministic arbitrary exact witness before execution."""
+    shape = _descriptor_shape(descriptor)
+    operation = descriptor.kernel.operation
+    index_positions = INDEX_OPERAND_POSITIONS.get(operation, ())
     payloads: list[Payload] = []
     for index, dtype in enumerate(_tensor_dtypes(descriptor.plan)):
         operand_seed = seed + index * 101
-        if dtype is DType.Float32:
-            payloads.append(arbitrary_float32_payload(operand_seed, 4))
-            continue
+        count = shape.counts[index]
         generator = random.Random(operand_seed)
-        values = tuple(generator.randint(-10_000, 10_000) for _ in range(4))
-        if descriptor.kernel.operation == "div" and index == 1:
+        if index in index_positions:
+            # A logical index must address the operation's own extent, so it is
+            # drawn from that extent rather than from the arbitrary range.
+            payloads.append(
+                EncodedInt32Payload.from_values(
+                    tuple(generator.randrange(2) for _ in range(count))
+                )
+            )
+            continue
+        if dtype is DType.Bool:
+            payloads.append(
+                EncodedBoolPayload.from_values(
+                    bool(generator.getrandbits(1)) for _ in range(count)
+                )
+            )
+            continue
+        if dtype is DType.Float32:
+            payloads.append(arbitrary_float32_payload(operand_seed, count))
+            continue
+        values = tuple(generator.randint(-10_000, 10_000) for _ in range(count))
+        if operation == "div" and index == 1:
             values = tuple(value if value != 0 else 1 for value in values)
         payloads.append(EncodedInt32Payload.from_values(values))
     return tuple(payloads)
@@ -362,23 +581,62 @@ def _contraction_payloads(
     return _payloads_for_plan(descriptor.plan, values)
 
 
+# The exactly representable magnitudes a structural payload draws from. Every
+# partial sum and product of four of these stays exactly representable in
+# binary32, so a structural comparison checks traversal and addressing without
+# depending on which association a backend chooses.
+_EXACT_MAGNITUDES = (1.0, -2.0, 4.0, -8.0, 2.0, -1.0, 8.0, -4.0)
+
+
+def _structural_payloads(descriptor: KernelPlanDescriptor) -> tuple[Payload, ...]:
+    """Prepare payloads whose every legal partial result is exact."""
+    operation = descriptor.kernel.operation
+    shape = _descriptor_shape(descriptor)
+    if operation in {"reduce_sum", "matmul"}:
+        source = exact_structural_payload(17, 4, product=operation == "matmul")
+        lhs = tuple(int(value) for value in source.lhs.values())
+        rhs = (
+            None
+            if source.rhs is None
+            else tuple(int(value) for value in source.rhs.values())
+        )
+        return _contraction_payloads(descriptor, lhs, rhs)
+    index_positions = INDEX_OPERAND_POSITIONS.get(operation, ())
+    values: list[tuple[float | int, ...]] = []
+    for position, count in enumerate(shape.counts):
+        if position in index_positions:
+            values.append(tuple(index % 2 for index in range(count)))
+            continue
+        offset = position * 3
+        values.append(
+            tuple(
+                _EXACT_MAGNITUDES[(offset + index) % len(_EXACT_MAGNITUDES)]
+                for index in range(count)
+            )
+        )
+    return _payloads_for_plan(descriptor.plan, tuple(values))
+
+
 def _structural_record(
     descriptor: KernelPlanDescriptor, transform: ResultTransform | None
 ) -> EvidenceRecord:
-    k = 4
-    source = exact_structural_payload(
-        17, k, product=descriptor.kernel.operation == "matmul"
+    shape = _descriptor_shape(descriptor)
+    k = shape.contraction_length
+    payloads = _structural_payloads(descriptor)
+    expected = _execute(
+        descriptor,
+        payloads,
+        shape.operand_layouts[0],
+        False,
+        operand_layouts=shape.operand_layouts,
     )
-    lhs = tuple(int(value) for value in source.lhs.values())
-    rhs = (
-        None
-        if source.rhs is None
-        else tuple(int(value) for value in source.rhs.values())
+    actual = _execute(
+        descriptor,
+        payloads,
+        shape.operand_layouts[0],
+        True,
+        operand_layouts=shape.operand_layouts,
     )
-    payloads = _contraction_payloads(descriptor, lhs, rhs)
-    layout = Layout(Shape([1, k]), Stride([1, 1]))
-    expected = _execute(descriptor, payloads, layout, False)
-    actual = _execute(descriptor, payloads, layout, True)
     if transform is not None:
         actual = transform(descriptor.kernel.kernel_id, actual)
     matches, deviations, mismatches = _comparison(
@@ -397,13 +655,13 @@ def _structural_record(
         if matches
         else "encoded structural results are not bit-identical",
         plan=descriptor.plan,
-        shapes=((1, k),) * len(payloads),
+        shapes=shape.shapes,
         seed=17,
     )
 
 
 def _analytic_layout_case(operation: str) -> AnalyticCase:
-    if operation == "reduce":
+    if operation == "reduce_sum":
         return AnalyticCase(
             "reduce-hierarchical-addressing",
             operation,
@@ -514,7 +772,7 @@ def _numerical_witness(descriptor: KernelPlanDescriptor) -> _NumericalWitness:
             for index in range(len(dtypes))
         ),
     )
-    if descriptor.kernel.operation == "reduce":
+    if descriptor.kernel.operation == "reduce_sum":
         terms = payloads[0].values()
     else:
         terms = tuple(
@@ -611,47 +869,34 @@ def _error_context(
 ]:
     """Prepare reproducible evidence metadata for one recoverable case failure."""
     prefix = f"{descriptor.kernel.kernel_id}-{_plan_id(descriptor.plan)}"
+    shape = _descriptor_shape(descriptor)
     if label == "exact":
-        payloads = _payloads_for_plan(
-            descriptor.plan,
-            tuple((-2, -1, 1, 2) for _ in _tensor_dtypes(descriptor.plan)),
-        )
         return (
             f"{prefix}-exact-error",
-            payloads,
-            None,
-            ((4,),) * len(payloads),
+            _pinned_payloads(descriptor),
+            shape.contraction_length,
+            shape.shapes,
             0,
             None,
         )
     if label == "arbitrary":
         seed = 1000 + sum(ord(character) for character in _plan_id(descriptor.plan))
-        payloads = _arbitrary_payloads(descriptor, seed)
         return (
             f"{prefix}-arbitrary-finite-error",
-            payloads,
-            None,
-            ((4,),) * len(payloads),
+            _arbitrary_payloads(descriptor, seed),
+            shape.contraction_length,
+            shape.shapes,
             seed,
             Tolerance(version="bit-exact-arbitrary-finite-v1"),
         )
     if label == "structural":
-        k = 4
-        source = exact_structural_payload(
-            17, k, product=descriptor.kernel.operation == "matmul"
-        )
-        payloads = _contraction_payloads(
-            descriptor,
-            tuple(int(value) for value in source.lhs.values()),
-            None
-            if source.rhs is None
-            else tuple(int(value) for value in source.rhs.values()),
-        )
+        shape = _descriptor_shape(descriptor)
+        payloads = _structural_payloads(descriptor)
         return (
             f"{prefix}-structural-error",
             payloads,
-            k,
-            ((1, k),) * len(payloads),
+            shape.contraction_length,
+            shape.shapes,
             17,
             None,
         )
@@ -734,8 +979,12 @@ def _movement_records() -> tuple[EvidenceRecord, ...]:
             sw.move(tensor, FileBacked(dtype=DType.Float32)),
             payload.values(),
         ),
+        # `view` is a dispatched structural operation rather than a public
+        # function, so it is exercised through the carrier that owns it.
         "view": lambda tensor: (
-            sw.view(tensor, (slice(None), slice(1, 5))),
+            tensor.carrier.dispatch_op("view").forward(
+                tensor, (slice(None), slice(1, 5))
+            ),
             tuple(tensor[row, column] for column in range(1, 5) for row in range(2)),
         ),
         "permute": lambda tensor: (
@@ -862,20 +1111,15 @@ def run_stage_one(result_transform: ResultTransform | None = None) -> StageOneRe
             continue
         required = _required_classes(descriptor)
         descriptor_records = []
-        if descriptor.kernel.operation in {"reduce", "matmul"}:
-            case_functions = (
-                (VerificationClass.STRUCTURAL, "structural", _structural_record),
-                (VerificationClass.NUMERICAL, "numerical", _numerical_record),
-            )
-        else:
-            case_functions = (
-                (VerificationClass.EXACT_ARITHMETIC, "exact", _exact_record),
-                (
-                    VerificationClass.EXACT_ARITHMETIC,
-                    "arbitrary",
-                    _arbitrary_exact_record,
-                ),
-            )
+        # The required classes decide which cases run, so a kernel added to the
+        # manifest is covered by its classification rather than by an
+        # operation-name branch that would silently skip it.
+        case_functions = (
+            (VerificationClass.EXACT_ARITHMETIC, "exact", _exact_record),
+            (VerificationClass.EXACT_ARITHMETIC, "arbitrary", _arbitrary_exact_record),
+            (VerificationClass.STRUCTURAL, "structural", _structural_record),
+            (VerificationClass.NUMERICAL, "numerical", _numerical_record),
+        )
         for test_class, label, case_function in case_functions:
             if test_class not in required:
                 continue
@@ -888,10 +1132,7 @@ def run_stage_one(result_transform: ResultTransform | None = None) -> StageOneRe
                 descriptor_records.append(
                     _recoverable_error_record(descriptor, test_class, label, error)
                 )
-        if (
-            descriptor.kernel.operation in {"reduce", "matmul"}
-            and VerificationClass.ANALYTIC in required
-        ):
+        if VerificationClass.ANALYTIC in required:
             for analytic_case in _analytic_cases_for(descriptor.kernel.operation):
                 try:
                     descriptor_records.append(
