@@ -56,6 +56,8 @@ Payload = EncodedFloat32Payload | EncodedInt32Payload | EncodedBoolPayload
 
 @dataclass(frozen=True, slots=True)
 class StageOneResult:
+    """Stage One evidence report and certificates authorizing Stage Two."""
+
     report: VerificationReport
     certificates: tuple[OracleCertificate, ...]
 
@@ -455,11 +457,22 @@ def _descriptor_shape(descriptor: KernelPlanDescriptor) -> _CaseShape:
     )
 
 
-def _exact_record(
-    descriptor: KernelPlanDescriptor, transform: ResultTransform | None
+def _exact_witness_record(
+    descriptor: KernelPlanDescriptor,
+    payloads: tuple[Payload, ...],
+    transform: ResultTransform | None,
+    *,
+    case_suffix: str,
+    seed: int | None = 0,
+    tolerance: Tolerance | None = None,
 ) -> EvidenceRecord:
+    """Run one encoded exact witness against Generic and CPU.
+
+    Exact witnesses differ only in how their payloads and evidence metadata are
+    prepared. Keeping execution, optional mutation, comparison, and evidence
+    construction here makes those paths share the same contract.
+    """
     shape = _descriptor_shape(descriptor)
-    payloads = _pinned_payloads(descriptor)
     expected = _execute(
         descriptor,
         payloads,
@@ -482,7 +495,7 @@ def _exact_record(
     return _case(
         descriptor.kernel,
         VerificationClass.EXACT_ARITHMETIC,
-        f"{descriptor.kernel.kernel_id}-{_plan_id(descriptor.plan)}-exact",
+        f"{descriptor.kernel.kernel_id}-{_plan_id(descriptor.plan)}-{case_suffix}",
         payloads,
         VerificationOutcome.PASSED if matches else VerificationOutcome.FAILED,
         deviations,
@@ -490,6 +503,20 @@ def _exact_record(
         k=shape.contraction_length,
         plan=descriptor.plan,
         shapes=shape.shapes,
+        seed=seed,
+        tolerance=tolerance,
+    )
+
+
+def _exact_record(
+    descriptor: KernelPlanDescriptor, transform: ResultTransform | None
+) -> EvidenceRecord:
+    """Run the fixed signed exact witness for one active kernel plan."""
+    return _exact_witness_record(
+        descriptor,
+        _pinned_payloads(descriptor),
+        transform,
+        case_suffix="exact",
     )
 
 
@@ -497,38 +524,12 @@ def _arbitrary_exact_record(
     descriptor: KernelPlanDescriptor, transform: ResultTransform | None
 ) -> EvidenceRecord:
     seed = 1000 + sum(ord(character) for character in _plan_id(descriptor.plan))
-    shape = _descriptor_shape(descriptor)
-    materialized = _arbitrary_payloads(descriptor, seed)
-    expected = _execute(
+    """Run the seeded arbitrary finite exact witness for one active plan."""
+    return _exact_witness_record(
         descriptor,
-        materialized,
-        shape.operand_layouts[0],
-        False,
-        operand_layouts=shape.operand_layouts,
-    )
-    actual = _execute(
-        descriptor,
-        materialized,
-        shape.operand_layouts[0],
-        True,
-        operand_layouts=shape.operand_layouts,
-    )
-    if transform is not None:
-        actual = transform(descriptor.kernel.kernel_id, actual)
-    matches, deviations, mismatches = _comparison(
-        expected, actual, descriptor.plan.output
-    )
-    return _case(
-        descriptor.kernel,
-        VerificationClass.EXACT_ARITHMETIC,
-        f"{descriptor.kernel.kernel_id}-{_plan_id(descriptor.plan)}-arbitrary-finite",
-        materialized,
-        VerificationOutcome.PASSED if matches else VerificationOutcome.FAILED,
-        deviations,
-        mismatches,
-        k=shape.contraction_length,
-        plan=descriptor.plan,
-        shapes=shape.shapes,
+        _arbitrary_payloads(descriptor, seed),
+        transform,
+        case_suffix="arbitrary-finite",
         seed=seed,
         tolerance=Tolerance(version="bit-exact-arbitrary-finite-v1"),
     )
@@ -1085,6 +1086,20 @@ def _unique_classes(
 
 
 def run_stage_one(result_transform: ResultTransform | None = None) -> StageOneResult:
+    """Certify the Generic/CPU oracle pair for every active CPU plan.
+
+    Args:
+        result_transform: Optional test hook that mutates CPU results before
+            comparison, allowing failure evidence to be exercised.
+
+    Returns:
+        Stage One evidence report and certificates for plans that passed.
+
+    Examples:
+        >>> result = run_stage_one()
+        >>> bool(result.report.records)
+        True
+    """
     descriptors = classify_cpu_kernel_plans()
     records: list[EvidenceRecord] = list(_movement_records())
     records_by_kernel: dict[KernelDescriptor, list[EvidenceRecord]] = {}

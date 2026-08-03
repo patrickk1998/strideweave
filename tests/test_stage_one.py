@@ -266,6 +266,61 @@ def test_arbitrary_finite_exact_case_detects_fractional_result_mutation():
     assert all(record.case.seed is not None for record in arbitrary_add)
 
 
+def test_both_exact_witnesses_share_result_mutation_and_fail_closed():
+    def corrupt(kernel_id, values):
+        if kernel_id == "cpu.add":
+            return tuple(value + 0.25 for value in values)
+        return values
+
+    result = run_stage_one(corrupt)
+    add_exact = [
+        record
+        for record in result.report.records
+        if record.case.kernel_id == "cpu.add"
+        and record.test_class is VerificationClass.EXACT_ARITHMETIC
+    ]
+
+    assert any(record.case.case_id.endswith("-exact") for record in add_exact)
+    assert any(
+        record.case.case_id.endswith("-arbitrary-finite") for record in add_exact
+    )
+    assert all(record.outcome is VerificationOutcome.FAILED for record in add_exact)
+    assert all(
+        record.mismatches is not None and record.mismatches > 0 for record in add_exact
+    )
+
+
+def test_both_exact_witnesses_record_the_same_recoverable_execution_error(
+    monkeypatch,
+):
+    original_execute = stage_one_module._execute
+
+    def fail_cpu_add(descriptor, payloads, layout, cpu, **options):
+        if cpu and descriptor.kernel.operation == "add":
+            raise RuntimeError("injected exact witness failure")
+        return original_execute(descriptor, payloads, layout, cpu, **options)
+
+    monkeypatch.setattr(stage_one_module, "_execute", fail_cpu_add)
+    result = run_stage_one()
+    add_errors = [
+        record
+        for record in result.report.records
+        if record.case.kernel_id == "cpu.add"
+        and record.test_class is VerificationClass.EXACT_ARITHMETIC
+        and record.outcome is VerificationOutcome.ERROR
+    ]
+
+    assert any(record.case.case_id.endswith("-exact-error") for record in add_errors)
+    assert any(
+        record.case.case_id.endswith("-arbitrary-finite-error") for record in add_errors
+    )
+    assert all(
+        record.diagnostic is not None
+        and "injected exact witness failure" in record.diagnostic
+        for record in add_errors
+    )
+
+
 def test_public_stage_one_fails_closed_on_a_stale_classification(monkeypatch):
     monkeypatch.setitem(
         classification._CLASSIFICATIONS,
