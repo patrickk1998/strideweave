@@ -34,7 +34,12 @@ from ..operation_capability import require_capability
 from ..operation_helpers import _require_number
 from ..operation_policy import Accumulation as AccumulationKind
 from ..operation_policy import Arithmetic as ArithmeticKind
-from ..operation_policy import OperandRole, OperationPlan, resolve_operation_plan
+from ..operation_policy import (
+    OperandRole,
+    OperationExecutionOptions,
+    OperationPlan,
+    resolve_operation_plan,
+)
 from .numerics import (
     binary32,
     checked_int32,
@@ -115,6 +120,14 @@ def _sequential_binary32(values: Iterable[Any]) -> Any:
     result = float32_scalar(0.0)
     for value in values:
         result = result + value
+    return result
+
+
+def _sequential_binary64(values: Iterable[Any]) -> float:
+    """Widen encoded terms exactly and add them in Python binary64."""
+    result = 0.0
+    for value in values:
+        result += float(value)
     return result
 
 
@@ -235,15 +248,21 @@ def _argmin(values: Iterable[Any]) -> int:
     return winner
 
 
-# How terms combine, one entry per Accumulation member.
-_ACCUMULATIONS: dict[AccumulationKind, Any] = {
-    AccumulationKind.SEQUENTIAL_BINARY32: _sequential_binary32,
-    AccumulationKind.SEQUENTIAL_BINARY32_PRODUCT: _sequential_binary32_product,
-    AccumulationKind.EXACT_INTEGER: _exact_integer,
-    AccumulationKind.MAXIMUM: _maximum,
-    AccumulationKind.MINIMUM: _minimum,
-    AccumulationKind.ARGMAX: _argmax,
-    AccumulationKind.ARGMIN: _argmin,
+# One accumulator shape is the pair a plan declares: how terms combine and, for
+# a floating accumulation, the dtype they combine in.
+_AccumulatorShape = tuple[AccumulationKind, DType | None]
+
+# How terms combine, keyed by the accumulator shape a plan declares.
+_ACCUMULATIONS: dict[_AccumulatorShape, Any] = {
+    (AccumulationKind.FLOATING, DType.Float32): _sequential_binary32,
+    (AccumulationKind.FLOATING, DType.Float64): _sequential_binary64,
+    (AccumulationKind.SEQUENTIAL_BINARY32, None): _sequential_binary32,
+    (AccumulationKind.SEQUENTIAL_BINARY32_PRODUCT, None): _sequential_binary32_product,
+    (AccumulationKind.EXACT_INTEGER, None): _exact_integer,
+    (AccumulationKind.MAXIMUM, None): _maximum,
+    (AccumulationKind.MINIMUM, None): _minimum,
+    (AccumulationKind.ARGMAX, None): _argmax,
+    (AccumulationKind.ARGMIN, None): _argmin,
 }
 
 # The operations whose Generic implementations combine many terms into one
@@ -313,28 +332,54 @@ _EXACT_OPERAND_SHAPES: Final[dict[str, frozenset[tuple[_OperandShape, ...]]]] = 
     ),
 }
 
-_SPECIAL_ACCUMULATIONS: Final[dict[str, dict[ArithmeticKind, AccumulationKind]]] = {
+# Generic reference execution implements every accumulator dtype the policy
+# offers for the configurable sum reductions, so it advertises both.
+_FLOATING_ACCUMULATORS: Final[frozenset[_AccumulatorShape]] = frozenset(
+    {
+        (AccumulationKind.FLOATING, DType.Float32),
+        (AccumulationKind.FLOATING, DType.Float64),
+    }
+)
+
+_EXACT_INTEGER_ACCUMULATOR: Final[frozenset[_AccumulatorShape]] = frozenset(
+    {(AccumulationKind.EXACT_INTEGER, None)}
+)
+
+
+def _pinned(accumulation: AccumulationKind) -> frozenset[_AccumulatorShape]:
+    """Return the one shape an operation with a pinned accumulation declares."""
+    return frozenset({(accumulation, None)})
+
+
+# The accumulator shapes each operation with a pinned reference accumulation
+# implements, per compute arithmetic. Operations absent here fall back to
+# `_COMPUTE_ACCUMULATIONS`.
+_SPECIAL_ACCUMULATIONS: Final[
+    dict[str, dict[ArithmeticKind, frozenset[_AccumulatorShape]]]
+] = {
     "reduce_sum": {
-        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
-        ArithmeticKind.INT32_EXACT_CHECKED: AccumulationKind.EXACT_INTEGER,
+        ArithmeticKind.BINARY32: _FLOATING_ACCUMULATORS,
+        ArithmeticKind.INT32_EXACT_CHECKED: _EXACT_INTEGER_ACCUMULATOR,
     },
     "reduce_prod": {
-        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32_PRODUCT,
+        ArithmeticKind.BINARY32: _pinned(AccumulationKind.SEQUENTIAL_BINARY32_PRODUCT),
     },
-    "reduce_max": {ArithmeticKind.BINARY32: AccumulationKind.MAXIMUM},
-    "reduce_min": {ArithmeticKind.BINARY32: AccumulationKind.MINIMUM},
-    "argmax": {ArithmeticKind.BINARY32: AccumulationKind.ARGMAX},
-    "argmin": {ArithmeticKind.BINARY32: AccumulationKind.ARGMIN},
-    "cumsum": {ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32},
+    "reduce_max": {ArithmeticKind.BINARY32: _pinned(AccumulationKind.MAXIMUM)},
+    "reduce_min": {ArithmeticKind.BINARY32: _pinned(AccumulationKind.MINIMUM)},
+    "argmax": {ArithmeticKind.BINARY32: _pinned(AccumulationKind.ARGMAX)},
+    "argmin": {ArithmeticKind.BINARY32: _pinned(AccumulationKind.ARGMIN)},
+    "cumsum": {
+        ArithmeticKind.BINARY32: _pinned(AccumulationKind.SEQUENTIAL_BINARY32),
+    },
     "matmul": {
-        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
-        ArithmeticKind.INT32_EXACT: AccumulationKind.EXACT_INTEGER,
+        ArithmeticKind.BINARY32: _FLOATING_ACCUMULATORS,
+        ArithmeticKind.INT32_EXACT: _EXACT_INTEGER_ACCUMULATOR,
     },
     "conv_general": {
-        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
+        ArithmeticKind.BINARY32: _pinned(AccumulationKind.SEQUENTIAL_BINARY32),
     },
     "scatter_add": {
-        ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
+        ArithmeticKind.BINARY32: _pinned(AccumulationKind.SEQUENTIAL_BINARY32),
     },
 }
 
@@ -360,13 +405,14 @@ _COMPUTE_DTYPES: Final[dict[ArithmeticKind, DType]] = {
     ArithmeticKind.INT32_EXACT: DType.Int32,
 }
 
-# The default accumulation associated with each compute arithmetic. Operations
-# with specialized reductions (product, extrema, arg reductions, convolution,
-# and scatter-add) are narrowed further by `_SPECIAL_ACCUMULATIONS` below.
-_COMPUTE_ACCUMULATIONS: Final[dict[ArithmeticKind, AccumulationKind]] = {
-    ArithmeticKind.BINARY32: AccumulationKind.SEQUENTIAL_BINARY32,
-    ArithmeticKind.INT32_EXACT_CHECKED: AccumulationKind.EXACT_INTEGER,
-    ArithmeticKind.INT32_EXACT: AccumulationKind.EXACT_INTEGER,
+# The default accumulator shapes associated with each compute arithmetic.
+# Operations with specialized reductions (product, extrema, arg reductions,
+# cumulative sums, convolution, and scatter-add) are narrowed further by
+# `_SPECIAL_ACCUMULATIONS` above.
+_COMPUTE_ACCUMULATIONS: Final[dict[ArithmeticKind, frozenset[_AccumulatorShape]]] = {
+    ArithmeticKind.BINARY32: _FLOATING_ACCUMULATORS,
+    ArithmeticKind.INT32_EXACT_CHECKED: _EXACT_INTEGER_ACCUMULATOR,
+    ArithmeticKind.INT32_EXACT: _EXACT_INTEGER_ACCUMULATOR,
 }
 
 # How a computed value is narrowed into the dtype `output` names. Bool predicate
@@ -419,7 +465,7 @@ def _plan_total(plan: OperationPlan) -> Any:
     """Return the term combination ``plan.accumulation`` asks for, if any."""
     if plan.accumulation is None:
         return None
-    return _ACCUMULATIONS[plan.accumulation]
+    return _ACCUMULATIONS[(plan.accumulation, plan.accumulator_dtype)]
 
 
 def executable_plan_shape(plan: OperationPlan) -> bool:
@@ -478,13 +524,12 @@ def executable_plan_shape(plan: OperationPlan) -> bool:
     if plan.output is not expected_output:
         return False
     if plan.operation not in _ACCUMULATING_OPERATIONS:
-        return plan.accumulation is None
+        return plan.accumulation is None and plan.accumulator_dtype is None
+    shape = (plan.accumulation, plan.accumulator_dtype)
     if plan.operation in _SPECIAL_ACCUMULATIONS:
-        return (
-            _SPECIAL_ACCUMULATIONS[plan.operation].get(plan.compute)
-            is plan.accumulation
-        )
-    return plan.accumulation is _COMPUTE_ACCUMULATIONS[plan.compute]
+        declared = _SPECIAL_ACCUMULATIONS[plan.operation].get(plan.compute)
+        return declared is not None and shape in declared
+    return shape in _COMPUTE_ACCUMULATIONS[plan.compute]
 
 
 class _PlannedArithmetic(GenericArithmetic):
@@ -528,16 +573,19 @@ class _PlannedArithmetic(GenericArithmetic):
 
 
 class _GradientArithmetic(GenericArithmetic):
-    """Binary32 arithmetic for a backward pass.
+    """Float32 arithmetic for a backward pass.
 
     Backward is governed by the policy's fixed backward rule rather than by a
-    forward plan: a gradient is always ``Float32`` computed in binary32,
-    whatever dtype the forward operation produced. It therefore carries no plan
-    and is built directly rather than through :func:`arithmetic_for_plan`.
+    forward plan: gradient terms and storage are always ``Float32``, whatever
+    dtype the forward operation produced. A backward contraction reuses the
+    forward call's accumulator dtype, so only the addition of those already
+    binary32 terms may widen. It therefore carries no plan and is built directly
+    rather than through :func:`arithmetic_for_plan`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, accumulator_dtype: DType = DType.Float32) -> None:
         super().__init__(DType.Float32, None)
+        self._total = _ACCUMULATIONS[(AccumulationKind.FLOATING, accumulator_dtype)]
 
     def scope(self) -> Any:
         return float32_errstate()
@@ -546,7 +594,7 @@ class _GradientArithmetic(GenericArithmetic):
         return float32_scalar(value)
 
     def total(self, values: Iterable[Any]) -> Any:
-        return _sequential_binary32(values)
+        return self._total(values)
 
     def store(self, value: Any) -> Any:
         return binary32(value)
@@ -592,15 +640,29 @@ def _executing_class(tensor: Any) -> type:
     return type(tensor.carrier)
 
 
-def _planned(operation: str, *operands: Any) -> OperationPlan | None:
+def _planned(
+    operation: str,
+    *operands: Any,
+    options: OperationExecutionOptions | None = None,
+) -> OperationPlan | None:
     """Resolve a plan, or return ``None`` when any operand is legacy storage."""
     if any(operand is None for operand in operands):
+        if options is not None and options.accumulator_dtype is not None:
+            raise TypeError(
+                "accumulator_dtype requires concrete simple-dtype operands; "
+                "legacy Generic storage has no planned accumulation"
+            )
         return None
-    return resolve_operation_plan(operation, *operands)
+    return resolve_operation_plan(operation, *operands, options=options)
 
 
 def binary_arithmetic(
-    operation: str, lhs: Any, rhs: Any, legacy_dtype: DType
+    operation: str,
+    lhs: Any,
+    rhs: Any,
+    legacy_dtype: DType,
+    *,
+    options: OperationExecutionOptions | None = None,
 ) -> GenericArithmetic:
     """Resolve the arithmetic for a two-tensor operation.
 
@@ -617,14 +679,23 @@ def binary_arithmetic(
         UnsupportedOperationPlan: If the operands' carrier class declares no
             capability for the resolved plan.
     """
-    plan = _planned(operation, _concrete_dtype(lhs), _concrete_dtype(rhs))
+    plan = _planned(
+        operation,
+        _concrete_dtype(lhs),
+        _concrete_dtype(rhs),
+        options=options,
+    )
     if plan is None:
         return GenericArithmetic(legacy_dtype)
     return arithmetic_for_plan(plan, _executing_class(lhs))
 
 
 def unary_arithmetic(
-    operation: str, tensor: Any, legacy_dtype: DType | None
+    operation: str,
+    tensor: Any,
+    legacy_dtype: DType | None,
+    *,
+    options: OperationExecutionOptions | None = None,
 ) -> GenericArithmetic:
     """Resolve the arithmetic for a one-tensor operation.
 
@@ -641,7 +712,7 @@ def unary_arithmetic(
         UnsupportedOperationPlan: If the operand's carrier class declares no
             capability for the resolved plan.
     """
-    plan = _planned(operation, _concrete_dtype(tensor))
+    plan = _planned(operation, _concrete_dtype(tensor), options=options)
     if plan is None:
         return GenericArithmetic(legacy_dtype)
     return arithmetic_for_plan(plan, _executing_class(tensor))
@@ -685,7 +756,9 @@ def scalar_arithmetic(
     )
 
 
-def gradient_arithmetic(tensor: Any) -> GenericArithmetic:
+def gradient_arithmetic(
+    tensor: Any, accumulator_dtype: DType = DType.Float32
+) -> GenericArithmetic:
     """Resolve the arithmetic a backward pass executes for ``tensor``.
 
     Gradients are always ``Float32`` for a concrete differentiable operand, so
@@ -700,7 +773,7 @@ def gradient_arithmetic(tensor: Any) -> GenericArithmetic:
     """
     if _concrete_dtype(tensor) is None:
         return GenericArithmetic(None)
-    return _GradientArithmetic()
+    return _GradientArithmetic(accumulator_dtype)
 
 
 @contextmanager

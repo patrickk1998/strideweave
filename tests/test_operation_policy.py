@@ -23,9 +23,11 @@ from strideweave.carriers.operation_policy import (
     Accumulation,
     Arithmetic,
     OperandRole,
+    OperationExecutionOptions,
     OperationOverload,
     OperationPlan,
     OperationSpec,
+    operation_execution_options,
     registered_operations,
     resolve_operation_plan,
 )
@@ -36,8 +38,9 @@ I32 = DType.Int32
 BINARY32 = Arithmetic.BINARY32
 CHECKED = Arithmetic.INT32_EXACT_CHECKED
 EXACT = Arithmetic.INT32_EXACT
-SEQUENTIAL = Accumulation.SEQUENTIAL_BINARY32
+FLOATING_SUM = Accumulation.FLOATING
 EXACT_SUM = Accumulation.EXACT_INTEGER
+SEQUENTIAL = Accumulation.SEQUENTIAL_BINARY32
 SEQUENTIAL_PRODUCT = Accumulation.SEQUENTIAL_BINARY32_PRODUCT
 MAXIMUM = Accumulation.MAXIMUM
 MINIMUM = Accumulation.MINIMUM
@@ -52,126 +55,133 @@ WEAK_BOOL = True
 
 # Expected plans, keyed by (operation, operands). Each value is
 # (operand conversions, compute, accumulation, output).
-Expected = tuple[tuple[SimpleDType, ...], Arithmetic, Accumulation | None, SimpleDType]
+Expected = tuple[
+    tuple[SimpleDType, ...],
+    Arithmetic,
+    Accumulation | None,
+    SimpleDType | None,
+    SimpleDType,
+]
 
 _BINARY_ELEMENTWISE: dict[tuple[Any, ...], Expected] = {
-    (F32, F32): ((F32, F32), BINARY32, None, F32),
-    (F32, I32): ((F32, F32), BINARY32, None, F32),
-    (I32, F32): ((F32, F32), BINARY32, None, F32),
-    (I32, I32): ((I32, I32), CHECKED, None, I32),
+    (F32, F32): ((F32, F32), BINARY32, None, None, F32),
+    (F32, I32): ((F32, F32), BINARY32, None, None, F32),
+    (I32, F32): ((F32, F32), BINARY32, None, None, F32),
+    (I32, I32): ((I32, I32), CHECKED, None, None, I32),
 }
 
 _DIV: dict[tuple[Any, ...], Expected] = {
-    (F32, F32): ((F32, F32), BINARY32, None, F32),
-    (F32, I32): ((F32, F32), BINARY32, None, F32),
-    (I32, F32): ((F32, F32), BINARY32, None, F32),
-    (I32, I32): ((F32, F32), BINARY32, None, F32),
+    (F32, F32): ((F32, F32), BINARY32, None, None, F32),
+    (F32, I32): ((F32, F32), BINARY32, None, None, F32),
+    (I32, F32): ((F32, F32), BINARY32, None, None, F32),
+    (I32, I32): ((F32, F32), BINARY32, None, None, F32),
 }
 
 _MUL: dict[tuple[Any, ...], Expected] = {
-    (F32, WEAK_INTEGER): ((F32, F32), BINARY32, None, F32),
-    (F32, WEAK_FLOAT): ((F32, F32), BINARY32, None, F32),
-    (F32, WEAK_BOOL): ((F32, F32), BINARY32, None, F32),
-    (I32, WEAK_INTEGER): ((I32, I32), CHECKED, None, I32),
-    (I32, WEAK_FLOAT): ((F32, F32), BINARY32, None, F32),
-    (I32, WEAK_BOOL): ((F32, F32), BINARY32, None, F32),
+    (F32, WEAK_INTEGER): ((F32, F32), BINARY32, None, None, F32),
+    (F32, WEAK_FLOAT): ((F32, F32), BINARY32, None, None, F32),
+    (F32, WEAK_BOOL): ((F32, F32), BINARY32, None, None, F32),
+    (I32, WEAK_INTEGER): ((I32, I32), CHECKED, None, None, I32),
+    (I32, WEAK_FLOAT): ((F32, F32), BINARY32, None, None, F32),
+    (I32, WEAK_BOOL): ((F32, F32), BINARY32, None, None, F32),
 }
 
 _POW: dict[tuple[Any, ...], Expected] = {
-    (F32, WEAK_INTEGER): ((F32, F32), BINARY32, None, F32),
-    (F32, WEAK_FLOAT): ((F32, F32), BINARY32, None, F32),
-    (F32, WEAK_BOOL): ((F32, F32), BINARY32, None, F32),
-    (F32, -1): ((F32, F32), BINARY32, None, F32),
-    (I32, WEAK_INTEGER): ((I32, I32), CHECKED, None, I32),
-    (I32, 0): ((I32, I32), CHECKED, None, I32),
-    (I32, POW_INTEGER_EXPONENT_MAX): ((I32, I32), CHECKED, None, I32),
-    (I32, -1): ((F32, F32), BINARY32, None, F32),
-    (I32, POW_INTEGER_EXPONENT_MAX + 1): ((F32, F32), BINARY32, None, F32),
-    (I32, WEAK_FLOAT): ((F32, F32), BINARY32, None, F32),
-    (I32, WEAK_BOOL): ((F32, F32), BINARY32, None, F32),
+    (F32, WEAK_INTEGER): ((F32, F32), BINARY32, None, None, F32),
+    (F32, WEAK_FLOAT): ((F32, F32), BINARY32, None, None, F32),
+    (F32, WEAK_BOOL): ((F32, F32), BINARY32, None, None, F32),
+    (F32, -1): ((F32, F32), BINARY32, None, None, F32),
+    (I32, WEAK_INTEGER): ((I32, I32), CHECKED, None, None, I32),
+    (I32, 0): ((I32, I32), CHECKED, None, None, I32),
+    (I32, POW_INTEGER_EXPONENT_MAX): ((I32, I32), CHECKED, None, None, I32),
+    (I32, -1): ((F32, F32), BINARY32, None, None, F32),
+    (I32, POW_INTEGER_EXPONENT_MAX + 1): ((F32, F32), BINARY32, None, None, F32),
+    (I32, WEAK_FLOAT): ((F32, F32), BINARY32, None, None, F32),
+    (I32, WEAK_BOOL): ((F32, F32), BINARY32, None, None, F32),
 }
 
 _RELU: dict[tuple[Any, ...], Expected] = {
-    (F32,): ((F32,), BINARY32, None, F32),
-    (I32,): ((I32,), EXACT, None, I32),
+    (F32,): ((F32,), BINARY32, None, None, F32),
+    (I32,): ((I32,), EXACT, None, None, I32),
 }
 
 _REDUCE_SUM: dict[tuple[Any, ...], Expected] = {
-    (F32,): ((F32,), BINARY32, SEQUENTIAL, F32),
-    (I32,): ((I32,), CHECKED, EXACT_SUM, I32),
+    (F32,): ((F32,), BINARY32, FLOATING_SUM, F32, F32),
+    (I32,): ((I32,), CHECKED, EXACT_SUM, None, I32),
 }
 
 _MATMUL: dict[tuple[Any, ...], Expected] = {
-    (F32, F32): ((F32, F32), BINARY32, SEQUENTIAL, F32),
-    (F32, I32): ((F32, F32), BINARY32, SEQUENTIAL, F32),
-    (I32, F32): ((F32, F32), BINARY32, SEQUENTIAL, F32),
-    (I32, I32): ((I32, I32), EXACT, EXACT_SUM, I32),
+    (F32, F32): ((F32, F32), BINARY32, FLOATING_SUM, F32, F32),
+    (F32, I32): ((F32, F32), BINARY32, FLOATING_SUM, F32, F32),
+    (I32, F32): ((F32, F32), BINARY32, FLOATING_SUM, F32, F32),
+    (I32, I32): ((I32, I32), EXACT, EXACT_SUM, None, I32),
 }
 
 _FLOATING_ACTIVATION: dict[tuple[Any, ...], Expected] = {
-    (F32,): ((F32,), BINARY32, None, F32),
-    (I32,): ((F32,), BINARY32, None, F32),
+    (F32,): ((F32,), BINARY32, None, None, F32),
+    (I32,): ((F32,), BINARY32, None, None, F32),
 }
 
 _FLOAT32_UNARY: dict[tuple[Any, ...], Expected] = {
-    (F32,): ((F32,), BINARY32, None, F32),
+    (F32,): ((F32,), BINARY32, None, None, F32),
 }
 
 _FLOAT32_BINARY: dict[tuple[Any, ...], Expected] = {
-    (F32, F32): ((F32, F32), BINARY32, None, F32),
+    (F32, F32): ((F32, F32), BINARY32, None, None, F32),
 }
 
 _FLOAT32_PREDICATE: dict[tuple[Any, ...], Expected] = {
-    (F32, F32): ((F32, F32), BINARY32, None, DType.Bool),
+    (F32, F32): ((F32, F32), BINARY32, None, None, DType.Bool),
 }
 
 _LOGICAL_NOT: dict[tuple[Any, ...], Expected] = {
-    (F32,): ((F32,), BINARY32, None, DType.Bool),
+    (F32,): ((F32,), BINARY32, None, None, DType.Bool),
 }
 
 _POW_TENSOR: dict[tuple[Any, ...], Expected] = {
-    (F32, F32): ((F32, F32), BINARY32, None, F32),
-    (F32, I32): ((F32, F32), BINARY32, None, F32),
-    (I32, F32): ((F32, F32), BINARY32, None, F32),
-    (I32, I32): ((F32, F32), BINARY32, None, F32),
+    (F32, F32): ((F32, F32), BINARY32, None, None, F32),
+    (F32, I32): ((F32, F32), BINARY32, None, None, F32),
+    (I32, F32): ((F32, F32), BINARY32, None, None, F32),
+    (I32, I32): ((F32, F32), BINARY32, None, None, F32),
 }
 
 _REVERSE_POW: dict[tuple[Any, ...], Expected] = {
-    (WEAK_INTEGER, F32): ((F32, F32), BINARY32, None, F32),
-    (WEAK_FLOAT, F32): ((F32, F32), BINARY32, None, F32),
-    (WEAK_BOOL, F32): ((F32, F32), BINARY32, None, F32),
-    (WEAK_INTEGER, I32): ((F32, F32), BINARY32, None, F32),
-    (WEAK_FLOAT, I32): ((F32, F32), BINARY32, None, F32),
-    (WEAK_BOOL, I32): ((F32, F32), BINARY32, None, F32),
+    (WEAK_INTEGER, F32): ((F32, F32), BINARY32, None, None, F32),
+    (WEAK_FLOAT, F32): ((F32, F32), BINARY32, None, None, F32),
+    (WEAK_BOOL, F32): ((F32, F32), BINARY32, None, None, F32),
+    (WEAK_INTEGER, I32): ((F32, F32), BINARY32, None, None, F32),
+    (WEAK_FLOAT, I32): ((F32, F32), BINARY32, None, None, F32),
+    (WEAK_BOOL, I32): ((F32, F32), BINARY32, None, None, F32),
 }
 
 _GATHER: dict[tuple[Any, ...], Expected] = {
-    (F32, I32): ((F32, I32), BINARY32, None, F32),
+    (F32, I32): ((F32, I32), BINARY32, None, None, F32),
 }
 
 _SCATTER: dict[tuple[Any, ...], Expected] = {
-    (F32, I32, F32): ((F32, I32, F32), BINARY32, None, F32),
+    (F32, I32, F32): ((F32, I32, F32), BINARY32, None, None, F32),
 }
 
 _SCATTER_ADD: dict[tuple[Any, ...], Expected] = {
-    (F32, I32, F32): ((F32, I32, F32), BINARY32, SEQUENTIAL, F32),
+    (F32, I32, F32): ((F32, I32, F32), BINARY32, SEQUENTIAL, None, F32),
 }
 
 _SELECT: dict[tuple[Any, ...], Expected] = {
-    (DType.Bool, F32, F32): ((DType.Bool, F32, F32), BINARY32, None, F32),
+    (DType.Bool, F32, F32): ((DType.Bool, F32, F32), BINARY32, None, None, F32),
 }
 
 _CLAMP: dict[tuple[Any, ...], Expected] = {
-    (F32, F32, F32): ((F32, F32, F32), BINARY32, None, F32),
-    (F32, F32, WEAK_INTEGER): ((F32, F32, F32), BINARY32, None, F32),
-    (F32, WEAK_INTEGER, F32): ((F32, F32, F32), BINARY32, None, F32),
+    (F32, F32, F32): ((F32, F32, F32), BINARY32, None, None, F32),
+    (F32, F32, WEAK_INTEGER): ((F32, F32, F32), BINARY32, None, None, F32),
+    (F32, WEAK_INTEGER, F32): ((F32, F32, F32), BINARY32, None, None, F32),
     (F32, WEAK_INTEGER, WEAK_INTEGER): (
         (F32, F32, F32),
         BINARY32,
         None,
+        None,
         F32,
     ),
-    (F32, WEAK_FLOAT, WEAK_BOOL): ((F32, F32, F32), BINARY32, None, F32),
+    (F32, WEAK_FLOAT, WEAK_BOOL): ((F32, F32, F32), BINARY32, None, None, F32),
 }
 
 EXPECTED_PLANS: dict[str, dict[tuple[Any, ...], Expected]] = {
@@ -192,16 +202,16 @@ EXPECTED_PLANS: dict[str, dict[tuple[Any, ...], Expected]] = {
     "relu": _RELU,
     "reduce_sum": _REDUCE_SUM,
     "reduce_prod": {
-        (F32,): ((F32,), BINARY32, SEQUENTIAL_PRODUCT, F32),
+        (F32,): ((F32,), BINARY32, SEQUENTIAL_PRODUCT, None, F32),
     },
-    "reduce_max": {(F32,): ((F32,), BINARY32, MAXIMUM, F32)},
-    "reduce_min": {(F32,): ((F32,), BINARY32, MINIMUM, F32)},
-    "argmax": {(F32,): ((F32,), BINARY32, ARGMAX, I32)},
-    "argmin": {(F32,): ((F32,), BINARY32, ARGMIN, I32)},
-    "cumsum": {(F32,): ((F32,), BINARY32, SEQUENTIAL, F32)},
+    "reduce_max": {(F32,): ((F32,), BINARY32, MAXIMUM, None, F32)},
+    "reduce_min": {(F32,): ((F32,), BINARY32, MINIMUM, None, F32)},
+    "argmax": {(F32,): ((F32,), BINARY32, ARGMAX, None, I32)},
+    "argmin": {(F32,): ((F32,), BINARY32, ARGMIN, None, I32)},
+    "cumsum": {(F32,): ((F32,), BINARY32, SEQUENTIAL, None, F32)},
     "matmul": _MATMUL,
     "conv_general": {
-        (F32, F32): ((F32, F32), BINARY32, SEQUENTIAL, F32),
+        (F32, F32): ((F32, F32), BINARY32, SEQUENTIAL, None, F32),
     },
     "elu": _FLOATING_ACTIVATION,
     "exp": _FLOATING_ACTIVATION,
@@ -237,9 +247,9 @@ EXPECTED_PLANS: dict[str, dict[tuple[Any, ...], Expected]] = {
     "select": _SELECT,
     "clamp": _CLAMP,
     "_sort_values": _FLOAT32_UNARY,
-    "_sort_indices": {(F32,): ((F32,), BINARY32, None, I32)},
+    "_sort_indices": {(F32,): ((F32,), BINARY32, None, None, I32)},
     "_topk_values": _FLOAT32_UNARY,
-    "_topk_indices": {(F32,): ((F32,), BINARY32, None, I32)},
+    "_topk_indices": {(F32,): ((F32,), BINARY32, None, None, I32)},
 }
 
 
@@ -255,7 +265,7 @@ def _fixture_cases() -> list[tuple[str, tuple[Any, ...], Expected]]:
 def test_resolved_plans_match_their_expected_fixtures(
     operation: str, operands: tuple[Any, ...], expected: Expected
 ) -> None:
-    conversions, compute, accumulation, output = expected
+    conversions, compute, accumulation, accumulator_dtype, output = expected
 
     plan = resolve_operation_plan(operation, *operands)
 
@@ -263,6 +273,7 @@ def test_resolved_plans_match_their_expected_fixtures(
     assert tuple(operand.convert_to for operand in plan.operands) == conversions
     assert plan.compute is compute
     assert plan.accumulation is accumulation
+    assert plan.accumulator_dtype is accumulator_dtype
     assert plan.output is output
 
 
@@ -515,6 +526,86 @@ def test_integer_reduce_checks_only_the_final_narrowing() -> None:
 
     assert plan.compute is Arithmetic.INT32_EXACT_CHECKED
     assert plan.accumulation is Accumulation.EXACT_INTEGER
+
+
+@pytest.mark.parametrize(
+    ("operation", "operands"),
+    [("reduce_sum", (F32,)), ("matmul", (F32, I32))],
+)
+def test_float64_accumulation_is_a_distinct_plan_with_the_same_output(
+    operation: str, operands: tuple[Any, ...]
+) -> None:
+    default = resolve_operation_plan(operation, *operands)
+    widened = resolve_operation_plan(
+        operation, *operands, accumulator_dtype=DType.Float64
+    )
+
+    assert default.accumulation is widened.accumulation is Accumulation.FLOATING
+    assert default.accumulator_dtype is DType.Float32
+    assert widened.accumulator_dtype is DType.Float64
+    assert default.output is widened.output is DType.Float32
+    assert default != widened
+
+
+def test_typed_execution_options_resolve_the_same_widened_plan() -> None:
+    options = operation_execution_options("reduce_sum", accumulator_dtype=DType.Float64)
+
+    assert isinstance(options, OperationExecutionOptions)
+    assert resolve_operation_plan("reduce_sum", F32, options=options) == (
+        resolve_operation_plan("reduce_sum", F32, accumulator_dtype=DType.Float64)
+    )
+
+
+def test_execution_options_are_bound_to_the_operation_that_validated_them() -> None:
+    options = operation_execution_options("reduce_sum")
+
+    with pytest.raises(ValueError, match="cannot be used for operation 'matmul'"):
+        resolve_operation_plan("matmul", F32, F32, options=options)
+
+
+@pytest.mark.parametrize("operation", ["add", "relu"])
+def test_direct_execution_options_reject_non_accumulating_operations(
+    operation: str,
+) -> None:
+    with pytest.raises(TypeError, match="does not accept execution options"):
+        OperationExecutionOptions(operation)
+
+
+def test_direct_execution_options_and_factory_share_validation() -> None:
+    direct = OperationExecutionOptions("reduce_sum", DType.Float64)
+    factory = operation_execution_options("reduce_sum", accumulator_dtype=DType.Float64)
+
+    assert direct == factory
+    assert resolve_operation_plan("reduce_sum", F32, options=direct) == (
+        resolve_operation_plan("reduce_sum", F32, options=factory)
+    )
+
+
+def test_non_accumulating_operations_reject_an_accumulator_dtype() -> None:
+    with pytest.raises(TypeError, match="does not accept accumulator_dtype"):
+        resolve_operation_plan("relu", F32, accumulator_dtype=DType.Float64)
+
+
+@pytest.mark.parametrize("dtype", [DType.Floating, DType.Any, DType.Integer])
+def test_accumulator_dtype_must_be_a_simple_descriptor(dtype: Any) -> None:
+    with pytest.raises(TypeError, match="must be a SimpleDType"):
+        resolve_operation_plan("reduce_sum", F32, accumulator_dtype=dtype)
+
+
+def test_an_unimplemented_simple_accumulator_is_rejected() -> None:
+    with pytest.raises(NotImplementedError, match="not a supported accumulator"):
+        resolve_operation_plan("reduce_sum", F32, accumulator_dtype=DType.E5M2)
+
+
+@pytest.mark.parametrize(
+    ("operation", "operands"),
+    [("reduce_sum", (I32,)), ("matmul", (I32, I32))],
+)
+def test_exact_integer_plans_reject_a_floating_accumulator(
+    operation: str, operands: tuple[Any, ...]
+) -> None:
+    with pytest.raises(TypeError, match="exact-integer accumulation"):
+        resolve_operation_plan(operation, *operands, accumulator_dtype=DType.Float64)
 
 
 def test_operand_dtypes_are_matched_by_identity_not_equality() -> None:

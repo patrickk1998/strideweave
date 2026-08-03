@@ -46,11 +46,12 @@ public:
     Operation()
         : ctx_(py::dict()), inputs_(py::tuple()), input_versions_(py::tuple()),
           autograd_state_freed_(false), is_dispatched_(false),
-          dispatch_carrier_class_(py::none()) {}
+          dispatch_carrier_class_(py::none()), execution_options_(py::none()) {}
 
     virtual ~Operation() = default;
 
-    py::object forward(py::args inputs) {
+    py::object forward(py::args inputs, py::kwargs kwargs) {
+        execution_options_ = validated_execution_options(kwargs);
         require_single_subtensor_inputs(inputs);
         const bool should_store_inputs =
             is_grad_enabled() && has_differentiable_tensor_input(inputs);
@@ -72,7 +73,8 @@ public:
         return result;
     }
 
-    py::object execute_lowered(py::args inputs) {
+    py::object execute_lowered(py::args inputs, py::kwargs kwargs) {
+        execution_options_ = validated_execution_options(kwargs);
         require_single_subtensor_inputs(inputs);
         return execute(inputs);
     }
@@ -90,9 +92,12 @@ public:
 
     bool autograd_state_freed() const { return autograd_state_freed_; }
 
+    py::object execution_options() const { return execution_options_; }
+
     void release_autograd_state() {
         clear_inputs();
         ctx_.clear();
+        execution_options_ = py::none();
         autograd_state_freed_ = true;
     }
 
@@ -134,6 +139,43 @@ protected:
 
 private:
     py::object execute(py::args inputs);
+
+    py::object validated_execution_options(py::kwargs kwargs) const {
+        if (kwargs.empty()) {
+            return py::none();
+        }
+        const py::str options_name("options");
+        if (kwargs.size() != 1 || !kwargs.contains(options_name)) {
+            for (auto item : kwargs) {
+                py::str name = py::reinterpret_borrow<py::str>(item.first);
+                if (!name.equal(options_name)) {
+                    throw py::type_error("unknown operation execution option '" +
+                                         py::cast<std::string>(name) + "'");
+                }
+            }
+            throw py::type_error("operation execution accepts only options=");
+        }
+        py::object options = py::reinterpret_borrow<py::object>(kwargs[options_name]);
+        if (options.is_none()) {
+            return options;
+        }
+        py::object options_type =
+            py::module_::import("strideweave.carriers.operation_policy")
+                .attr("OperationExecutionOptions");
+        if (!py::isinstance(options, options_type)) {
+            throw py::type_error("options must be OperationExecutionOptions or None");
+        }
+        if (!operation_name_.empty()) {
+            const std::string options_operation =
+                py::cast<std::string>(options.attr("operation"));
+            if (options_operation != operation_name_) {
+                throw py::value_error("execution options for '" + options_operation +
+                                      "' cannot be used for operation '" +
+                                      operation_name_ + "'");
+            }
+        }
+        return options;
+    }
 
     void clear_inputs() {
         inputs_ = py::tuple();
@@ -196,6 +238,7 @@ private:
     bool is_dispatched_;
     std::string operation_name_;
     py::object dispatch_carrier_class_;
+    py::object execution_options_;
 };
 
 }  // namespace strideweave::operation

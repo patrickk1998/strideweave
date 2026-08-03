@@ -18,6 +18,7 @@ from strideweave import (
     Stride,
     Tensor,
 )
+from strideweave.carriers.operation_policy import operation_execution_options
 
 
 class GenericBackedCarrier(Carrier):
@@ -214,6 +215,22 @@ def test_completed_profiler_releases_native_shape_event_storage():
     assert events[0].input_shapes == ((2,),)
     assert events[-1].input_shapes == ((2,),)
     assert getattr(profiler, "_session") is None
+
+
+def test_execution_options_do_not_appear_as_profiler_tensor_inputs():
+    value = Tensor(
+        Generic([1.0, 2.0, 3.0, 4.0], dtype=DType.Float32),
+        0,
+        Layout(Shape([2, 2]), Stride([1, 2])),
+    )
+    options = operation_execution_options("reduce_sum", accumulator_dtype=DType.Float64)
+
+    with sw.profile(record_shapes=True) as profiler:
+        value.carrier.dispatch_op("reduce_sum").forward(value, options=options)
+
+    (event,) = profiler.events()
+    assert event.name == "reduce_sum"
+    assert event.input_shapes == ((2, 2),)
 
 
 def test_profiler_events_are_immutable_and_keep_execution_start_order():

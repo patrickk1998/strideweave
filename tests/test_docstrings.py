@@ -11,6 +11,7 @@ import strideweave.friendly as friendly
 import strideweave.functional.api as functional_api
 import strideweave.nn as nn
 import strideweave.operation as operation
+import strideweave.verification as verification
 
 NATIVE_TOP_LEVEL_EXPORTS = {
     "CPU",
@@ -85,6 +86,7 @@ def test_public_modules_have_docstrings():
     assert_has_docstring(einops, "strideweave.einops")
     assert_has_docstring(nn, "strideweave.nn")
     assert_has_docstring(friendly, "strideweave.friendly")
+    assert_has_docstring(verification, "strideweave.verification")
 
 
 def test_friendly_public_exports_have_docstrings():
@@ -154,6 +156,16 @@ def test_documentable_top_level_exports_have_docstrings():
             continue
         value = getattr(sw, name)
         qualified_name = f"sw.{name}"
+        assert_has_docstring(value, qualified_name)
+        if inspect.isfunction(value):
+            assert_function_doc_contract(value, qualified_name)
+
+
+def test_verification_public_exports_have_docstrings():
+    """Verification exports follow the shared public docstring contract."""
+    for name in cast(list[str], verification.__all__):
+        value = getattr(verification, name)
+        qualified_name = f"sw.verification.{name}"
         assert_has_docstring(value, qualified_name)
         if inspect.isfunction(value):
             assert_function_doc_contract(value, qualified_name)

@@ -8,7 +8,9 @@ from importlib import import_module
 from operator import index as operator_index
 from typing import Any, NamedTuple, cast, overload
 
+from ..carriers.dtype import SimpleDType
 from ..carriers.operation_helpers import _as_tensor
+from ..carriers.operation_policy import operation_execution_options
 from ..core.layout import Node, Shape, Stride, Tree
 
 _operation = import_module("strideweave._operation")
@@ -143,12 +145,35 @@ def _dispatch_binary(operation_name: str, lhs: Any, rhs: Any) -> Any:
     return lhs.carrier.dispatch_op(operation_name)
 
 
-def _reduce_second_mode(tensor: Any) -> Any:
-    return _dispatch_unary("reduce_sum", tensor).forward(tensor)
+def _accumulator_options(
+    operation_name: str, accumulator_dtype: SimpleDType | None
+) -> Any:
+    """Validate an optional accumulator request into execution options."""
+    if accumulator_dtype is None:
+        return None
+    return operation_execution_options(
+        operation_name, accumulator_dtype=accumulator_dtype
+    )
 
 
-def _matmul_2mode(lhs: Any, rhs: Any) -> Any:
-    return _dispatch_binary("matmul", lhs, rhs).forward(lhs, rhs)
+def _reduce_second_mode(
+    tensor: Any, *, accumulator_dtype: SimpleDType | None = None
+) -> Any:
+    options = _accumulator_options("reduce_sum", accumulator_dtype)
+    operation = _dispatch_unary("reduce_sum", tensor)
+    if options is None:
+        return operation.forward(tensor)
+    return operation.forward(tensor, options=options)
+
+
+def _matmul_2mode(
+    lhs: Any, rhs: Any, *, accumulator_dtype: SimpleDType | None = None
+) -> Any:
+    options = _accumulator_options("matmul", accumulator_dtype)
+    operation = _dispatch_binary("matmul", lhs, rhs)
+    if options is None:
+        return operation.forward(lhs, rhs)
+    return operation.forward(lhs, rhs, options=options)
 
 
 def _rearrange_tree(tensor: Any, output: Tree, selection: Tree | None = None) -> Any:
@@ -223,16 +248,26 @@ def _reduce_named_axis(operation_name: str, tensor: Any, axis: Any) -> Any:
     return _dispatch_unary(operation_name, intermediate).forward(intermediate)
 
 
-def _reduce_description(operation_name: str, tensor: Any, description: str) -> Any:
+def _reduce_description(
+    operation_name: str,
+    tensor: Any,
+    description: str,
+    *,
+    accumulator_dtype: SimpleDType | None = None,
+) -> Any:
     """Lower a reduction description and dispatch the requested operation."""
 
     if not isinstance(description, str):
         raise TypeError("description must be a str")
     from ..einops import parse_reduce
 
+    options = _accumulator_options(operation_name, accumulator_dtype)
     spec = parse_reduce(description)
     intermediate = _rearrange_tree(tensor, spec.rearrange_output, spec.selection)
-    return _dispatch_unary(operation_name, intermediate).forward(intermediate)
+    operation = _dispatch_unary(operation_name, intermediate)
+    if options is None:
+        return operation.forward(intermediate)
+    return operation.forward(intermediate, options=options)
 
 
 def is_grad_enabled() -> bool:
@@ -1419,12 +1454,26 @@ def pow(base: Any, exponent: Any) -> Any:
     raise TypeError("pow requires at least one Tensor operand")
 
 
-def reduce_sum(tensor: Any, description: str) -> Any:
+def reduce_sum(
+    tensor: Any,
+    description: str,
+    *,
+    accumulator_dtype: SimpleDType | None = None,
+) -> Any:
     """Sum-reduce dimensions omitted by a StrideWeave description.
+
+    A stride-zero reduced mode contributes once per logical coordinate, so
+    reducing an extent-N broadcast mode scales its stored value by N; backward
+    sums through the differentiable broadcast view. The accumulator dtype
+    selects precision, not traversal or association; floating reduction order
+    is backend-defined.
 
     Args:
         tensor: Tensor to reduce.
         description: Command such as ``"a b -> a"`` naming kept dimensions.
+        accumulator_dtype: Floating accumulator dtype. ``None`` selects the
+            backend's default ``Float32`` accumulator. ``DType.Float64``
+            requests widened accumulation without changing the output dtype.
 
     Returns:
         Tensor containing sums over omitted dimensions.
@@ -1437,7 +1486,9 @@ def reduce_sum(tensor: Any, description: str) -> Any:
         3.0
     """
 
-    return _reduce_description("reduce_sum", tensor, description)
+    return _reduce_description(
+        "reduce_sum", tensor, description, accumulator_dtype=accumulator_dtype
+    )
 
 
 def reduce_prod(tensor: Any, description: str) -> Any:
@@ -1895,7 +1946,7 @@ def topk(tensor: Any, k: Any, axis: Any = -1, largest: Any = True) -> TopKResult
     return TopKResult(values, indices)
 
 
-def matmul(lhs: Any, rhs: Any) -> Any:
+def matmul(lhs: Any, rhs: Any, *, accumulator_dtype: SimpleDType | None = None) -> Any:
     """Multiply two two-mode tensors.
 
     The first mode of each input is kept, and the second modes must have the
@@ -1903,11 +1954,15 @@ def matmul(lhs: Any, rhs: Any) -> Any:
     are supported: a broadcast kept mode repeats rows or columns, while a
     broadcast contracted mode repeats its stored factor in the dot product.
     Backward computes logical gradients injectively and sums them through the
-    broadcast view.
+    broadcast view. The accumulator dtype selects precision, not traversal or
+    association; floating contraction order is backend-defined.
 
     Args:
         lhs: Left two-mode tensor.
         rhs: Right two-mode tensor with matching second-mode logical size.
+        accumulator_dtype: Floating accumulator dtype. ``None`` selects the
+            backend's default ``Float32`` accumulator. ``DType.Float64``
+            requests widened accumulation without changing the output dtype.
 
     Returns:
         Tensor with layout formed from the first mode of each input.
@@ -1921,7 +1976,7 @@ def matmul(lhs: Any, rhs: Any) -> Any:
         22
     """
 
-    return _matmul_2mode(lhs, rhs)
+    return _matmul_2mode(lhs, rhs, accumulator_dtype=accumulator_dtype)
 
 
 def move(tensor: Any, destination: Any) -> Any:

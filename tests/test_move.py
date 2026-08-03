@@ -155,6 +155,27 @@ def test_move_from_generic_source():
         tensor[0]
 
 
+def test_move_preserves_a_widened_generic_reduction_and_its_gradient():
+    layout = Layout(Shape([1, 4]), Stride([1, 1]))
+    source = Tensor(
+        Generic([2**24, 1.0, 1.0, -(2**24)], dtype=DType.Float32),
+        0,
+        layout,
+    )
+    reduced = sw.reduce_sum(source, "a b -> a", accumulator_dtype=DType.Float64)
+
+    moved = sw.move(reduced, CPU(1, dtype=DType.Float32))
+
+    assert moved.dtype() is DType.Float32
+    assert moved[0] == 2.0
+
+    moved.backward(make_cpu_tensor([1.0]))
+
+    assert source.grad is not None
+    assert source.grad.dtype() is DType.Float32
+    assert tensor_values(source.grad) == [1.0, 1.0, 1.0, 1.0]
+
+
 def test_move_to_presized_cpu_destination():
     tensor = make_cpu_tensor([4.0, 5.0])
 
