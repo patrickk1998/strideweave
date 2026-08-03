@@ -43,8 +43,11 @@ public:
             canonical_layout_from_modes({mode_shape(tensor_layout(tensor), 0)});
         ctx_["output_layout"] = output_layout_;
 
+        // The plan's accumulation decides how the terms combine: an exact
+        // integer accumulator whose only checked step is the final narrowing,
+        // or a floating accumulator in the dtype the plan declares.
         const CpuPlan plan = resolve_cpu_plan_with_options(
-            executing_carrier_class(tensor), "reduce", execution_options(),
+            executing_carrier_class(tensor), "reduce_sum", execution_options(),
             cpu_dtype_object(tensor_view.carrier->cpu_dtype()));
         const CpuAccumulatorKernel accumulator_kernel = accumulator_kernel_for(plan);
         CpuTensorAllocation result = allocate_cpu_tensor(output_layout_, plan.output);
@@ -114,12 +117,12 @@ private:
     py::object output_layout_ = py::none();
 };
 
-constexpr CpuKernelMetadata kMetadata{"reduce", "cpu.reduce_sum", "default",
+constexpr CpuKernelMetadata kMetadata{"reduce_sum", "cpu.reduce_sum", "default",
                                       "_CPUReduceSumOperation"};
 
 }  // namespace
 
-void register_cpu_reduce(py::module_& module) {
+void register_cpu_reduce_sum(py::module_& module) {
     bind_and_register_cpu_operation<CpuReduceSumOperation>(module, kMetadata);
 }
 

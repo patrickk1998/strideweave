@@ -14,14 +14,15 @@ struct CpuSigmoidScalar {
     }
 };
 
-using CpuSigmoidOperation = CpuUnaryElementwiseOperation<CpuSigmoidScalar>;
+using CpuOperation = CpuUnaryElementwiseOperation<CpuSigmoidScalar>;
+
 constexpr CpuKernelMetadata kMetadata{"sigmoid", "cpu.sigmoid", "default",
                                       "_CPUSigmoidOperation"};
 
 }  // namespace
 
 void register_cpu_sigmoid(py::module_& module) {
-    bind_and_register_cpu_operation<CpuSigmoidOperation>(module, kMetadata);
+    bind_and_register_cpu_operation<CpuOperation>(module, kMetadata);
 }
 
 }  // namespace strideweave::carrier

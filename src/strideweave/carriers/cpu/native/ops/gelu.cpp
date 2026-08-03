@@ -13,14 +13,15 @@ struct CpuGELUScalar {
     }
 };
 
-using CpuGELUOperation = CpuUnaryElementwiseOperation<CpuGELUScalar>;
+using CpuOperation = CpuUnaryElementwiseOperation<CpuGELUScalar>;
+
 constexpr CpuKernelMetadata kMetadata{"gelu", "cpu.gelu", "default",
                                       "_CPUGELUOperation"};
 
 }  // namespace
 
 void register_cpu_gelu(py::module_& module) {
-    bind_and_register_cpu_operation<CpuGELUOperation>(module, kMetadata);
+    bind_and_register_cpu_operation<CpuOperation>(module, kMetadata);
 }
 
 }  // namespace strideweave::carrier

@@ -15,14 +15,15 @@ struct CpuLeakyReLUScalar {
     }
 };
 
-using CpuLeakyReLUOperation = CpuUnaryElementwiseOperation<CpuLeakyReLUScalar>;
+using CpuOperation = CpuUnaryElementwiseOperation<CpuLeakyReLUScalar>;
+
 constexpr CpuKernelMetadata kMetadata{"leaky_relu", "cpu.leaky_relu", "default",
                                       "_CPULeakyReLUOperation"};
 
 }  // namespace
 
 void register_cpu_leaky_relu(py::module_& module) {
-    bind_and_register_cpu_operation<CpuLeakyReLUOperation>(module, kMetadata);
+    bind_and_register_cpu_operation<CpuOperation>(module, kMetadata);
 }
 
 }  // namespace strideweave::carrier

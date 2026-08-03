@@ -14,14 +14,15 @@ struct CpuSiLUScalar {
     }
 };
 
-using CpuSiLUOperation = CpuUnaryElementwiseOperation<CpuSiLUScalar>;
+using CpuOperation = CpuUnaryElementwiseOperation<CpuSiLUScalar>;
+
 constexpr CpuKernelMetadata kMetadata{"silu", "cpu.silu", "default",
                                       "_CPUSiLUOperation"};
 
 }  // namespace
 
 void register_cpu_silu(py::module_& module) {
-    bind_and_register_cpu_operation<CpuSiLUOperation>(module, kMetadata);
+    bind_and_register_cpu_operation<CpuOperation>(module, kMetadata);
 }
 
 }  // namespace strideweave::carrier
