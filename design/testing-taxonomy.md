@@ -101,22 +101,30 @@ and classification-completeness failures remain fail-fast.
 
 Stage One exercises every active classified CPU capability plan against the
 device-independent Generic reference, including widened Float64 accumulation
-for reduction and matmul. Every active non-reducing exact-arithmetic plan keeps
-its small fixed witness and additionally receives distinct seeded, finite,
-storage-encoded operands with fractional values and varied exponents; division
-denominators are nonzero. Structural payloads come from the mantissa-bound
+for `reduce_sum` and `matmul`. Coverage is driven by the native kernel manifest
+and each plan's declared classes rather than by an operation-name branch, so a
+kernel reaching C++ without a case leaves its certificate unissued. Every active
+exact-arithmetic plan keeps its small fixed witness and additionally receives
+distinct seeded, finite, storage-encoded operands with fractional values and
+varied exponents; division denominators are nonzero, and a logical index operand
+is drawn from the extent it addresses. The order-normative floating combiners —
+`cumsum`, `conv_general`, `scatter_add`, and `reduce_prod` — use structural
+payloads whose every legal partial result is exactly representable, so their
+evidence checks traversal and addressing without pinning an association.
+Structural payloads for `reduce_sum` and `matmul` come from the mantissa-bound
 generator, analytic cases are checked independently against their literal known
 answers, and numerical evidence uses a deterministic controlled wide-exponent
 payload. Its order-independent pairwise envelope is twice gamma-K because both
 Generic and CPU may choose a different legal association.
 Floating `pow`, vendor-transcendental kernels, and autograd certification are
-explicit v0 deferrals. Stage Two uses ordinary CPU Float32 accumulation as the
-target and covers movement, reduce, and matmul only. Its deterministic
+explicit v0 deferrals, each recorded with a concrete reason rather than a pass.
+Stage Two uses ordinary CPU Float32 accumulation as the target and covers
+movement, `reduce_sum`, and `matmul` only. Its deterministic
 contraction catalog contains multi-output flat and hierarchical layouts with
 materially different M, N, and K dimensions; evidence records the effective
 matrix shape of each operand and the case-specific contraction length. Each
 numerical output is bounded with its own K-dependent gamma envelope using that
-output's sum of term magnitudes. It may execute a reduce or matmul case only
+output's sum of term magnitudes. It may execute a `reduce_sum` or `matmul` case only
 when the matching Stage One oracle certificate is present; missing certification
 produces deterministic blocked evidence and no target execution.
 
