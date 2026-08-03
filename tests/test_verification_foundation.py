@@ -175,6 +175,20 @@ def test_bit_comparison_distinguishes_signed_zero_and_nan_payloads():
     assert nans.mismatches == nans.nan_payload_mismatches == 1
 
 
+def test_numerical_tolerance_cannot_mask_signed_zero_or_nan_payload_mismatches():
+    positive_zero = struct.unpack("<f", struct.pack("<I", 0))[0]
+    negative_zero = struct.unpack("<f", struct.pack("<I", 0x8000_0000))[0]
+    nan_one = struct.unpack("<f", struct.pack("<I", 0x7FC0_0001))[0]
+    nan_two = struct.unpack("<f", struct.pack("<I", 0x7FC0_0002))[0]
+    permissive = Tolerance(absolute=math.inf, relative=math.inf, ulps=0xFFFF_FFFF)
+
+    assert not compare_float32([positive_zero], [negative_zero]).within(permissive)
+    assert not compare_float32([nan_one], [nan_two]).within(permissive)
+    assert compare_float32([1.0], [1.0 + 2.0**-23]).within(
+        Tolerance(absolute=1e-6, relative=1e-6, ulps=1)
+    )
+
+
 def test_numerical_comparison_is_cancellation_safe_and_tracks_ulps():
     one = struct.unpack("<f", struct.pack("<I", 0x3F80_0000))[0]
     next_one = struct.unpack("<f", struct.pack("<I", 0x3F80_0001))[0]
@@ -195,6 +209,14 @@ def test_gamma_bound_uses_the_analytic_gamma_k_envelope():
     assert gamma_bound(unit_roundoff, 16, 12.5) == expected
     with pytest.raises(ValueError, match="undefined"):
         gamma_bound(0.5, 2, 1.0)
+    for epsilon, magnitude in (
+        (math.nan, 1.0),
+        (math.inf, 1.0),
+        (2.0**-53, math.nan),
+        (2.0**-53, math.inf),
+    ):
+        with pytest.raises(ValueError, match="non-negative"):
+            gamma_bound(epsilon, 1, magnitude)
 
 
 def make_record(case_id: str, outcome=VerificationOutcome.PASSED) -> EvidenceRecord:
@@ -265,6 +287,7 @@ def test_oracle_certificate_requires_every_required_class_to_pass():
     )
 
     assert len(certificate.evidence_digest) == 64
+    assert certificate.certified_plan_classes == ()
     with pytest.raises(ValueError, match="missing passed classes"):
         OracleCertificate.from_records(
             kernel, (VerificationClass.STRUCTURAL,), (record,)

@@ -1262,8 +1262,9 @@ actively certified or explicitly deferred with a stated reason; a kernel added
 in C++ without a classification fails the manifest check rather than passing
 silently. A kernel certificate requires every class assigned to every active
 plan to pass. Stage Two then runs
-ordinary CPU Float32 target execution only where the corresponding local oracle
-certificate passed. Its contraction catalog includes multi-output flat and
+ordinary CPU Float32 target execution only where an exact kernel-ID/variant
+certificate is reconstructed from Stage One evidence and covers the active
+Float64 oracle plan/classes required for that target. Its contraction catalog includes multi-output flat and
 hierarchical layouts, recording each operand's effective matrix shape and
 contraction length.
 Movement verification emits separate bit-exact cases for move, view, permute,
@@ -1290,7 +1291,7 @@ sw.test_backend("kernel-evidence.jsonl")
 
 The returned immutable report contains passed, failed, errored, blocked, and
 deferred attempts. Stage Two currently covers movement, reduce, and matmul. A
-missing Stage One certificate blocks its dependent Stage Two cases
+missing, forged, or incomplete Stage One certificate blocks its dependent Stage Two cases
 without executing them. JSONL output is deterministic and versioned; it
 intentionally contains no CI status, Dolt state, toolchain hash, transitive
 closure hash, autotune cache, or status-aggregation record.
