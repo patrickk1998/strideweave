@@ -8,6 +8,7 @@ from typing import Literal
 
 import strideweave as sw
 from strideweave import DType, Layout, Shape, Stride
+from strideweave.carriers.operation_policy import operation_execution_options
 
 from .comparison import compare_float32, gamma_bound
 from .model import (
@@ -30,7 +31,7 @@ from .stage_one import (
 )
 
 CaseKind = Literal["structural", "numerical"]
-OperationName = Literal["reduce", "matmul"]
+OperationName = Literal["reduce_sum", "matmul"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,26 @@ class _TargetCase:
     kind: CaseKind
     lhs_layout: Layout
     rhs_layout: Layout | None = None
+
+
+def _reduce_second_mode(tensor, *, accumulator_dtype: DType | None = None):
+    """Reduce a two-mode tensor through its ordinary public capability.
+
+    Args:
+        tensor: Two-mode CPU tensor to reduce over its second mode.
+        accumulator_dtype: Floating accumulator to request, or ``None`` for the
+            backend default.
+
+    Returns:
+        The reduced tensor.
+    """
+    operation = tensor.carrier.dispatch_op("reduce_sum")
+    if accumulator_dtype is None:
+        return operation.forward(tensor)
+    options = operation_execution_options(
+        "reduce_sum", accumulator_dtype=accumulator_dtype
+    )
+    return operation.forward(tensor, options=options)
 
 
 def _matrix_shape(layout: Layout) -> tuple[int, int]:
@@ -67,7 +88,7 @@ def _structural_values(
     lhs = _matrix_values(
         lhs_shape, lambda row, column: float((3 * row + 2 * column) % 7 - 3)
     )
-    if operation == "reduce":
+    if operation == "reduce_sum":
         return lhs, None
     if rhs_shape is None:
         raise ValueError("Stage Two matmul case requires a right-hand layout")
@@ -89,7 +110,7 @@ def _numerical_values(
             cancellation[column % len(cancellation)] * (1.0 if row % 2 == 0 else -1.0)
         ),
     )
-    if operation == "reduce":
+    if operation == "reduce_sum":
         return lhs, None
     if rhs_shape is None:
         raise ValueError("Stage Two matmul case requires a right-hand layout")
@@ -108,10 +129,10 @@ def _target_cases() -> tuple[_TargetCase, ...]:
     hierarchical_lhs = Layout(Shape([[2, 2], 12]), Stride([[12, 24], 1]))
     hierarchical_rhs = Layout(Shape([[3, 1], 12]), Stride([[12, 36], 1]))
     return (
-        _TargetCase("reduce-flat-structural", "reduce", "structural", flat_reduce),
+        _TargetCase("reduce-flat-structural", "reduce_sum", "structural", flat_reduce),
         _TargetCase(
             "reduce-hierarchical-numerical",
-            "reduce",
+            "reduce_sum",
             "numerical",
             hierarchical_reduce,
         ),
@@ -157,7 +178,7 @@ def _maximum_term_sum(
     rhs_shape: tuple[int, int] | None,
 ) -> float:
     lhs_rows, k = lhs_shape
-    if operation == "reduce":
+    if operation == "reduce_sum":
         return max(
             sum(abs(lhs_values[row + lhs_rows * column]) for column in range(k))
             for row in range(lhs_rows)
@@ -179,8 +200,8 @@ def _maximum_term_sum(
 
 
 def _target_case(kernel: KernelDescriptor, target_case: _TargetCase):
-    if kernel.operation == "reduce":
-        operation: OperationName = "reduce"
+    if kernel.operation == "reduce_sum":
+        operation: OperationName = "reduce_sum"
     elif kernel.operation == "matmul":
         operation = "matmul"
     else:
@@ -228,9 +249,12 @@ def _target_case(kernel: KernelDescriptor, target_case: _TargetCase):
         lhs_oracle = _tensor(
             payload.values(), DType.Float32, target_case.lhs_layout, True
         )
-        if kernel.operation == "reduce":
-            target = sw.reduce(lhs_target)
-            oracle = sw.reduce(lhs_oracle, accumulator_dtype=DType.Float64)
+        if kernel.operation == "reduce_sum":
+            # The production layouts are hierarchical, so the two-mode
+            # reduction primitive is dispatched directly rather than lowered
+            # from a description that would first rearrange the operand away.
+            target = _reduce_second_mode(lhs_target)
+            oracle = _reduce_second_mode(lhs_oracle, accumulator_dtype=DType.Float64)
         else:
             if target_case.rhs_layout is None or len(payloads) != 2:
                 raise ValueError("Stage Two matmul payload preparation is incomplete")
@@ -302,10 +326,10 @@ def run_stage_two(stage_one: StageOneResult) -> VerificationReport:
         operation: tuple(
             case for case in _target_cases() if case.operation == operation
         )
-        for operation in ("reduce", "matmul")
+        for operation in ("reduce_sum", "matmul")
     }
     for operation, kernel_id in (
-        ("reduce", "cpu.reduce_sum"),
+        ("reduce_sum", "cpu.reduce_sum"),
         ("matmul", "cpu.matmul"),
     ):
         kernel = KernelDescriptor(operation, kernel_id, "default", "")
