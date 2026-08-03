@@ -102,6 +102,66 @@ def test_stage_one_represents_vendor_work_as_deferred_not_passed():
     } & {certificate.kernel_id for certificate in result.certificates}
 
 
+def test_every_active_kernel_in_the_expanded_manifest_is_certified():
+    # The manifest is the whole native operation set, not a subset the runner
+    # happens to know how to call: an operation reaching C++ without a Stage One
+    # case leaves its kernel uncertified rather than silently passing.
+    result = run_stage_one()
+    descriptors = classification.classify_cpu_kernel_plans()
+
+    active = {
+        descriptor.kernel.kernel_id
+        for descriptor in descriptors
+        if descriptor.disposition is ClassificationDisposition.ACTIVE
+    }
+    certified = {certificate.kernel_id for certificate in result.certificates}
+
+    assert active
+    assert active <= certified
+    assert not [
+        record
+        for record in result.report.records
+        if record.outcome in {VerificationOutcome.FAILED, VerificationOutcome.ERROR}
+    ]
+
+
+def test_every_deferred_plan_states_a_concrete_reason():
+    deferred = [
+        descriptor
+        for descriptor in classification.classify_cpu_kernel_plans()
+        if descriptor.disposition is ClassificationDisposition.DEFERRED
+    ]
+
+    assert deferred
+    assert all(descriptor.classes == () for descriptor in deferred)
+    assert all(descriptor.deferred_reason for descriptor in deferred)
+    # Only the vendor math library and the floating `pow` that calls it are
+    # deferred; nothing else is allowed to opt out of certification.
+    assert {descriptor.deferred_reason for descriptor in deferred} == {
+        classification.VENDOR_TRANSCENDENTAL_REASON,
+        "floating pow depends on the vendor math library",
+    }
+
+
+def test_both_accumulator_plans_of_each_sum_reduction_are_certified():
+    result = run_stage_one()
+
+    numerical = {
+        (record.case.operation, record.case.accumulator_dtype)
+        for record in result.report.records
+        if record.test_class is VerificationClass.NUMERICAL
+        and record.outcome is VerificationOutcome.PASSED
+        and record.case.output_dtype == "Float32"
+    }
+
+    assert numerical == {
+        ("reduce_sum", "Float32"),
+        ("reduce_sum", "Float64"),
+        ("matmul", "Float32"),
+        ("matmul", "Float64"),
+    }
+
+
 def test_a_wrong_addressing_mutation_removes_the_matmul_certificate():
     def corrupt(kernel_id, values):
         if kernel_id == "cpu.matmul":
@@ -152,7 +212,7 @@ def test_stage_one_numerical_cases_include_a_wide_exponent_distribution():
         descriptor.plan
         for descriptor in classification.classify_cpu_kernel_plans()
         if descriptor.disposition is ClassificationDisposition.ACTIVE
-        and descriptor.kernel.operation in {"reduce", "matmul"}
+        and descriptor.kernel.operation in {"reduce_sum", "matmul"}
         and any(dtype == "Float32" for _, dtype, _ in descriptor.plan.operands)
     }
     assert {record.case.plan for record in wide} == expected_plans
@@ -321,7 +381,7 @@ def test_stage_one_records_recoverable_case_errors_and_continues(monkeypatch):
     original_structural = stage_one_module._structural_record
 
     def failing_reduce(descriptor, transform):
-        if descriptor.kernel.operation == "reduce":
+        if descriptor.kernel.operation == "reduce_sum":
             raise ValueError("injected reduce failure")
         return original_structural(descriptor, transform)
 
@@ -348,7 +408,7 @@ def test_stage_one_records_recoverable_case_errors_and_continues(monkeypatch):
     }
 
 
-@pytest.mark.parametrize("operation", ("reduce", "matmul"))
+@pytest.mark.parametrize("operation", ("reduce_sum", "matmul"))
 @pytest.mark.parametrize("error_type", (RuntimeError, ValueError))
 def test_stage_one_numerical_errors_retain_the_resolved_tolerance(
     monkeypatch, operation, error_type
@@ -365,10 +425,10 @@ def test_stage_one_numerical_errors_retain_the_resolved_tolerance(
     )
     original_execute = stage_one_module._execute
 
-    def fail_after_numerical_preparation(descriptor, payloads, layout, cpu):
+    def fail_after_numerical_preparation(descriptor, payloads, layout, cpu, **options):
         if descriptor.plan == expected.case.plan and layout.size == 8:
             raise error_type(f"injected {operation} numerical execution failure")
-        return original_execute(descriptor, payloads, layout, cpu)
+        return original_execute(descriptor, payloads, layout, cpu, **options)
 
     monkeypatch.setattr(stage_one_module, "_execute", fail_after_numerical_preparation)
     result = run_stage_one()
@@ -408,7 +468,7 @@ def test_stage_one_integer_numerical_errors_keep_exact_tolerance():
     descriptor = next(
         descriptor
         for descriptor in classification.classify_cpu_kernel_plans()
-        if descriptor.kernel.operation == "reduce"
+        if descriptor.kernel.operation == "reduce_sum"
         and all(
             dtype == "Int32"
             for role, dtype, _ in descriptor.plan.operands
@@ -437,7 +497,7 @@ def test_stage_one_preserves_other_analytic_witnesses_after_one_error(monkeypatc
 
     def fail_second_reduce_witness(descriptor, transform, case):
         nonlocal failed_plan, seen_reduce_witnesses
-        if descriptor.kernel.operation == "reduce":
+        if descriptor.kernel.operation == "reduce_sum":
             seen_reduce_witnesses += 1
             if seen_reduce_witnesses == 2:
                 failed_plan = descriptor.plan

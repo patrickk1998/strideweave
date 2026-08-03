@@ -107,7 +107,7 @@ private:
     float scalar_ = 0.0f;
 };
 
-constexpr CpuKernelMetadata kMetadata{"mul", "cpu.mul", "default",
+constexpr CpuKernelMetadata kMetadata{"mul", "cpu.scalar_mul", "default",
                                       "_CPUScalarMulOperation"};
 
 }  // namespace

@@ -68,7 +68,7 @@ CPU_KERNEL_METADATA = (
     ("matmul", "cpu.matmul", "default", "_CPUMatmulOperation"),
     ("maximum", "cpu.maximum", "default", "_CPUMaximumOperation"),
     ("minimum", "cpu.minimum", "default", "_CPUMinimumOperation"),
-    ("mul", "cpu.mul", "default", "_CPUScalarMulOperation"),
+    ("mul", "cpu.scalar_mul", "default", "_CPUScalarMulOperation"),
     ("ne", "cpu.ne", "default", "_CPUNeOperation"),
     ("neg", "cpu.neg", "default", "_CPUNegOperation"),
     ("pow", "cpu.pow", "default", "_CPUPowOperation"),

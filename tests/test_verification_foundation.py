@@ -41,10 +41,17 @@ def test_every_native_kernel_and_executable_plan_is_explicitly_classified():
     classified = require_complete_classification(manifest)
     plans = classify_cpu_kernel_plans()
 
-    assert len(manifest) == 17
+    # Completeness is checked against the registry rather than a pinned count,
+    # so a kernel added in C++ without a classification fails closed here.
+    assert manifest
     assert len(classified) == len(manifest)
     assert {descriptor.kernel for descriptor in plans} == set(manifest)
     assert all(descriptor.classes or descriptor.deferred_reason for descriptor in plans)
+    assert all(
+        (descriptor.disposition is ClassificationDisposition.DEFERRED)
+        == bool(descriptor.deferred_reason)
+        for descriptor in plans
+    )
     assert set(MOVEMENT_CLASSIFICATIONS) == {
         "move",
         "view",
@@ -150,7 +157,7 @@ def test_analytic_cases_are_fixed_and_independently_named():
 
     assert len(cases) >= 5
     assert len({case.case_id for case in cases}) == len(cases)
-    assert {case.operation for case in cases} == {"reduce", "matmul"}
+    assert {case.operation for case in cases} == {"reduce_sum", "matmul"}
 
 
 def test_bit_comparison_distinguishes_signed_zero_and_nan_payloads():
