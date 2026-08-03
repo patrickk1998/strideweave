@@ -2,6 +2,7 @@ import json
 import math
 import struct
 from dataclasses import replace
+from typing import Any, cast
 
 import pytest
 
@@ -22,6 +23,7 @@ from strideweave.verification import (
     VerificationOutcome,
     VerificationReport,
     VerificationStage,
+    VerificationSummary,
     adversarial_float32_payload,
     analytic_cases,
     arbitrary_float32_payload,
@@ -260,6 +262,262 @@ def test_jsonl_evidence_is_versioned_complete_finite_and_deterministic():
     assert parsed[0]["case"]["accumulator_dtype"] == "Float64"
     assert parsed[0]["deviations"]["maximum_absolute"] == "Infinity"
     assert "NaN" not in serialized
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        (),
+        (make_record("unsupported-report-schema"),),
+    ],
+    ids=("empty", "populated"),
+)
+def test_verification_report_rejects_unsupported_schema_versions(records):
+    with pytest.raises(ValueError, match="unsupported report schema version 'future'"):
+        VerificationReport(records, schema_version="future")
+
+
+def test_verification_report_accepts_current_schema_version():
+    report = VerificationReport(
+        (make_record("current-report-schema"),),
+        schema_version="strideweave.kernel-verification.v1",
+    )
+
+    assert VerificationReport.from_jsonl(report.to_jsonl()).schema_version == (
+        "strideweave.kernel-verification.v1"
+    )
+
+
+def test_verification_report_round_trips_strict_jsonl_and_files(tmp_path):
+    plan = PlanKey(
+        "reduce_sum",
+        (("TENSOR", "Float32", "Float32"),),
+        "BINARY32",
+        "FLOATING",
+        "Float64",
+        "Float32",
+    )
+    passed = replace(
+        make_record("passed"), case=replace(make_record("passed").case, plan=plan)
+    )
+    blocked = replace(
+        make_record("blocked", VerificationOutcome.BLOCKED),
+        deviations=Deviations(None, None, None),
+        mismatches=None,
+        diagnostic="certificate unavailable",
+    )
+    errored = replace(
+        make_record("errored", VerificationOutcome.ERROR),
+        deviations=Deviations(math.nan, -math.inf, None),
+        mismatches=None,
+    )
+    deferred = make_record("deferred", VerificationOutcome.DEFERRED)
+    report = VerificationReport((passed, blocked, errored, deferred))
+
+    serialized = report.to_jsonl()
+    loaded = VerificationReport.from_jsonl(serialized)
+    path = tmp_path / "evidence.jsonl"
+    report.write(path)
+
+    assert loaded.to_jsonl() == serialized
+    assert VerificationReport.load(path).to_jsonl() == serialized
+    assert any(
+        math.isnan(record.deviations.maximum_absolute or 0.0)
+        for record in loaded.records
+    )
+    assert any(record.case.plan == plan for record in loaded.records)
+
+
+def test_verification_report_round_trips_integer_float_fields(tmp_path):
+    record = replace(
+        make_record("integer-float-fields"),
+        tolerance=Tolerance(absolute=0, relative=1, ulps=2, version="integer-values"),
+        deviations=Deviations(3, 4, 5),
+    )
+    report = VerificationReport((record,))
+    path = tmp_path / "integer-floats.jsonl"
+
+    serialized = report.to_jsonl()
+    loaded = VerificationReport.from_jsonl(serialized)
+    report.write(path)
+    loaded_record = loaded.records[0]
+
+    assert json.loads(serialized)["tolerance"]["absolute"] == 0
+    assert type(loaded_record.tolerance.absolute) is float
+    assert type(loaded_record.tolerance.relative) is float
+    assert type(loaded_record.deviations.maximum_absolute) is float
+    assert type(loaded_record.deviations.maximum_relative) is float
+    assert VerificationReport.load(path).records == loaded.records
+
+
+@pytest.mark.parametrize(
+    ("serialized", "message"),
+    [
+        ("{", "Expecting property name"),
+        ('{"schema_version":"future"}', "missing fields"),
+        ('{"schema_version":"future","schema_version":"future"}', "duplicate field"),
+    ],
+)
+def test_verification_report_load_reports_json_parse_failures_by_line(
+    serialized, message
+):
+    with pytest.raises(ValueError, match=rf"JSONL line 1: .*{message}"):
+        VerificationReport.from_jsonl(serialized)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.__setitem__("schema_version", "future"),
+        lambda value: value.pop("outcome"),
+        lambda value: value.__setitem__("unexpected", True),
+        lambda value: value.__setitem__("outcome", "unknown"),
+        lambda value: value["case"].__setitem__("shapes", ["not-a-shape"]),
+        lambda value: value.__setitem__("oracle_input_bit_hashes", ["different"]),
+        lambda value: value["tolerance"].__setitem__("absolute", True),
+        lambda value: value["deviations"].__setitem__("maximum_relative", []),
+        lambda value: value["tolerance"].__setitem__("absolute", 10**400),
+    ],
+    ids=(
+        "schema",
+        "missing",
+        "unexpected",
+        "enum",
+        "nested_type",
+        "model_invariant",
+        "float_boolean",
+        "float_collection",
+        "unrepresentable_float_integer",
+    ),
+)
+def test_verification_report_load_fails_closed_for_invalid_evidence(mutate):
+    serialized = make_record("invalid").to_jsonl()
+    value = json.loads(serialized)
+    mutate(value)
+
+    with pytest.raises(ValueError, match="JSONL line 1"):
+        VerificationReport.from_jsonl(json.dumps(value, separators=(",", ":")))
+
+
+def test_verification_report_load_rejects_nonstandard_json_nonfinite_values():
+    serialized = make_record("nonstandard").to_jsonl().replace('"Infinity"', "Infinity")
+
+    with pytest.raises(ValueError, match="JSONL line 1: non-standard JSON constant"):
+        VerificationReport.from_jsonl(serialized)
+
+
+def test_verification_report_summary_repr_description_and_views_are_bounded():
+    passed = make_record("passed")
+    deferred = make_record("deferred", VerificationOutcome.DEFERRED)
+    failed = replace(
+        make_record("failed", VerificationOutcome.FAILED),
+        stage=VerificationStage.TARGET,
+        test_class=VerificationClass.STRUCTURAL,
+    )
+    errored = replace(
+        make_record("errored", VerificationOutcome.ERROR),
+        test_class=VerificationClass.ANALYTIC,
+    )
+    blocked = replace(
+        make_record("blocked", VerificationOutcome.BLOCKED),
+        stage=VerificationStage.TARGET,
+        test_class=VerificationClass.DEFERRED,
+    )
+    report = VerificationReport((passed, deferred, failed, errored, blocked))
+
+    summary = report.summary()
+
+    assert isinstance(summary, VerificationSummary)
+    assert summary.total == 5
+    assert dict(summary.outcomes) == {
+        VerificationOutcome.PASSED: 1,
+        VerificationOutcome.FAILED: 1,
+        VerificationOutcome.ERROR: 1,
+        VerificationOutcome.BLOCKED: 1,
+        VerificationOutcome.DEFERRED: 1,
+    }
+    assert dict(summary.stages) == {
+        VerificationStage.ORACLE: 3,
+        VerificationStage.TARGET: 2,
+    }
+    assert dict(summary.classes)[VerificationClass.NUMERICAL] == 2
+    assert summary.passed == 1
+    assert summary.failed == 1
+    assert summary.errors == 1
+    assert summary.blocked == 1
+    assert summary.deferred == 1
+    assert not summary.gate_passed
+    assert report.passed.records == (passed,)
+    assert report.deferred.records == (deferred,)
+    assert report.problems.records == (failed, errored, blocked)
+    assert "EvidenceRecord" not in repr(report)
+    assert len(repr(report)) < 160
+    assert repr(summary) == (
+        "VerificationSummary(total=5, passed=1, failed=1, errors=1, blocked=1, "
+        "deferred=1, gate_passed=False)"
+    )
+    assert len(repr(summary)) < 160
+    assert report.describe() == (
+        "Verification report: 5 records; gate passed: no. "
+        "Outcomes: passed=1, failed=1, error=1, blocked=1, deferred=1. "
+        "Stages: stage_one=3, stage_two=2. "
+        "Classes: bit_exact=0, exact_arithmetic=0, structural=1, analytic=1, "
+        "numerical=2, deferred=1."
+    )
+
+
+def test_verification_report_empty_and_deferred_only_reports_pass_the_gate():
+    empty = VerificationReport(())
+    deferred = VerificationReport(
+        (make_record("deferred", VerificationOutcome.DEFERRED),)
+    )
+
+    assert empty.summary().gate_passed
+    assert deferred.summary().gate_passed
+    assert deferred.problems.records == ()
+    assert deferred.deferred.records == deferred.records
+
+
+def test_verification_report_select_composes_all_supported_filters():
+    first = replace(
+        make_record("first"),
+        case=replace(
+            make_record("first").case,
+            operation="matmul",
+            kernel_id="cpu.matmul",
+            variant="wide",
+        ),
+    )
+    second = replace(
+        make_record("second", VerificationOutcome.FAILED),
+        stage=VerificationStage.TARGET,
+        test_class=VerificationClass.STRUCTURAL,
+        case=replace(
+            make_record("second").case,
+            operation="matmul",
+            kernel_id="cpu.matmul",
+            variant="wide",
+        ),
+    )
+    other = replace(
+        make_record("other", VerificationOutcome.FAILED),
+        case=replace(make_record("other").case, operation="reduce_sum"),
+    )
+    report = VerificationReport((first, second, other))
+
+    selected = report.select(
+        stage=(VerificationStage.TARGET,),
+        outcomes=(VerificationOutcome.FAILED, VerificationOutcome.BLOCKED),
+        test_class=VerificationClass.STRUCTURAL,
+        operation="matmul",
+        kernel_id="cpu.matmul",
+        variant="wide",
+    ).select(outcomes=VerificationOutcome.FAILED)
+
+    assert selected.records == (second,)
+    assert selected.schema_version == report.schema_version
+    with pytest.raises(TypeError, match="outcomes"):
+        report.select(outcomes=cast(Any, "failed"))
 
 
 def test_evidence_rejects_independently_encoded_input_hashes():
