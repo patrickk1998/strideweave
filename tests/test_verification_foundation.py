@@ -36,6 +36,7 @@ from strideweave.verification import (
     require_complete_classification,
     wide_exponent_float32_payload,
 )
+from strideweave.verification.cli import main as verification_cli
 
 
 def test_every_native_kernel_and_executable_plan_is_explicitly_classified():
@@ -518,6 +519,95 @@ def test_verification_report_select_composes_all_supported_filters():
     assert selected.schema_version == report.schema_version
     with pytest.raises(TypeError, match="outcomes"):
         report.select(outcomes=cast(Any, "failed"))
+
+
+def test_verification_report_cli_uses_model_description_and_gate_exit_code(
+    tmp_path, capsys
+):
+    report = VerificationReport((make_record("passing"),))
+    path = tmp_path / "passing.jsonl"
+    report.write(path)
+
+    exit_code = verification_cli([str(path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == report.describe() + "\n"
+    assert captured.err == ""
+
+
+def test_verification_report_cli_filters_verbose_records_and_machine_json(
+    tmp_path, capsys
+):
+    passed = make_record("passing")
+    failed = replace(
+        make_record("failed", VerificationOutcome.FAILED),
+        stage=VerificationStage.TARGET,
+        case=replace(
+            make_record("failed").case,
+            operation="matmul",
+            kernel_id="cpu.matmul",
+            variant="wide",
+        ),
+    )
+    report = VerificationReport((passed, failed))
+    path = tmp_path / "mixed.jsonl"
+    report.write(path)
+
+    verbose_exit = verification_cli(
+        [
+            str(path),
+            "--problems",
+            "--stage",
+            "stage_two",
+            "--operation",
+            "matmul",
+            "--kernel",
+            "cpu.matmul",
+            "--variant",
+            "wide",
+            "--outcome",
+            "failed",
+            "--verbose",
+        ]
+    )
+    verbose = capsys.readouterr()
+    json_exit = verification_cli([str(path), "--json", "--verbose"])
+    first_json = capsys.readouterr()
+    repeated_json_exit = verification_cli([str(path), "--json", "--verbose"])
+    second_json = capsys.readouterr()
+
+    assert verbose_exit == 1
+    assert "Verification report: 1 records; gate passed: no." in verbose.out
+    assert (
+        "case_id=failed stage=stage_two operation=matmul kernel_id=cpu.matmul "
+        "variant=wide class=numerical outcome=failed deviations="
+    ) in verbose.out
+    assert "EvidenceRecord(" not in verbose.out
+    assert json_exit == repeated_json_exit == 1
+    assert first_json.out == second_json.out
+    payload = json.loads(first_json.out)
+    assert payload["outcomes"] == {
+        "blocked": 0,
+        "deferred": 0,
+        "error": 0,
+        "failed": 1,
+        "passed": 1,
+    }
+    assert [record["case_id"] for record in payload["records"]] == ["failed", "passing"]
+
+
+def test_verification_report_cli_returns_two_for_invalid_reports_and_usage(
+    tmp_path, capsys
+):
+    malformed = tmp_path / "malformed.jsonl"
+    malformed.write_text("{\n", encoding="utf-8")
+
+    assert verification_cli([str(malformed)]) == 2
+    assert "JSONL line 1" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as usage_error:
+        verification_cli([str(malformed), "--stage", "not-a-stage"])
+    assert usage_error.value.code == 2
 
 
 def test_evidence_rejects_independently_encoded_input_hashes():

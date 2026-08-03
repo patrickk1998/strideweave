@@ -1295,6 +1295,51 @@ missing, forged, or incomplete Stage One certificate blocks its dependent Stage 
 without executing them. JSONL output is deterministic and versioned; it
 intentionally contains no CI status, Dolt state, toolchain hash, transitive
 closure hash, autotune cache, or status-aggregation record.
+Use `report.write(path)` to save it and `VerificationReport.load(path)` to
+strictly reload it. The evidence-only v1 JSONL wire format carries an evidence
+schema on each line, while the model accepts only its current report schema
+version before any report can be serialized. Loading accepts only the current
+evidence schema and canonical JSON encoding, reconstructs the immutable nested
+evidence model, and identifies the JSONL line for malformed or invalid evidence.
+
+```python
+summary = report.summary()
+assert summary.gate_passed
+print(report.describe())
+failed_or_blocked = report.problems
+stage_one_records = report.select(stage=sw.verification.VerificationStage.ORACLE)
+```
+
+Reports keep their complete immutable `records` tuple for detailed inspection,
+while their REPL representation and `describe()` output remain bounded. The
+summary counts every outcome, pipeline stage, and verification class; its
+`passed`, `failed`, `errors`, `blocked`, and `deferred` accessors expose the
+common immutable totals without replacing the ordered aggregates. `errors` is
+plural because it is a count, while the serialized and CLI outcome spelling
+remains `error`. Deferred coverage is counted separately and does not by itself
+fail the gate.
+`VerificationReport.__doc__` documents the Stage One/Stage Two record model and
+its navigation APIs. In a REPL, use `repr(report)` for compact outcome counts,
+`report.summary()` for immutable structured counts, `report.describe()` for
+plain text, `report.select(...)` for composable filters, and the `passed`,
+`deferred`, and `problems` views for common selections.
+
+The inspection-only `strideweave-verify-report` CLI loads the same strict model
+parser used by Python; it does not run tests, contact a network, or write status
+data. It exits 0 when the selected evidence has no failed, errored, or blocked
+record; 1 when the selected correctness gate fails; and 2 for malformed reports
+or command usage.
+
+```bash
+strideweave-verify-report kernel-evidence.jsonl
+strideweave-verify-report kernel-evidence.jsonl --problems --verbose
+strideweave-verify-report kernel-evidence.jsonl --stage stage_two --operation matmul
+strideweave-verify-report kernel-evidence.jsonl --json --outcome failed
+```
+
+`--kernel`, `--variant`, `--class`, and repeatable `--outcome` apply the same
+exact filters as `report.select()`. `--verbose` adds flat per-case metadata;
+with `--json`, it adds a stable `records` array instead.
 Recoverable public `RuntimeError` and `ValueError` execution failures are
 recorded case by case, so independent witnesses continue. Their records retain
 the prepared operation, kernel, plan, payload hashes, logical shapes,
