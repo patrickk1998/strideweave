@@ -1,8 +1,13 @@
 import subprocess
 import sys
 from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
 
 import strideweave as sw
+import strideweave.verification.api as verification_api
+import strideweave.verification.classification as classification
 import strideweave.verification.stage_one as stage_one_module
 import strideweave.verification.stage_two as stage_two_module
 from strideweave.verification import (
@@ -57,6 +62,39 @@ def test_backend_runs_both_stages_and_returns_deterministic_evidence(tmp_path):
     assert all(record.oracle_reference_id != "unbound" for record in report.records)
     assert "timestamp" not in report.to_jsonl().lower()
     assert "database" not in report.to_jsonl().lower()
+
+
+def test_backend_reports_a_stale_native_extension_before_stage_one(monkeypatch):
+    monkeypatch.setattr(classification, "_carrier", SimpleNamespace())
+
+    def fail_if_called():
+        raise AssertionError("Stage One ran before the native API preflight")
+
+    monkeypatch.setattr(verification_api, "run_stage_one", fail_if_called)
+
+    with pytest.raises(RuntimeError, match="stale or incompatible") as caught:
+        sw.test_backend()
+
+    assert "_cpu_native_kernel_metadata" in str(caught.value)
+    assert "uv sync --reinstall-package strideweave --group dev" in str(caught.value)
+    assert isinstance(caught.value.__cause__, AttributeError)
+
+
+def test_backend_preserves_errors_from_a_present_native_binding(monkeypatch):
+    class BindingFailure(AttributeError):
+        pass
+
+    def fail_inside_binding():
+        raise BindingFailure("native binding failed internally")
+
+    monkeypatch.setattr(
+        classification,
+        "_carrier",
+        SimpleNamespace(_cpu_native_kernel_metadata=fail_inside_binding),
+    )
+
+    with pytest.raises(BindingFailure, match="failed internally"):
+        sw.test_backend()
 
 
 def test_stage_two_blocks_operations_without_local_oracle_certificates():

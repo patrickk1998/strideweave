@@ -5,6 +5,7 @@ from __future__ import annotations
 from os import PathLike
 from pathlib import Path
 
+from .classification import require_native_verification_api
 from .model import VerificationReport
 from .reporting import make_verification_report
 from .stage_one import run_stage_one
@@ -33,6 +34,7 @@ def test_backend(output: str | PathLike[str] | None = None) -> VerificationRepor
         >>> len(report.records) > 0
         True
     """
+    require_native_verification_api()
     stage_one = run_stage_one()
     stage_two = run_stage_two(stage_one)
     report = make_verification_report(

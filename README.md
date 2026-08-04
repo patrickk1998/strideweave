@@ -1530,6 +1530,19 @@ find src/strideweave -type f \( -name '*.cpp' -o -name '*.hpp' \) -exec uv run c
 CMAKE_ARGS="-DSTRIDEWEAVE_STRICT_WARNINGS=ON" uv build
 ```
 
+After changing native C++ sources, rebuild and reinstall StrideWeave in the
+active development environment before running the test suite or
+`sw.test_backend()`:
+
+```bash
+uv sync --reinstall-package strideweave --group dev
+```
+
+`uv build` creates a distribution artifact, but it does not reinstall the
+editable native extension imported by the active environment. If that extension
+is older than the Python verification sources, `sw.test_backend()` fails closed
+with the rebuild command instead of skipping native verification.
+
 The repository invariant checker uses Python's built-in AST and reports
 StrideWeave-specific source contracts without importing the package. Native sanitizer
 coverage runs in Linux CI with `STRIDEWEAVE_SANITIZERS=ON`; it instruments the extension
