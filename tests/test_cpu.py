@@ -313,7 +313,7 @@ def test_cpu_dispatch_op_returns_supported_operations():
 def test_cpu_native_kernel_metadata_is_complete_stable_and_unique():
     metadata = _carrier._cpu_native_kernel_metadata()
 
-    assert metadata == CPU_KERNEL_METADATA
+    assert tuple(entry[:4] for entry in metadata) == CPU_KERNEL_METADATA
     assert tuple(entry[0] for entry in metadata) == tuple(
         sorted(entry[0] for entry in metadata)
     )
@@ -322,6 +322,11 @@ def test_cpu_native_kernel_metadata_is_complete_stable_and_unique():
     # carry four distinct kernel IDs rather than one shared ID.
     assert len({entry[1] for entry in metadata}) == len(metadata)
     assert {entry[2] for entry in metadata} == {"default"}
+    assert all(
+        entry[4].startswith("src/strideweave/carriers/cpu/native/ops/")
+        and entry[4].endswith(".cpp")
+        for entry in metadata
+    )
     # Structural operations preserve dtype and layout instead of computing, so
     # they are Python-backed and carry no native kernel metadata.
     assert not {
@@ -343,16 +348,40 @@ def test_every_executable_cpu_capability_has_a_native_kernel():
 
 
 def test_cpu_registry_rejects_duplicate_dispatch_names_and_kernel_ids():
-    first = ("first", "cpu.first", "default", "_CPUFirstOperation")
+    first = (
+        "first",
+        "cpu.first",
+        "default",
+        "_CPUFirstOperation",
+        "src/first.cpp",
+    )
 
     with pytest.raises(RuntimeError, match="duplicate CPU dispatch name 'first'"):
         _carrier._validate_cpu_native_registry_for_test(
-            (first, ("first", "cpu.second", "default", "_CPUSecondOperation"))
+            (
+                first,
+                (
+                    "first",
+                    "cpu.second",
+                    "default",
+                    "_CPUSecondOperation",
+                    "src/second.cpp",
+                ),
+            )
         )
 
     with pytest.raises(RuntimeError, match=r"duplicate CPU kernel ID 'cpu\.first'"):
         _carrier._validate_cpu_native_registry_for_test(
-            (first, ("second", "cpu.first", "default", "_CPUSecondOperation"))
+            (
+                first,
+                (
+                    "second",
+                    "cpu.first",
+                    "default",
+                    "_CPUSecondOperation",
+                    "src/second.cpp",
+                ),
+            )
         )
 
 
