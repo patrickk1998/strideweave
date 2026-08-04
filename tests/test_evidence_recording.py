@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -16,6 +17,7 @@ from strideweave.verification import (
     OracleCertificate,
     VerificationReport,
 )
+from strideweave.verification.status_cli import main as status_main
 from strideweave.verification.store import (
     DoltEvidenceStore,
     SQLStatement,
@@ -163,3 +165,95 @@ def test_stale_provenance_fails_before_the_store_is_created(
     with pytest.raises(VerificationStoreError, match="stale"):
         record_report(backend_report, DoltEvidenceStore(path), producer_id="producer")
     assert not path.exists()
+
+
+def test_inconsistent_certificate_fails_before_the_store_is_created(
+    tmp_path: Path,
+    backend_report: VerificationReport,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    lines = backend_report.to_jsonl().splitlines()
+    header = json.loads(lines[0])
+    evidence = [json.loads(line) for line in lines[1:]]
+    certificate = next(
+        item for item in header["certificates"] if item["kernel_id"] == "cpu.reduce_sum"
+    )
+    previous = certificate["certificate_digest"]
+    certificate["evidence_digest"] = "0" * 64
+    certificate["certificate_digest"] = hashlib.sha256(
+        json.dumps(
+            {
+                key: value
+                for key, value in certificate.items()
+                if key != "certificate_digest"
+            },
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    for record in evidence:
+        if record["consumed_certificate_digest"] == previous:
+            record["consumed_certificate_digest"] = certificate["certificate_digest"]
+    header["header_digest"] = hashlib.sha256(
+        json.dumps(
+            {key: value for key, value in header.items() if key != "header_digest"},
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    report_path = tmp_path / "inconsistent.jsonl"
+    report_path.write_text(
+        "\n".join(
+            json.dumps(value, separators=(",", ":"), sort_keys=True)
+            for value in (header, *evidence)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store_path = tmp_path / "evidence-store"
+
+    status = status_main(
+        [
+            "record",
+            "--report",
+            str(report_path),
+            "--producer",
+            "certificate-test",
+            "--store",
+            str(store_path),
+        ]
+    )
+
+    assert status == 2
+    assert "certificate" in capsys.readouterr().err
+    assert not store_path.exists()
+
+
+def test_record_cli_persists_locally_without_publication(
+    tmp_path: Path,
+    backend_report: VerificationReport,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _require_dolt()
+    report_path = tmp_path / "report.jsonl"
+    store_path = tmp_path / "evidence-store"
+    backend_report.write(report_path)
+
+    status = status_main(
+        [
+            "record",
+            "--report",
+            str(report_path),
+            "--producer",
+            "cli-test",
+            "--store",
+            str(store_path),
+            "--json",
+        ]
+    )
+
+    assert status == 0
+    assert '"evidence_count":' in capsys.readouterr().out
+    assert _count(DoltEvidenceStore(store_path), "verification_runs") == 1

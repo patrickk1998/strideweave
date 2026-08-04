@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +11,7 @@ import strideweave as sw
 from strideweave.verification import VerificationOutcome, VerificationReport
 from strideweave.verification.provenance import load_compilation_manifest
 from strideweave.verification.reporting import bind_report
+from strideweave.verification.status_cli import main as status_main
 from strideweave.verification.store import (
     DoltEvidenceStore,
     SQLStatement,
@@ -236,4 +238,36 @@ def test_todo_is_a_read_only_deterministic_unranked_set_difference(
     assert (
         tuple(_count(store, table) for table in ("verification_runs", "evidence"))
         == counts
+    )
+
+
+def test_query_cli_emits_stable_json(
+    tmp_path: Path,
+    backend_report: VerificationReport,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _require_dolt()
+    store_path = tmp_path / "evidence-store"
+    record_report(
+        backend_report, DoltEvidenceStore(store_path), producer_id="cli-producer"
+    )
+
+    status = status_main(
+        [
+            "status",
+            "--arch",
+            _architecture(),
+            "--producer",
+            "cli-producer",
+            "--store",
+            str(store_path),
+            "--json",
+        ]
+    )
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total"] == len(backend_report.records)
+    assert all(
+        item["producer_id"] == "cli-producer" for item in payload["observations"]
     )
