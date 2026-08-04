@@ -64,7 +64,7 @@ def test_stage_one_emits_evidence_and_certifies_every_active_kernel():
         "rearrange": ((2, 5),),
         "broadcast_to": ((1, 10),),
     }
-    assert result.report.to_jsonl().count("\n") == len(result.report.records)
+    assert result.report.to_jsonl().count("\n") == len(result.report.records) + 1
     assert len(
         {
             (record.case.kernel_id, record.case.variant, record.case.case_id)

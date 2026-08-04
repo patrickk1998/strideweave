@@ -1,3 +1,5 @@
+import copy
+import hashlib
 import json
 import math
 import struct
@@ -6,6 +8,8 @@ from typing import Any, cast
 
 import pytest
 
+import strideweave as sw
+import strideweave.verification.reporting as reporting
 from strideweave.verification import (
     MOVEMENT_CLASSIFICATIONS,
     CaseDescriptor,
@@ -37,6 +41,36 @@ from strideweave.verification import (
     wide_exponent_float32_payload,
 )
 from strideweave.verification.cli import main as verification_cli
+
+
+def _canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value, allow_nan=False, separators=(",", ":"), sort_keys=True
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _rehash_report_header(header: dict[str, Any]) -> None:
+    header["header_digest"] = _canonical_digest(
+        {key: value for key, value in header.items() if key != "header_digest"}
+    )
+
+
+def _rewire_certificate_digest(
+    header: dict[str, Any], evidence: list[dict[str, Any]], certificate: dict[str, Any]
+) -> None:
+    previous = certificate["certificate_digest"]
+    certificate["certificate_digest"] = _canonical_digest(
+        {
+            key: value
+            for key, value in certificate.items()
+            if key != "certificate_digest"
+        }
+    )
+    for record in evidence:
+        if record["consumed_certificate_digest"] == previous:
+            record["consumed_certificate_digest"] = certificate["certificate_digest"]
+    _rehash_report_header(header)
 
 
 def test_every_native_kernel_and_executable_plan_is_explicitly_classified():
@@ -257,11 +291,13 @@ def test_jsonl_evidence_is_versioned_complete_finite_and_deterministic():
     parsed = [json.loads(line) for line in serialized.splitlines()]
 
     assert serialized == VerificationReport((second, first)).to_jsonl()
-    assert [item["case"]["case_id"] for item in parsed] == ["a", "b"]
-    assert parsed[0]["schema_version"] == "strideweave.kernel-evidence.v1"
-    assert parsed[0]["case"]["operation"] == "reduce"
-    assert parsed[0]["case"]["accumulator_dtype"] == "Float64"
-    assert parsed[0]["deviations"]["maximum_absolute"] == "Infinity"
+    assert parsed[0]["schema_version"] == "strideweave.kernel-verification.v2"
+    assert parsed[0]["evidence_schema"] == "strideweave.kernel-evidence.v2"
+    assert [item["case"]["case_id"] for item in parsed[1:]] == ["a", "b"]
+    assert parsed[1]["schema_version"] == "strideweave.kernel-evidence.v2"
+    assert parsed[1]["case"]["operation"] == "reduce"
+    assert parsed[1]["case"]["accumulator_dtype"] == "Float64"
+    assert parsed[1]["deviations"]["maximum_absolute"] == "Infinity"
     assert "NaN" not in serialized
 
 
@@ -281,11 +317,11 @@ def test_verification_report_rejects_unsupported_schema_versions(records):
 def test_verification_report_accepts_current_schema_version():
     report = VerificationReport(
         (make_record("current-report-schema"),),
-        schema_version="strideweave.kernel-verification.v1",
+        schema_version="strideweave.kernel-verification.v2",
     )
 
     assert VerificationReport.from_jsonl(report.to_jsonl()).schema_version == (
-        "strideweave.kernel-verification.v1"
+        "strideweave.kernel-verification.v2"
     )
 
 
@@ -343,7 +379,7 @@ def test_verification_report_round_trips_integer_float_fields(tmp_path):
     report.write(path)
     loaded_record = loaded.records[0]
 
-    assert json.loads(serialized)["tolerance"]["absolute"] == 0
+    assert json.loads(serialized.splitlines()[1])["tolerance"]["absolute"] == 0
     assert type(loaded_record.tolerance.absolute) is float
     assert type(loaded_record.tolerance.relative) is float
     assert type(loaded_record.deviations.maximum_absolute) is float
@@ -355,7 +391,7 @@ def test_verification_report_round_trips_integer_float_fields(tmp_path):
     ("serialized", "message"),
     [
         ("{", "Expecting property name"),
-        ('{"schema_version":"future"}', "missing fields"),
+        ('{"schema_version":"future"}', "fields do not match"),
         ('{"schema_version":"future","schema_version":"future"}', "duplicate field"),
     ],
 )
@@ -363,6 +399,55 @@ def test_verification_report_load_reports_json_parse_failures_by_line(
     serialized, message
 ):
     with pytest.raises(ValueError, match=rf"JSONL line 1: .*{message}"):
+        VerificationReport.from_jsonl(serialized)
+
+
+def test_prototype_v1_evidence_only_files_are_rejected_not_migrated():
+    old_record = make_record("prototype").as_json_object()
+    old_record["schema_version"] = "strideweave.kernel-evidence.v1"
+
+    with pytest.raises(ValueError, match="JSONL line 1: report header"):
+        VerificationReport.from_jsonl(json.dumps(old_record) + "\n")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing", "unknown", "duplicate", "mismatched_receipt", "forged"),
+)
+def test_provenance_complete_report_loading_fails_closed_for_header_tampering(
+    mutation: str,
+) -> None:
+    lines = VerificationReport((make_record("tamper"),)).to_jsonl().splitlines()
+    header = json.loads(lines[0])
+    evidence = json.loads(lines[1])
+    if mutation == "missing":
+        del header["compilation"]
+    elif mutation == "unknown":
+        header["unexpected"] = True
+    elif mutation == "duplicate":
+        header["tolerance_policies"].append(
+            copy.deepcopy(header["tolerance_policies"][0])
+        )
+        _rehash_report_header(header)
+    elif mutation == "mismatched_receipt":
+        evidence["compilation_receipt_id"] = next(
+            item["receipt_id"]
+            for item in header["compilation"]["kernel_receipts"]
+            if item["kernel"]["kernel_id"] != evidence["case"]["kernel_id"]
+        )
+    else:
+        header["compilation"]["manifest"]["manifest_digest"] = "0" * 64
+        _rehash_report_header(header)
+    serialized = (
+        json.dumps(header, separators=(",", ":"), sort_keys=True)
+        + "\n"
+        + json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+        + "\n"
+    )
+
+    with pytest.raises(
+        ValueError, match=r"fields do not match|duplicate|does not match"
+    ):
         VerificationReport.from_jsonl(serialized)
 
 
@@ -392,18 +477,22 @@ def test_verification_report_load_reports_json_parse_failures_by_line(
     ),
 )
 def test_verification_report_load_fails_closed_for_invalid_evidence(mutate):
-    serialized = make_record("invalid").to_jsonl()
-    value = json.loads(serialized)
+    report = VerificationReport((make_record("invalid"),))
+    lines = report.to_jsonl().splitlines()
+    value = json.loads(lines[1])
     mutate(value)
+    serialized = lines[0] + "\n" + json.dumps(value, separators=(",", ":")) + "\n"
 
-    with pytest.raises(ValueError, match="JSONL line 1"):
-        VerificationReport.from_jsonl(json.dumps(value, separators=(",", ":")))
+    with pytest.raises(ValueError, match=r"JSONL line 2|reference does not match"):
+        VerificationReport.from_jsonl(serialized)
 
 
 def test_verification_report_load_rejects_nonstandard_json_nonfinite_values():
-    serialized = make_record("nonstandard").to_jsonl().replace('"Infinity"', "Infinity")
+    serialized = VerificationReport((make_record("nonstandard"),)).to_jsonl()
+    header, evidence = serialized.splitlines()
+    serialized = header + "\n" + evidence.replace('"Infinity"', "Infinity") + "\n"
 
-    with pytest.raises(ValueError, match="JSONL line 1: non-standard JSON constant"):
+    with pytest.raises(ValueError, match="JSONL line 2: non-standard JSON constant"):
         VerificationReport.from_jsonl(serialized)
 
 
@@ -414,6 +503,7 @@ def test_verification_report_summary_repr_description_and_views_are_bounded():
         make_record("failed", VerificationOutcome.FAILED),
         stage=VerificationStage.TARGET,
         test_class=VerificationClass.STRUCTURAL,
+        case=replace(make_record("failed").case, kernel_id="synthetic.reduce_sum"),
     )
     errored = replace(
         make_record("errored", VerificationOutcome.ERROR),
@@ -448,9 +538,15 @@ def test_verification_report_summary_repr_description_and_views_are_bounded():
     assert summary.blocked == 1
     assert summary.deferred == 1
     assert not summary.gate_passed
-    assert report.passed.records == (passed,)
-    assert report.deferred.records == (deferred,)
-    assert report.problems.records == (failed, errored, blocked)
+    assert tuple(record.case.case_id for record in report.passed.records) == ("passed",)
+    assert tuple(record.case.case_id for record in report.deferred.records) == (
+        "deferred",
+    )
+    assert tuple(record.case.case_id for record in report.problems.records) == (
+        "failed",
+        "errored",
+        "blocked",
+    )
     assert "EvidenceRecord" not in repr(report)
     assert len(repr(report)) < 160
     assert repr(summary) == (
@@ -485,7 +581,7 @@ def test_verification_report_select_composes_all_supported_filters():
         case=replace(
             make_record("first").case,
             operation="matmul",
-            kernel_id="cpu.matmul",
+            kernel_id="synthetic.matmul",
             variant="wide",
         ),
     )
@@ -496,7 +592,7 @@ def test_verification_report_select_composes_all_supported_filters():
         case=replace(
             make_record("second").case,
             operation="matmul",
-            kernel_id="cpu.matmul",
+            kernel_id="synthetic.matmul",
             variant="wide",
         ),
     )
@@ -511,14 +607,143 @@ def test_verification_report_select_composes_all_supported_filters():
         outcomes=(VerificationOutcome.FAILED, VerificationOutcome.BLOCKED),
         test_class=VerificationClass.STRUCTURAL,
         operation="matmul",
-        kernel_id="cpu.matmul",
+        kernel_id="synthetic.matmul",
         variant="wide",
     ).select(outcomes=VerificationOutcome.FAILED)
 
-    assert selected.records == (second,)
+    assert tuple(record.case.case_id for record in selected.records) == ("second",)
     assert selected.schema_version == report.schema_version
     with pytest.raises(TypeError, match="outcomes"):
         report.select(outcomes=cast(Any, "failed"))
+
+
+def test_report_filtering_preserves_embedded_historical_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = sw.test_backend()
+    assert report.header is not None
+    original_header = report.header.as_json_object()
+
+    def moved_installed_provenance(*args: object, **kwargs: object) -> object:
+        raise AssertionError("read-only filtering consulted installed provenance")
+
+    monkeypatch.setattr(reporting, "_compilation_value", moved_installed_provenance)
+    monkeypatch.setattr(reporting, "_generic_oracle_value", moved_installed_provenance)
+
+    assert report.select() is report
+    selected = report.select(
+        stage=VerificationStage.TARGET,
+        operation="reduce_sum",
+    )
+    assert selected.header is not None
+    assert selected.header.compilation == report.header.compilation
+    assert {
+        item["oracle_reference_id"] for item in selected.header.oracle_references
+    } == {record.oracle_reference_id for record in selected.records}
+    consumed = {
+        record.consumed_certificate_digest
+        for record in selected.records
+        if record.consumed_certificate_digest is not None
+    }
+    assert {
+        item["certificate_digest"] for item in selected.header.certificates
+    } == consumed
+    receipt_ids = {
+        item["receipt_id"] for item in selected.header.compilation["kernel_receipts"]
+    }
+    assert all(
+        record.compilation_receipt_id in receipt_ids
+        for record in selected.records
+        if record.compilation_receipt_id is not None
+    )
+    assert VerificationReport.from_jsonl(selected.to_jsonl()) == selected
+    partial = report.select(
+        operation="reduce_sum", test_class=VerificationClass.NUMERICAL
+    )
+    assert any(record.stage is VerificationStage.ORACLE for record in partial.records)
+    assert VerificationReport.from_jsonl(partial.to_jsonl()) == partial
+    assert report.header.as_json_object() == original_header
+
+
+def test_problem_view_keeps_certificates_with_unrelated_stage_one_failures() -> None:
+    original = sw.test_backend()
+    assert original.header is not None
+    unrelated_stage_one = next(
+        record
+        for record in original.records
+        if record.stage is VerificationStage.ORACLE
+        and record.case.kernel_id not in {"cpu.reduce_sum", "cpu.matmul"}
+        and record.outcome is VerificationOutcome.PASSED
+    )
+    certified_stage_two = next(
+        record
+        for record in original.records
+        if record.stage is VerificationStage.TARGET
+        and record.case.kernel_id == "cpu.reduce_sum"
+        and record.outcome is VerificationOutcome.PASSED
+    )
+    changed = tuple(
+        replace(record, outcome=VerificationOutcome.FAILED, diagnostic="mismatch")
+        if record in {unrelated_stage_one, certified_stage_two}
+        else record
+        for record in original.records
+    )
+    records, header = reporting.bind_report(
+        changed, (), certificate_facts_override=original.header.certificates
+    )
+    report = VerificationReport(records, header.schema_version, header)
+
+    problems = report.problems
+
+    assert {record.case.case_id for record in problems.records} == {
+        unrelated_stage_one.case.case_id,
+        certified_stage_two.case.case_id,
+    }
+    assert any(record.stage is VerificationStage.ORACLE for record in problems.records)
+    loaded = VerificationReport.from_jsonl(problems.to_jsonl())
+    assert loaded.to_jsonl() == problems.to_jsonl()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "evidence_digest",
+        "certified_classes",
+        "plan_coverage",
+        "plan_classes",
+        "kernel",
+        "variant",
+    ),
+)
+def test_report_loading_reconstructs_stage_one_certificates_from_evidence(
+    mutation: str,
+) -> None:
+    lines = sw.test_backend().to_jsonl().splitlines()
+    header = json.loads(lines[0])
+    evidence = [json.loads(line) for line in lines[1:]]
+    certificate = next(
+        item for item in header["certificates"] if item["kernel_id"] == "cpu.reduce_sum"
+    )
+    if mutation == "evidence_digest":
+        certificate["evidence_digest"] = "0" * 64
+    elif mutation == "certified_classes":
+        certificate["certified_classes"].pop()
+    elif mutation == "plan_coverage":
+        certificate["certified_plan_classes"].pop()
+    elif mutation == "plan_classes":
+        certificate["certified_plan_classes"][0]["classes"].pop()
+    elif mutation == "kernel":
+        certificate["kernel_id"] = "cpu.wrong_reduce_sum"
+    else:
+        certificate["variant"] = "wrong"
+    _rewire_certificate_digest(header, evidence, certificate)
+    serialized = "\n".join(
+        json.dumps(value, separators=(",", ":"), sort_keys=True)
+        for value in (header, *evidence)
+    )
+
+    with pytest.raises(ValueError, match="certificate"):
+        VerificationReport.from_jsonl(serialized + "\n")
 
 
 def test_verification_report_cli_uses_model_description_and_gate_exit_code(
@@ -546,7 +771,7 @@ def test_verification_report_cli_filters_verbose_records_and_machine_json(
         case=replace(
             make_record("failed").case,
             operation="matmul",
-            kernel_id="cpu.matmul",
+            kernel_id="synthetic.matmul",
             variant="wide",
         ),
     )
@@ -563,7 +788,7 @@ def test_verification_report_cli_filters_verbose_records_and_machine_json(
             "--operation",
             "matmul",
             "--kernel",
-            "cpu.matmul",
+            "synthetic.matmul",
             "--variant",
             "wide",
             "--outcome",
@@ -580,7 +805,7 @@ def test_verification_report_cli_filters_verbose_records_and_machine_json(
     assert verbose_exit == 1
     assert "Verification report: 1 records; gate passed: no." in verbose.out
     assert (
-        "case_id=failed stage=stage_two operation=matmul kernel_id=cpu.matmul "
+        "case_id=failed stage=stage_two operation=matmul kernel_id=synthetic.matmul "
         "variant=wide class=numerical outcome=failed deviations="
     ) in verbose.out
     assert "EvidenceRecord(" not in verbose.out

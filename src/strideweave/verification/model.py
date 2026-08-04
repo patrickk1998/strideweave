@@ -5,15 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import asdict, dataclass
 from enum import Enum
 from os import PathLike
 from pathlib import Path
 from typing import Any
 
-_EVIDENCE_SCHEMA_VERSION = "strideweave.kernel-evidence.v1"
-_REPORT_SCHEMA_VERSION = "strideweave.kernel-verification.v1"
+_EVIDENCE_SCHEMA_VERSION = "strideweave.kernel-evidence.v2"
+_REPORT_SCHEMA_VERSION = "strideweave.kernel-verification.v2"
 _NONFINITE_FLOATS = {
     "NaN": math.nan,
     "Infinity": math.inf,
@@ -274,6 +274,11 @@ def _parse_evidence_record(value: Any) -> EvidenceRecord:
                 "mismatches",
                 "outcome",
                 "diagnostic",
+                "requirement_id",
+                "compilation_receipt_id",
+                "tolerance_policy_id",
+                "oracle_reference_id",
+                "consumed_certificate_digest",
                 "schema_version",
             }
         ),
@@ -306,6 +311,20 @@ def _parse_evidence_record(value: Any) -> EvidenceRecord:
         mismatches=_require_optional_integer(data["mismatches"], "record.mismatches"),
         outcome=outcome,
         diagnostic=_require_optional_string(data["diagnostic"], "record.diagnostic"),
+        requirement_id=_require_string(data["requirement_id"], "record.requirement_id"),
+        compilation_receipt_id=_require_optional_string(
+            data["compilation_receipt_id"], "record.compilation_receipt_id"
+        ),
+        tolerance_policy_id=_require_string(
+            data["tolerance_policy_id"], "record.tolerance_policy_id"
+        ),
+        oracle_reference_id=_require_string(
+            data["oracle_reference_id"], "record.oracle_reference_id"
+        ),
+        consumed_certificate_digest=_require_optional_string(
+            data["consumed_certificate_digest"],
+            "record.consumed_certificate_digest",
+        ),
         schema_version=schema_version,
     )
 
@@ -353,6 +372,7 @@ class KernelDescriptor:
     kernel_id: str
     variant: str
     pybind_name: str
+    owning_source: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +468,11 @@ class EvidenceRecord:
     mismatches: int | None
     outcome: VerificationOutcome
     diagnostic: str | None = None
+    requirement_id: str = "unbound"
+    compilation_receipt_id: str | None = None
+    tolerance_policy_id: str = "unbound"
+    oracle_reference_id: str = "unbound"
+    consumed_certificate_digest: str | None = None
     schema_version: str = _EVIDENCE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -565,6 +590,26 @@ def _normalized_filter[EnumType: Enum](
 
 
 @dataclass(frozen=True, slots=True)
+class ReportHeader:
+    """Immutable provenance header for one verification report."""
+
+    schema_version: str
+    header_digest: str
+    compilation: Mapping[str, Any]
+    verification_spec: Mapping[str, Any]
+    tolerance_policies: tuple[Mapping[str, Any], ...]
+    oracle_references: tuple[Mapping[str, Any], ...]
+    certificates: tuple[Mapping[str, Any], ...]
+
+    def as_json_object(self) -> dict[str, Any]:
+        """Return the canonical JSON object represented by the header."""
+
+        from .reporting import report_header_json_object
+
+        return report_header_json_object(self)
+
+
+@dataclass(frozen=True, slots=True)
 class VerificationReport:
     """Collection of deterministic evidence records from a local run.
 
@@ -578,31 +623,40 @@ class VerificationReport:
     Use :meth:`summary` for immutable counts, :meth:`describe` for deterministic
     text, and :meth:`select` or the :attr:`passed`, :attr:`deferred`, and
     :attr:`problems` views to navigate the authoritative ``records`` tuple.
-    JSONL serialization is stable and reloads through a strict, line-numbered
-    evidence-schema validator. The evidence-only v1 wire format has no report
-    header, so this model accepts only its current report schema version rather
-    than silently serializing a report a v1 reader would misidentify.
+    JSONL serialization is stable and begins with one strict provenance header,
+    followed by line-numbered evidence objects. Prototype v1 evidence-only files
+    are rejected rather than migrated.
 
     Args:
         records: Immutable evidence records collected by local verification.
         schema_version: Version of the report format represented by this model.
+        header: Provenance header, or ``None`` to bind current installed facts.
 
     Examples:
         >>> from strideweave.verification import VerificationReport
         >>> report = VerificationReport(())
-        >>> report.to_jsonl()
-        ''
+        >>> report.to_jsonl().startswith('{')
+        True
     """
 
     records: tuple[EvidenceRecord, ...]
     schema_version: str = _REPORT_SCHEMA_VERSION
+    header: ReportHeader | None = None
 
     def __post_init__(self) -> None:
-        """Refuse report versions that the evidence-only wire format cannot encode."""
+        """Bind or validate the provenance header and exact record references."""
         if self.schema_version != _REPORT_SCHEMA_VERSION:
             raise ValueError(
                 f"unsupported report schema version {self.schema_version!r}"
             )
+        from .reporting import bind_report, validate_report
+
+        if self.header is None:
+            records, header = bind_report(self.records, ())
+            object.__setattr__(self, "records", records)
+            object.__setattr__(self, "header", header)
+        else:
+            validate_report(self.header, self.records)
 
     def __repr__(self) -> str:
         """Return a bounded representation containing only outcome counts."""
@@ -732,19 +786,19 @@ class VerificationReport:
         ):
             if value is not None and type(value) is not str:
                 raise TypeError(f"{field} must be a string or None")
-        return type(self)(
-            tuple(
-                record
-                for record in self.records
-                if (stages is None or record.stage in stages)
-                and (selected_outcomes is None or record.outcome in selected_outcomes)
-                and (classes is None or record.test_class in classes)
-                and (operation is None or record.case.operation == operation)
-                and (kernel_id is None or record.case.kernel_id == kernel_id)
-                and (variant is None or record.case.variant == variant)
-            ),
-            schema_version=self.schema_version,
+        selected = tuple(
+            record
+            for record in self.records
+            if (stages is None or record.stage in stages)
+            and (selected_outcomes is None or record.outcome in selected_outcomes)
+            and (classes is None or record.test_class in classes)
+            and (operation is None or record.case.operation == operation)
+            and (kernel_id is None or record.case.kernel_id == kernel_id)
+            and (variant is None or record.case.variant == variant)
         )
+        from .reporting import subset_report
+
+        return subset_report(self, selected)
 
     @property
     def passed(self) -> VerificationReport:
@@ -768,15 +822,15 @@ class VerificationReport:
         )
 
     def to_jsonl(self) -> str:
-        """Serialize all evidence as deterministic, newline-terminated JSONL.
+        """Serialize the header and all evidence as deterministic JSONL.
 
         Returns:
-            Canonically ordered JSONL, or an empty string when there are no records.
+            Canonically ordered, newline-terminated JSONL.
 
         Examples:
             >>> from strideweave.verification import VerificationReport
-            >>> VerificationReport(()).to_jsonl()
-            ''
+            >>> VerificationReport(()).to_jsonl().count("\\n")
+            1
         """
         ordered = sorted(
             self.records,
@@ -786,11 +840,18 @@ class VerificationReport:
                 record.case.variant,
             ),
         )
-        return (
-            ""
-            if not ordered
-            else "\n".join(record.to_jsonl() for record in ordered) + "\n"
-        )
+        if self.header is None:
+            raise RuntimeError("verification report has no provenance header")
+        lines = [
+            json.dumps(
+                self.header.as_json_object(),
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            *(record.to_jsonl() for record in ordered),
+        ]
+        return "\n".join(lines) + "\n"
 
     @classmethod
     def from_jsonl(cls, text: str) -> VerificationReport:
@@ -815,8 +876,24 @@ class VerificationReport:
         """
         if type(text) is not str:
             raise TypeError("text must be a string")
+        lines = text.splitlines()
+        if not lines:
+            raise ValueError("JSONL line 1: report header is required")
+        if not lines[0]:
+            raise ValueError("JSONL line 1: blank lines are not valid")
+        try:
+            header_value = json.loads(
+                lines[0],
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=_reject_json_constant,
+            )
+            from .reporting import parse_report_header
+
+            header = parse_report_header(header_value)
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            raise ValueError(f"JSONL line 1: {exc}") from exc
         records: list[EvidenceRecord] = []
-        for line_number, line in enumerate(text.splitlines(), start=1):
+        for line_number, line in enumerate(lines[1:], start=2):
             if not line:
                 raise ValueError(f"JSONL line {line_number}: blank lines are not valid")
             try:
@@ -828,7 +905,7 @@ class VerificationReport:
                 records.append(_parse_evidence_record(value))
             except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 raise ValueError(f"JSONL line {line_number}: {exc}") from exc
-        return cls(tuple(records))
+        return cls(tuple(records), header.schema_version, header)
 
     @classmethod
     def load(cls, path: str | PathLike[str]) -> VerificationReport:
@@ -890,6 +967,17 @@ class OracleCertificate:
             tuple[PlanKey, tuple[VerificationClass, ...]], ...
         ] = (),
     ) -> OracleCertificate:
+        required_plan_classes = tuple(
+            sorted(
+                required_plan_classes,
+                key=lambda item: json.dumps(
+                    asdict(item[0]),
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            )
+        )
         observed = {
             record.test_class
             for record in records
@@ -947,7 +1035,41 @@ class OracleCertificate:
                 raise ValueError(
                     f"cannot certify {kernel.kernel_id}: required plan evidence did not pass"
                 )
-        serialized = VerificationReport(records).to_jsonl().encode()
+        serialized_records = []
+        for record in sorted(
+            records,
+            key=lambda record: (
+                record.case.case_id,
+                record.case.kernel_id,
+                record.case.variant,
+            ),
+        ):
+            value = record.as_json_object()
+            for field in (
+                "compilation_receipt_id",
+                "consumed_certificate_digest",
+                "oracle_reference_id",
+                "requirement_id",
+                "tolerance_policy_id",
+            ):
+                value.pop(field)
+            tolerance = value["tolerance"]
+            for field in ("absolute", "relative"):
+                if type(tolerance[field]) in (int, float):
+                    tolerance[field] = float(tolerance[field])
+            deviations = value["deviations"]
+            for field in ("maximum_absolute", "maximum_relative"):
+                if type(deviations[field]) in (int, float):
+                    deviations[field] = float(deviations[field])
+            serialized_records.append(
+                json.dumps(
+                    value,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+        serialized = "\n".join(serialized_records).encode()
         return cls(
             kernel.kernel_id,
             kernel.variant,
