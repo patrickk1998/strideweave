@@ -17,6 +17,11 @@ from .model import (
 
 _carrier = import_module("strideweave._carrier")
 
+_NATIVE_KERNEL_METADATA_BINDING = "_cpu_native_kernel_metadata"
+_NATIVE_EXTENSION_REBUILD_COMMAND = (
+    "uv sync --reinstall-package strideweave --group dev"
+)
+
 _EXACT = (VerificationClass.EXACT_ARITHMETIC,)
 _DEFERRED = (VerificationClass.DEFERRED,)
 _STRUCTURAL = (VerificationClass.STRUCTURAL,)
@@ -109,6 +114,20 @@ _CLASSIFICATIONS: dict[tuple[str, str], tuple[VerificationClass, ...]] = {
         VerificationClass.DEFERRED,
     ),
 }
+
+
+def require_native_verification_api() -> None:
+    """Require the native introspection used by backend verification."""
+    try:
+        getattr(_carrier, _NATIVE_KERNEL_METADATA_BINDING)
+    except AttributeError as error:
+        raise RuntimeError(
+            "StrideWeave's native extension is stale or incompatible with its "
+            "Python verification sources: required binding "
+            f"{_NATIVE_KERNEL_METADATA_BINDING!r} is missing. Rebuild the active "
+            "environment with "
+            f"'{_NATIVE_EXTENSION_REBUILD_COMMAND}'."
+        ) from error
 
 
 def native_cpu_kernel_manifest() -> tuple[KernelDescriptor, ...]:
