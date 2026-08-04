@@ -17,13 +17,14 @@ struct CpuRegistryEntry {
     std::string kernel_id;
     std::string variant;
     std::string pybind_name;
+    std::string owning_source;
 };
 
 class CpuOperationRegistry {
 public:
-    void register_native(const CpuKernelMetadata& metadata,
+    void register_native(const CpuKernelMetadata& metadata, const char* owning_source,
                          CpuOperationFactory operation_factory) {
-        validate_metadata(metadata);
+        validate_metadata(metadata, owning_source);
         const std::string dispatch_name(metadata.dispatch_name);
         const std::string kernel_id(metadata.kernel_id);
         reject_duplicate_dispatch(dispatch_name);
@@ -32,7 +33,8 @@ public:
         }
         entries_.emplace(dispatch_name,
                          CpuRegistryEntry{std::move(operation_factory), true, kernel_id,
-                                          metadata.variant, metadata.pybind_name});
+                                          metadata.variant, metadata.pybind_name,
+                                          owning_source});
         kernel_ids_.insert(kernel_id);
     }
 
@@ -41,7 +43,7 @@ public:
         reject_duplicate_dispatch(operation_name);
         entries_.emplace(
             std::move(operation_name),
-            CpuRegistryEntry{std::move(operation_factory), false, "", "", ""});
+            CpuRegistryEntry{std::move(operation_factory), false, "", "", "", ""});
     }
 
     py::object make(const std::string& operation_name) const {
@@ -70,18 +72,21 @@ public:
         py::tuple result(ordered.size());
         for (std::size_t index = 0; index < ordered.size(); ++index) {
             const auto& [dispatch_name, entry] = ordered[index];
-            result[index] = py::make_tuple(dispatch_name, entry->kernel_id,
-                                           entry->variant, entry->pybind_name);
+            result[index] =
+                py::make_tuple(dispatch_name, entry->kernel_id, entry->variant,
+                               entry->pybind_name, entry->owning_source);
         }
         return result;
     }
 
 private:
-    static void validate_metadata(const CpuKernelMetadata& metadata) {
+    static void validate_metadata(const CpuKernelMetadata& metadata,
+                                  const char* owning_source) {
         if (metadata.dispatch_name == nullptr || metadata.dispatch_name[0] == '\0' ||
             metadata.kernel_id == nullptr || metadata.kernel_id[0] == '\0' ||
             metadata.variant == nullptr || metadata.variant[0] == '\0' ||
-            metadata.pybind_name == nullptr || metadata.pybind_name[0] == '\0') {
+            metadata.pybind_name == nullptr || metadata.pybind_name[0] == '\0' ||
+            owning_source == nullptr || owning_source[0] == '\0') {
             throw std::invalid_argument("CPU kernel metadata fields must be non-empty");
         }
         if (std::string(metadata.variant) != "default") {
@@ -106,36 +111,43 @@ CpuOperationRegistry& cpu_operation_registry() {
     return registry;
 }
 
-CpuKernelMetadata metadata_from_tuple(py::handle value) {
+std::pair<CpuKernelMetadata, std::string> metadata_from_tuple(py::handle value) {
     const py::tuple entry = py::cast<py::tuple>(value);
-    if (py::len(entry) != 4) {
-        throw py::value_error("CPU kernel metadata test entries require four fields");
+    if (py::len(entry) != 5) {
+        throw py::value_error("CPU kernel metadata test entries require five fields");
     }
     // The strings remain alive for the duration of the immediate registration.
     static thread_local std::string dispatch_name;
     static thread_local std::string kernel_id;
     static thread_local std::string variant;
     static thread_local std::string pybind_name;
+    static thread_local std::string owning_source;
     dispatch_name = py::cast<std::string>(entry[0]);
     kernel_id = py::cast<std::string>(entry[1]);
     variant = py::cast<std::string>(entry[2]);
     pybind_name = py::cast<std::string>(entry[3]);
-    return {dispatch_name.c_str(), kernel_id.c_str(), variant.c_str(),
-            pybind_name.c_str()};
+    owning_source = py::cast<std::string>(entry[4]);
+    return {{dispatch_name.c_str(), kernel_id.c_str(), variant.c_str(),
+             pybind_name.c_str()},
+            owning_source};
 }
 
 void validate_cpu_native_registry_for_test(py::iterable entries) {
     CpuOperationRegistry registry;
     for (py::handle entry : entries) {
-        registry.register_native(metadata_from_tuple(entry), [] { return py::none(); });
+        const auto [metadata, owning_source] = metadata_from_tuple(entry);
+        registry.register_native(metadata, owning_source.c_str(),
+                                 [] { return py::none(); });
     }
 }
 
 }  // namespace
 
 void register_cpu_native_operation(const CpuKernelMetadata& metadata,
+                                   const char* owning_source,
                                    CpuOperationFactory operation_factory) {
-    cpu_operation_registry().register_native(metadata, std::move(operation_factory));
+    cpu_operation_registry().register_native(metadata, owning_source,
+                                             std::move(operation_factory));
 }
 
 void register_python_cpu_operation(const char* operation_name,

@@ -43,6 +43,25 @@ def test_backend_runs_both_stages_and_returns_deterministic_evidence(tmp_path):
         record.target_input_bit_hashes == record.oracle_input_bit_hashes
         for record in report.records
     )
+    assert report.header is not None
+    certificate_ids = {
+        item["certificate_digest"] for item in report.header.certificates
+    }
+    certified_target_records = [
+        record
+        for record in stage_two
+        if record.case.kernel_id in {"cpu.reduce_sum", "cpu.matmul"}
+    ]
+    assert certified_target_records
+    assert all(
+        record.consumed_certificate_digest in certificate_ids
+        for record in certified_target_records
+    )
+    assert all(record.requirement_id != "unbound" for record in report.records)
+    assert all(record.tolerance_policy_id != "unbound" for record in report.records)
+    assert all(record.oracle_reference_id != "unbound" for record in report.records)
+    assert "timestamp" not in report.to_jsonl().lower()
+    assert "database" not in report.to_jsonl().lower()
 
 
 def test_backend_reports_a_stale_native_extension_before_stage_one(monkeypatch):
@@ -131,7 +150,7 @@ def test_stage_two_rejects_forged_variant_certificate_without_target_execution(
 
 def test_stage_two_rejects_certificate_without_float64_plan_scope(monkeypatch):
     stage_one = run_stage_one()
-    forged = OracleCertificate("cpu.reduce_sum", "default", (), "forged")
+    forged = OracleCertificate("cpu.reduce_sum", "default", (), "0" * 64)
     target_called = False
 
     def fail_if_called(*args, **kwargs):

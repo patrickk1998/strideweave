@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 project(strideweave LANGUAGES CXX)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED)
 
@@ -21,63 +23,28 @@ target_compile_features(_index PRIVATE cxx_std_17)
 pybind11_add_module(_einops src/strideweave/einops/native/_einops.cpp)
 target_compile_features(_einops PRIVATE cxx_std_17)
 
+file(
+    GLOB STRIDEWEAVE_CPU_OPERATION_SOURCES
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/strideweave/carriers/cpu/native/ops/*.cpp"
+)
+
+foreach(source IN LISTS STRIDEWEAVE_CPU_OPERATION_SOURCES)
+    file(RELATIVE_PATH relative_source "${CMAKE_CURRENT_SOURCE_DIR}" "${source}")
+    set_property(
+        SOURCE "${source}"
+        APPEND
+        PROPERTY COMPILE_DEFINITIONS
+                 "STRIDEWEAVE_KERNEL_SOURCE=\"${relative_source}\""
+    )
+endforeach()
+
 pybind11_add_module(
     _carrier
     src/strideweave/core/native/_carrier.cpp
     src/strideweave/carriers/cpu/native/_cpu.cpp
     src/strideweave/carriers/cpu/native/_cpu_registry.cpp
-    src/strideweave/carriers/cpu/native/ops/abs.cpp
-    src/strideweave/carriers/cpu/native/ops/add.cpp
-    src/strideweave/carriers/cpu/native/ops/argmax.cpp
-    src/strideweave/carriers/cpu/native/ops/argmin.cpp
-    src/strideweave/carriers/cpu/native/ops/ceil.cpp
-    src/strideweave/carriers/cpu/native/ops/clamp.cpp
-    src/strideweave/carriers/cpu/native/ops/conv_general.cpp
-    src/strideweave/carriers/cpu/native/ops/cos.cpp
-    src/strideweave/carriers/cpu/native/ops/cumsum.cpp
-    src/strideweave/carriers/cpu/native/ops/div.cpp
-    src/strideweave/carriers/cpu/native/ops/elementwise_mul.cpp
-    src/strideweave/carriers/cpu/native/ops/elu.cpp
-    src/strideweave/carriers/cpu/native/ops/eq.cpp
-    src/strideweave/carriers/cpu/native/ops/erf.cpp
-    src/strideweave/carriers/cpu/native/ops/exp.cpp
-    src/strideweave/carriers/cpu/native/ops/exp2.cpp
-    src/strideweave/carriers/cpu/native/ops/floor.cpp
-    src/strideweave/carriers/cpu/native/ops/gather.cpp
-    src/strideweave/carriers/cpu/native/ops/gelu.cpp
-    src/strideweave/carriers/cpu/native/ops/le.cpp
-    src/strideweave/carriers/cpu/native/ops/leaky_relu.cpp
-    src/strideweave/carriers/cpu/native/ops/log.cpp
-    src/strideweave/carriers/cpu/native/ops/log2.cpp
-    src/strideweave/carriers/cpu/native/ops/logical_not.cpp
-    src/strideweave/carriers/cpu/native/ops/lt.cpp
-    src/strideweave/carriers/cpu/native/ops/matmul.cpp
-    src/strideweave/carriers/cpu/native/ops/maximum.cpp
-    src/strideweave/carriers/cpu/native/ops/minimum.cpp
-    src/strideweave/carriers/cpu/native/ops/ne.cpp
-    src/strideweave/carriers/cpu/native/ops/neg.cpp
-    src/strideweave/carriers/cpu/native/ops/pow.cpp
-    src/strideweave/carriers/cpu/native/ops/recip.cpp
-    src/strideweave/carriers/cpu/native/ops/reduce_max.cpp
-    src/strideweave/carriers/cpu/native/ops/reduce_min.cpp
-    src/strideweave/carriers/cpu/native/ops/reduce_prod.cpp
-    src/strideweave/carriers/cpu/native/ops/reduce_sum.cpp
-    src/strideweave/carriers/cpu/native/ops/relu.cpp
-    src/strideweave/carriers/cpu/native/ops/rem.cpp
-    src/strideweave/carriers/cpu/native/ops/round.cpp
-    src/strideweave/carriers/cpu/native/ops/rsqrt.cpp
-    src/strideweave/carriers/cpu/native/ops/scalar_mul.cpp
-    src/strideweave/carriers/cpu/native/ops/scatter.cpp
-    src/strideweave/carriers/cpu/native/ops/select.cpp
-    src/strideweave/carriers/cpu/native/ops/sigmoid.cpp
-    src/strideweave/carriers/cpu/native/ops/sign.cpp
-    src/strideweave/carriers/cpu/native/ops/silu.cpp
-    src/strideweave/carriers/cpu/native/ops/sin.cpp
-    src/strideweave/carriers/cpu/native/ops/softplus.cpp
-    src/strideweave/carriers/cpu/native/ops/sort.cpp
-    src/strideweave/carriers/cpu/native/ops/sqrt.cpp
-    src/strideweave/carriers/cpu/native/ops/sub.cpp
-    src/strideweave/carriers/cpu/native/ops/tanh.cpp
+    ${STRIDEWEAVE_CPU_OPERATION_SOURCES}
 )
 target_compile_features(_carrier PRIVATE cxx_std_17)
 target_include_directories(
@@ -85,6 +52,56 @@ target_include_directories(
     PRIVATE
     src/strideweave/core/native
     src/strideweave/carriers/cpu/native
+)
+
+include(TestBigEndian)
+test_big_endian(STRIDEWEAVE_BIG_ENDIAN)
+if(STRIDEWEAVE_BIG_ENDIAN)
+    set(STRIDEWEAVE_ENDIANNESS big)
+else()
+    set(STRIDEWEAVE_ENDIANNESS little)
+endif()
+math(EXPR STRIDEWEAVE_POINTER_BITS "${CMAKE_SIZEOF_VOID_P} * 8")
+
+set(
+    STRIDEWEAVE_PROVENANCE_MANIFEST
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/strideweave/verification/_native_provenance.json"
+)
+set(STRIDEWEAVE_PROVENANCE_SOURCE_ARGS ${STRIDEWEAVE_CPU_OPERATION_SOURCES})
+list(TRANSFORM STRIDEWEAVE_PROVENANCE_SOURCE_ARGS PREPEND "--source=")
+
+add_custom_command(
+    OUTPUT "${STRIDEWEAVE_PROVENANCE_MANIFEST}"
+    COMMAND
+        "${Python_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_kernel_provenance.py"
+        "--project-root=${CMAKE_CURRENT_SOURCE_DIR}"
+        "--compile-commands=${CMAKE_CURRENT_BINARY_DIR}/compile_commands.json"
+        "--artifact=$<TARGET_FILE:_carrier>"
+        "--output=${STRIDEWEAVE_PROVENANCE_MANIFEST}"
+        "--cache-dir=${CMAKE_CURRENT_BINARY_DIR}/generated/provenance-cache"
+        "--compiler=${CMAKE_CXX_COMPILER}"
+        "--compiler-id=${CMAKE_CXX_COMPILER_ID}"
+        "--cmake-version=${CMAKE_VERSION}"
+        "--architecture=${CMAKE_SYSTEM_PROCESSOR}"
+        "--operating-system=${CMAKE_SYSTEM_NAME}"
+        "--endianness=${STRIDEWEAVE_ENDIANNESS}"
+        "--pointer-bits=${STRIDEWEAVE_POINTER_BITS}"
+        ${STRIDEWEAVE_PROVENANCE_SOURCE_ARGS}
+        "--build-input=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
+        "--build-input=${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml"
+    DEPENDS
+        _carrier
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_kernel_provenance.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
+        "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml"
+        ${STRIDEWEAVE_CPU_OPERATION_SOURCES}
+    VERBATIM
+    COMMAND_EXPAND_LISTS
+)
+add_custom_target(
+    strideweave_kernel_provenance ALL
+    DEPENDS "${STRIDEWEAVE_PROVENANCE_MANIFEST}"
 )
 
 pybind11_add_module(_operation src/strideweave/core/native/_operation.cpp)
@@ -142,3 +159,7 @@ if(STRIDEWEAVE_SANITIZERS)
 endif()
 
 install(TARGETS _index _einops _carrier _operation _tensor _move DESTINATION strideweave)
+install(
+    FILES "${STRIDEWEAVE_PROVENANCE_MANIFEST}"
+    DESTINATION strideweave/verification
+)

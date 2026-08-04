@@ -1,4 +1,4 @@
-"""Database-independent foundations for staged kernel verification."""
+"""Staged kernel verification, provenance reports, and evidence models."""
 
 from .api import test_backend
 from .classification import (
@@ -24,6 +24,7 @@ from .model import (
     KernelPlanDescriptor,
     OracleCertificate,
     PlanKey,
+    ReportHeader,
     Tolerance,
     VerificationClass,
     VerificationOutcome,
@@ -43,6 +44,14 @@ from .payloads import (
     exact_structural_payload,
     wide_exponent_float32_payload,
 )
+from .provenance import (
+    CompilationInput,
+    CompilationManifest,
+    CompilationReceipt,
+    CompilationTarget,
+    CompilationToolchain,
+    load_compilation_manifest,
+)
 from .stage_one import StageOneResult, run_stage_one
 
 __all__ = [
@@ -51,6 +60,11 @@ __all__ = [
     "CaseDescriptor",
     "ClassificationDisposition",
     "Comparison",
+    "CompilationInput",
+    "CompilationManifest",
+    "CompilationReceipt",
+    "CompilationTarget",
+    "CompilationToolchain",
     "Deviations",
     "EncodedFloat32Payload",
     "EncodedInputs",
@@ -61,6 +75,7 @@ __all__ = [
     "KernelPlanDescriptor",
     "OracleCertificate",
     "PlanKey",
+    "ReportHeader",
     "StageOneResult",
     "Tolerance",
     "VerificationClass",
@@ -78,6 +93,7 @@ __all__ = [
     "float32_bits",
     "float32_ulp_distance",
     "gamma_bound",
+    "load_compilation_manifest",
     "native_cpu_kernel_manifest",
     "require_complete_classification",
     "run_stage_one",

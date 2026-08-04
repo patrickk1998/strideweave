@@ -79,12 +79,17 @@ def _record_json(record: EvidenceRecord) -> dict[str, Any]:
     return {
         "case_id": record.case.case_id,
         "class": record.test_class.value,
+        "compilation_receipt_id": record.compilation_receipt_id,
+        "consumed_certificate_digest": record.consumed_certificate_digest,
         "deviations": record.as_json_object()["deviations"],
         "kernel_id": record.case.kernel_id,
         "operation": record.case.operation,
+        "oracle_reference_id": record.oracle_reference_id,
         "outcome": record.outcome.value,
         "stage": record.stage.value,
         "tolerance": record.as_json_object()["tolerance"],
+        "tolerance_policy_id": record.tolerance_policy_id,
+        "verification_requirement_id": record.requirement_id,
         "variant": record.case.variant,
     }
 
@@ -98,7 +103,12 @@ def _format_record(record: EvidenceRecord) -> str:
         f"case_id={value['case_id']} stage={value['stage']} "
         f"operation={value['operation']} kernel_id={value['kernel_id']} "
         f"variant={value['variant']} class={value['class']} "
-        f"outcome={value['outcome']} deviations={deviations} tolerance={tolerance}"
+        f"outcome={value['outcome']} deviations={deviations} tolerance={tolerance} "
+        f"requirement_id={value['verification_requirement_id']} "
+        f"compilation_receipt_id={value['compilation_receipt_id']} "
+        f"tolerance_policy_id={value['tolerance_policy_id']} "
+        f"oracle_reference_id={value['oracle_reference_id']} "
+        f"consumed_certificate_digest={value['consumed_certificate_digest']}"
     )
 
 

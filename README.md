@@ -1293,14 +1293,28 @@ The returned immutable report contains passed, failed, errored, blocked, and
 deferred attempts. Stage Two currently covers movement, reduce, and matmul. A
 missing, forged, or incomplete Stage One certificate blocks its dependent Stage Two cases
 without executing them. JSONL output is deterministic and versioned; it
-intentionally contains no CI status, Dolt state, toolchain hash, transitive
-closure hash, autotune cache, or status-aggregation record.
+contains one strict provenance header followed by immutable evidence records.
+The header binds the native compilation manifest, target and toolchain,
+per-kernel receipts and source closures, complete verification requirements,
+tolerance policies, Generic reference identity, and Stage One certificates.
+Every C++ case names its exact receipt; every executed Stage Two reduction or
+matmul case names the exact Stage One certificate it consumed. It intentionally
+contains no wall-clock timestamp, CI status, database state, source commit,
+autotune cache, or status-aggregation record.
 Use `report.write(path)` to save it and `VerificationReport.load(path)` to
-strictly reload it. The evidence-only v1 JSONL wire format carries an evidence
-schema on each line, while the model accepts only its current report schema
-version before any report can be serialized. Loading accepts only the current
-evidence schema and canonical JSON encoding, reconstructs the immutable nested
-evidence model, and identifies the JSONL line for malformed or invalid evidence.
+strictly reload it. The provenance-complete v2 format replaces the prototype
+evidence-only v1 format directly; old files are rejected rather than migrated.
+Loading is the model-owned inverse: it validates the header and all nested
+content identities without consulting the currently installed build, accepts
+only canonical current schemas, rejects missing, duplicate, unexpected,
+mismatched, or forged provenance, and reconstructs every complete embedded
+Stage One certificate from the report's own kernel/variant evidence, required
+classes, and capability-plan coverage. This is a fail-closed consistency check
+for implementation drift and stale certificate wiring, not an authenticity or
+producer-trust protocol. A filtered view that contains only part of a previously
+validated certificate's Stage One evidence preserves that certificate as an
+embedded dependency but cannot recompute its full evidence digest. Loading also
+reconstructs the immutable evidence model and identifies malformed JSONL lines.
 
 ```python
 summary = report.summary()
@@ -1345,6 +1359,152 @@ recorded case by case, so independent witnesses continue. Their records retain
 the prepared operation, kernel, plan, payload hashes, logical shapes,
 contraction length, seed, and tolerance; deviation and mismatch measurements
 are `null` because no comparison completed.
+
+### Raw evidence persistence contract
+
+The persistence layer is specified as a local-first store of raw facts, not
+confidence claims. Its checked-in contract lives in
+[`design/testing-taxonomy.md`](design/testing-taxonomy.md) and the initial
+append-oriented migration under
+`src/strideweave/verification/store/migrations`. It separates targets and
+explicit proxies, toolchains, per-kernel source closures and compilation
+receipts, verification specifications, tolerance policies, oracle references,
+deterministic runs, evidence, and producer observations. Bit-exact and
+tolerance evidence remain different unranked classes; contradictory producer
+observations coexist.
+
+The compilation-receipt abstraction is framework-neutral, while current
+execution scope is native C++ FP32 kernels built through CMake. Per-kernel
+identity covers the operation source, the compiler-reported complete transitive
+header set (including generated, external-user, SDK, standard-library, and
+compiler headers), generated/build inputs, definitions, flags, target,
+toolchain, and per-source compiled object. Project and build inputs use stable
+relative provider URIs; external inputs use path-free content-addressed provider
+URIs, so reports do not retain local installation paths. The Generic oracle
+identity is derived from reviewed Python roots and their local static-import
+closure, including shared helpers, operation policy, and capability enforcement.
+Incremental native builds consume each compiler action's depfile when it remains
+available, so the closure follows the dependencies selected by that exact
+compilation, including a new header shadowing an unchanged cached path. When a
+build system has consumed or removed the depfile, a build-local per-source cache
+may be reused only while the compiled object's content, size, modification stamp,
+and every previously reported dependency remain unchanged; any recompilation or
+changed dependency reruns compiler discovery only for affected sources. Clean and
+packaging builds still derive the full closure automatically. Cache paths,
+receipts, and entries are build state and never enter reports.
+The digest of the shared extension remains artifact provenance rather than its
+invalidation key. The same schema can later hold JIT receipts with framework and
+specialization metadata, but CuTe DSL, Triton, and TileLang adapters are
+explicitly deferred.
+
+Native provenance generation currently supports GNU-compatible compiler-driver
+mode for CMake compiler IDs `GNU`, `Clang`, and `AppleClang`. The driver must
+accept the dependency and identity probes used by the provider (`-M`,
+`--version`, and `-dumpmachine`). The CMake generator must be from the Makefile
+or Ninja families and must actually emit `compile_commands.json`; generators
+that ignore `CMAKE_EXPORT_COMPILE_COMMANDS` are outside the supported
+source-build matrix. In particular, the MSVC driver and Visual Studio generators
+are not supported for source or editable builds in this version. A supported
+prebuilt wheel already contains its generated provenance manifest and does not
+run this build-time provider, so its normal APIs, `test_backend`, and local
+status-store commands remain available on the wheel's supported platforms.
+Future MSVC/Visual Studio provenance support requires a separate provider and
+is explicitly deferred.
+
+The local verification store is separate from Beads, source Git history, and
+the working tree. Its lifecycle uses the platform application-data directory
+with `STRIDEWEAVE_STATUS_HOME` as an explicit override, checked automatic
+migrations, and atomic transactions. The internal backend-neutral store boundary
+and local Dolt adapter implement that lifecycle. Explicit report ingestion is
+available through `record_report(...)` and the local-only command:
+
+- macOS: `~/Library/Application Support/strideweave/kernel-evidence`
+- Linux: `${XDG_DATA_HOME:-~/.local/share}/strideweave/kernel-evidence`
+- Windows: `%LOCALAPPDATA%\strideweave\kernel-evidence`
+
+When set, `STRIDEWEAVE_STATUS_HOME` replaces only the platform base; the stable
+`strideweave/kernel-evidence` suffix is retained. `--store PATH` overrides the
+complete location for one command. First use initializes the directory and
+requires Dolt 1.40 or newer; imports and help do not initialize it.
+
+```bash
+strideweave-kernel-status record --report kernel-evidence.jsonl \
+  --producer local-dev --source-commit "$REVISION"
+```
+
+Recording first rebinds the complete report against the installed build's
+compilation, specification, tolerance, oracle, and certificate facts. A stale,
+incomplete, mismatched, or forged report fails before the store is created; a
+valid report writes its run, every raw outcome, and producer observations in one
+transaction. Exact repetition is idempotent, while observations with different
+producer, source-commit, or artifact identities coexist. Recording does not
+publish or contact a network. Ordinary APIs describe a verification store;
+the storage backend, contributor branches, and optional remotes remain internal.
+`status` is a factual inventory, `stale` explains exact identity differences,
+and `todo` is a stable unranked set difference. Optional sharing uses configured
+read/publish endpoints and explicit producer namespaces; no central service or
+DoltHub account is required.
+
+```bash
+strideweave-kernel-status status --arch arm64
+strideweave-kernel-status status --arch arm64 --kernel cpu.matmul \
+  --class numerical --producer local-dev --json
+strideweave-kernel-status stale --arch arm64
+strideweave-kernel-status todo --arch arm64 --json
+```
+
+`status` lists each matching observation separately and supports exact
+kernel, variant, class, and producer filters; timestamps never resolve
+contradictions. `stale` compares compilation manifests and receipts, individual
+closure members where available, targets, toolchains, verification
+specifications, tolerance policies, and oracle identities independently.
+`todo` sorts missing requirements by kernel, variant, class, and case without a
+risk score. The latter two commands construct the current installed verification
+baseline locally; all three commands are offline, read-only queries.
+
+Contributor exchange is opt-in on the commands that perform it:
+
+```bash
+strideweave-kernel-status record --report kernel-evidence.jsonl \
+  --producer local-dev --publish --publish-destination /shared/evidence
+strideweave-kernel-status status --arch arm64 --refresh \
+  --read-source /shared/evidence
+```
+
+`publish_destination` and `read_source` may instead come from
+`STRIDEWEAVE_STATUS_PUBLISH_DESTINATION` and
+`STRIDEWEAVE_STATUS_READ_SOURCE`. The initial transport accepts local paths and
+`file:` endpoints, which also provide the test-remote contract without requiring
+an account or service. Internally, each producer receives an opaque namespace
+containing one atomically replaced current content-addressed snapshot; prior
+cumulative files are not retained or reparsed. Before it initializes or mutates
+the destination store, refresh validates the snapshot envelope and
+namespace, canonical JSON and content-derived identities, the complete
+foreign-key graph, every embedded report and its evidence rows, and observation
+provenance. Publication selects the producer relationship graph and refresh
+looks up incoming primary keys through deterministic rendered-byte-budgeted
+query batches, so neither operation loads unrelated tables or exceeds the Dolt
+process-argument budget as evidence accumulates. New rows use strict inserts
+after explicit idempotency and immutable-conflict checks, and the complete merge
+is atomic. Independent producer
+observations therefore coexist, exact synchronization repeats do nothing, and
+conflicts are reported.
+Neither endpoint is inspected without `--publish` or `--refresh`; future network
+transports must remain behind those same explicit switches.
+
+The root command and every subcommand provide side-effect-free `--help` with
+arguments, defaults, examples, and exit behavior. Successful commands and help
+exit 0. Invalid arguments, reports, configuration, store state, or exchange data
+exit 2. Text and JSON formats are deterministic for the same stored facts; JSON
+object keys and observation arrays use stable ordering.
+
+`test_backend` remains offline and mutation-free: it never creates or reads the
+store, inspects Git, or accesses a network. Imports and every CLI `--help` path
+are likewise side-effect-free. Database access begins only with an explicit
+persistence/query operation, and network access only with explicit publish or
+refresh behavior. Confidence policies, ranked verification levels, autotuning,
+real JIT adapters, manual assembly/sanitizer levels, and CI integration remain
+future work.
 
 ## Development
 

@@ -28,6 +28,7 @@ Issues = "https://github.com/patrickk1998/strideweave/issues"
 Repository = "https://github.com/patrickk1998/strideweave.git"
 
 [project.scripts]
+strideweave-kernel-status = "strideweave.verification.status_cli:main"
 strideweave-verify-report = "strideweave.verification.cli:main"
 
 [dependency-groups]

@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 
 #include "_cpu_operation.hpp"
 
@@ -21,7 +22,19 @@ struct CpuKernelMetadata {
 };
 
 void register_cpu_native_operation(const CpuKernelMetadata& metadata,
+                                   const char* owning_source,
                                    CpuOperationFactory operation_factory);
+
+inline void register_cpu_native_operation(const CpuKernelMetadata& metadata,
+                                          CpuOperationFactory operation_factory) {
+#ifdef STRIDEWEAVE_KERNEL_SOURCE
+    constexpr const char* owning_source = STRIDEWEAVE_KERNEL_SOURCE;
+#else
+    constexpr const char* owning_source = nullptr;
+#endif
+    register_cpu_native_operation(metadata, owning_source,
+                                  std::move(operation_factory));
+}
 void register_python_cpu_operation(const char* operation_name,
                                    const char* operation_module_name,
                                    const char* operation_type_name);

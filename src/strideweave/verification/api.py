@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .classification import require_native_verification_api
 from .model import VerificationReport
+from .reporting import make_verification_report
 from .stage_one import run_stage_one
 from .stage_two import run_stage_two
 
@@ -22,7 +23,7 @@ def test_backend(output: str | PathLike[str] | None = None) -> VerificationRepor
 
     Args:
         output: Optional filesystem path that receives deterministic, versioned
-            JSONL evidence for every Stage One and Stage Two attempt.
+            provenance-complete JSONL report for all Stage One and Stage Two attempts.
 
     Returns:
         Immutable report containing the combined local evidence records.
@@ -36,7 +37,9 @@ def test_backend(output: str | PathLike[str] | None = None) -> VerificationRepor
     require_native_verification_api()
     stage_one = run_stage_one()
     stage_two = run_stage_two(stage_one)
-    report = VerificationReport((*stage_one.report.records, *stage_two.records))
+    report = make_verification_report(
+        (*stage_one.report.records, *stage_two.records), stage_one.certificates
+    )
     if output is not None:
         Path(output).write_text(report.to_jsonl(), encoding="utf-8")
     return report

@@ -1,11 +1,19 @@
-# Staged Kernel Correctness Taxonomy
+# Staged Kernel Correctness And Evidence Taxonomy
 
-Version: v0.1 (database-independent PR 1 foundation)
+Version: v0.2 (raw-evidence persistence contract)
 
-This document defines the correctness boundary used by StrideWeave's staged
-kernel verification. It covers local evidence and certificates only. CI status,
-Dolt persistence, toolchain identity, transitive closure hashes, and autotuning
-records are deliberately deferred.
+This document defines the correctness and persistence boundary used by
+StrideWeave's staged kernel verification. `test_backend` remains an offline,
+deterministic correctness runner: it does not open a database, inspect source
+control, publish, or mutate verification status. Recording a completed report is
+a separate explicit operation.
+
+The persistence layer stores raw, provenance-complete facts. It does not assign
+confidence, rank evidence classes, choose a preferred producer, or collapse
+contradictory observations. Bit-exact and tolerance-based evidence are distinct
+test classes, not rungs in a quality ladder. A future confidence policy may
+interpret the raw facts, but its version and conclusions are outside this
+schema and this implementation.
 
 ## 1. Encoded-input boundary
 
@@ -77,17 +85,32 @@ envelope recorded on its evidence.
 Absolute error remains authoritative under cancellation; relative-to-result
 error alone is never used.
 
-## 5. Evidence and certificates
+## 5. Evidence, provenance, and certificates
 
-Each attempted case emits one versioned JSON object containing stage, class,
-explicit operation, kernel and variant, the exact classified plan when applicable, dtypes, shapes,
-accumulator, contraction length, seed and case ID, tolerances, deviations,
-mismatch count, outcome, diagnostic, and input hashes. This unmerged v1 format
-adds the explicit operation field without a schema-version bump; released
-schemas will receive normal versioned migration treatment. JSON uses sorted keys
-and standard finite values only. A certificate is issued only when every required
-class for every active plan of its kernel/variant has passed and no required
-record failed, blocked, errored, or remained deferred.
+Each attempted case emits one immutable evidence object containing stage, class,
+explicit operation, kernel and variant, the exact classified plan when
+applicable, dtypes, shapes, accumulator, contraction length, seed and case ID,
+tolerance-policy identity, deviations, mismatch count, outcome, diagnostic, and
+input-payload hashes. JSON uses sorted keys and standard finite values only. A
+certificate is issued only when every required class for every active plan of
+its kernel/variant has passed and no required record failed, blocked, errored,
+or remained deferred.
+
+The provenance-complete report replaces the prototype v1 evidence-only wire
+format directly; v1 files are rejected rather than migrated. One strict header
+binds the report schema, native manifest, complete required-coverage set,
+verification specification, execution target, optional explicit target proxy,
+toolchain identities, compilation receipts, tolerance policies, and oracle
+references. Every case refers to those header objects by content digest. Every
+Stage Two case also records the exact Stage One certificate digest it consumed.
+The report is self-contained: a recorder never consults a different installed
+build or changed verifier to reconstruct missing provenance.
+
+Canonical reports exclude wall-clock timestamps, database state, producer
+identity, publication state, source-control commit, and artifact location. Those
+facts belong to the observation envelope added during explicit recording. This
+keeps repeat execution deterministic and ensures that commit-only movement does
+not alter compilation identity.
 
 Prepared case metadata is retained when a recoverable public execution
 `RuntimeError` or `ValueError` occurs: the error record still contains operation,
@@ -128,9 +151,169 @@ output's sum of term magnitudes. It may execute a `reduce_sum` or `matmul` case 
 when the matching Stage One oracle certificate is present; missing certification
 produces deterministic blocked evidence and no target execution.
 
+Report validation treats a complete embedded Stage One evidence set as the
+independent source for its certificate. It derives the kernel and variant,
+required class union, per-capability-plan class coverage, and evidence digest,
+then requires the reconstructed certificate and every Stage Two reference to
+match exactly. This catches stale construction, wrong record selection, and
+ordinary implementation wiring mistakes; it is not a signature, an
+authenticity boundary, or a producer-trust protocol. A filtered report may
+retain a consumed certificate while carrying no Stage One rows, or only a class-
+or plan-filtered subset. Such a view validates the available coverage and keeps
+the already validated source certificate, but necessarily cannot recompute the
+digest of omitted evidence.
+
 The local `test_backend(output=None)` entry point reruns both stages and may
-write their combined deterministic JSONL evidence. PR 1 deliberately provides
-no CI integration, Dolt persistence, closure or toolchain hashing, status
-aggregation, or autotune cache; those facilities belong to PR 2. Hypothesis
-generation, empirical tolerance calibration, and quantizer validation are also
-outside the v0 verifier.
+write their combined deterministic report. It remains offline and mutation-free
+regardless of whether a local evidence store exists. Hypothesis generation,
+empirical tolerance calibration, and quantizer validation remain outside the
+verifier.
+
+## 7. Compilation receipts and build identity
+
+A compilation receipt is a framework-neutral, immutable description of one
+kernel build. Its identity covers:
+
+- stable kernel ID, variant, and public operation;
+- provider and receipt-schema identities;
+- exact execution target and toolchain descriptors;
+- per-source compiled-object digest and compilation-invocation digest;
+- one ordered source closure containing the operation-owned source, every
+  transitive included header, generated source or build input, relevant
+  definition, and flag; and
+- provider-specific framework and specialization metadata, which are empty for
+  the current C++/CMake provider.
+
+Closure inputs are named by stable project-relative or provider-defined URIs and
+content digests. The C++ provider requests the compiler's complete dependency
+set, including project, generated, external-user, SDK, standard-library, and
+compiler headers. Build-tree inputs use build-relative provider URIs; inputs
+outside the project and build trees use path-free content-addressed C++ provider
+URIs, so installation prefixes and private local paths do not enter reports. A
+source or transitive-header change therefore changes only the closures containing
+it; a flag or toolchain change changes the corresponding build identity; a Git
+commit change alone does not. The shared extension digest is retained at the
+manifest/report boundary as artifact provenance but is not the per-kernel
+invalidation key, because unrelated operation kernels share that extension.
+
+The Generic oracle reference begins from a reviewed set of execution,
+comparison, payload, and Stage One Python roots and derives their complete local
+static-import closure. Shared implementation modules such as Generic scalar
+helpers, operation policy, operation capabilities, and alignment helpers are
+therefore identity inputs without relying on an ad hoc leaf-file list. External
+Python distributions remain part of the declared runtime/toolchain environment,
+not copied into this source closure.
+
+Only native C++ FP32 kernel receipts are generated now. The same receipt can
+later describe CuTe DSL, Triton, or TileLang JIT compilation by naming a
+different provider, recording generated sources and runtime compiler inputs in
+the closure, and populating framework/specialization metadata. No JIT adapter or
+dependency on those frameworks is part of the current scope.
+
+The current C++ provider is narrower than the framework-neutral receipt model.
+It supports CMake compiler IDs `GNU`, `Clang`, and `AppleClang` when the compiler
+is invoked in GNU-compatible driver mode and accepts `-M`, `--version`, and
+`-dumpmachine`. It also requires a Makefile- or Ninja-family CMake generator
+that actually writes `compile_commands.json`. The MSVC driver and Visual Studio
+generators are therefore unsupported for source and editable builds in this
+version; adding their different dependency-discovery and compiler-identity
+protocol is deferred to a future provider. A supported prebuilt wheel carries
+the generated manifest, so installing that wheel does not exercise this
+provider and leaves `test_backend` and explicit local status-store operations
+available on the wheel's supported platforms.
+
+## 8. Immutable persistence schema
+
+The checked-in MySQL-compatible Dolt migration at
+`src/strideweave/verification/store/migrations/0001_raw_evidence.sql` is the
+normative storage shape. Canonical JSON stored in that schema is validated
+before insertion and hashed with SHA-256; every 64-character primary key is the
+digest of the complete canonical fact represented by its row.
+
+The tables separate target descriptors and explicit proxy statements,
+toolchains, source closures and ordered closure inputs, kernel builds,
+verification specifications and their requirements, tolerance policies, oracle
+references, deterministic runs, per-case evidence, and producer observations.
+A proxy always names both the target that actually executed and the target it
+represents. It is displayed as a fact and never silently treated as direct
+hardware evidence.
+
+Runs and evidence contain only report facts. An observation links one evidence
+row to producer identity, optional source commit, recording time, and optional
+artifact locator/digest. Observation identity is derived from producer,
+evidence, source commit, and artifact identity rather than recording time, so
+recording the same report twice is idempotent; genuinely different evidence or
+observation provenance remains distinct. Conflicting outcomes coexist because
+neither a semantic requirement nor a producer name is a mutable unique key.
+
+The schema uses no auto-increment identity and no mutable "current" status row.
+Independent contributors can insert content-addressed facts and producer-scoped
+observations on separate internal branches. Identical rows converge by identity;
+different rows remain available for factual queries. Application code inserts a
+complete report in one transaction and never updates or deletes evidence facts.
+
+## 9. Local-store lifecycle
+
+The evidence database is separate from the source repository, its Git history,
+and Beads. The default location is the platform application-data directory under
+StrideWeave's stable project identity; `STRIDEWEAVE_STATUS_HOME` is the explicit
+test and advanced-user override. Importing StrideWeave, asking any root command
+or subcommand for `--help`, and running `test_backend` do not locate, create, or
+migrate a store.
+
+The first command that needs persistence creates the local store and applies the
+ordered checked-in migrations in one transaction. `schema_migrations` records
+the version, filename, checksum, and application time. Startup validates every
+applied checksum and refuses unknown, missing, reordered, or modified migration
+history. It also refuses a location inside a Beads database. Repeated
+initialization and ingestion are idempotent, and a failed migration or report
+recording leaves no partial facts.
+
+The storage adapter is internal and backend-neutral. Its ordinary vocabulary is
+"verification store"; Dolt processes, repositories, branches, and remotes are
+an implementation detail. A supported local Dolt executable is invoked through
+one argument-safe adapter with explicit transactions. No long-running server,
+DoltHub account, central service, network, or source-tree database is required.
+
+## 10. Factual queries and publication
+
+`status` is an observation inventory: it reports matching runs, classes,
+outcomes, deviations, tolerances, producers, artifacts, direct/proxy target
+facts, and exact identities. It does not resolve contradictions by recency.
+`stale` compares recorded identities with the currently installed manifest and
+explains differences independently for source closure inputs, toolchain,
+target, verification specification, tolerance policy, and oracle. `todo` is the
+deterministically sorted set difference between current manifest requirements
+and matching recorded evidence. It is unranked and makes no scarce-hardware or
+risk-priority claim. All three are offline and read-only.
+
+Optional sharing is expressed through backend-neutral `read_source` and
+`publish_destination` configuration. Publication uses internal contributor
+namespaces derived from an explicit producer identity, preserves append-only
+observations, and surfaces conflicts. Each namespace holds one atomically
+replaced current content-addressed snapshot. Publication selects only that
+producer's relationship graph in SQL; refresh reads only current snapshots and
+looks up only incoming primary keys in the destination, so neither side scans
+unrelated or historical evidence. Refresh validates the contributor
+namespace and snapshot digest, canonical encodings and their content identities,
+the complete relationship graph, embedded reports and evidence, and observation
+provenance before initializing or changing the destination. Exact rows are
+idempotent by explicit comparison; new rows use strict inserts in one atomic
+transaction. Only an explicit `record --publish` or `status --refresh` may use
+the network. Users never need database init, clone, branch, remote, pull, or push
+commands, and no provider such as DoltHub, GitHub, or a central server is
+hard-coded.
+
+## 11. Explicitly deferred scope
+
+The following are not represented as implemented behavior or schema tables:
+
+- a confidence lattice, evidence ranking, semantic prioritization, or manual
+  verification levels;
+- autotuning measurements or caches;
+- actual CuTe DSL, Triton, or TileLang adapters;
+- assembly inspection or sanitizer evidence levels; and
+- CI recording, publication, or status integration.
+
+Those features require later versioned policy or schema work. Raw evidence must
+remain usable without adopting any of them.

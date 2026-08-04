@@ -49,6 +49,7 @@ from .payloads import (
     exact_structural_payload,
     wide_exponent_float32_payload,
 )
+from .reporting import make_verification_report
 
 ResultTransform = Callable[[str, tuple[float | int, ...]], tuple[float | int, ...]]
 Payload = EncodedFloat32Payload | EncodedInt32Payload | EncodedBoolPayload
@@ -1182,4 +1183,7 @@ def run_stage_one(result_transform: ResultTransform | None = None) -> StageOneRe
             )
         except ValueError:
             pass
-    return StageOneResult(VerificationReport(tuple(records)), tuple(certificates))
+    certificate_tuple = tuple(certificates)
+    return StageOneResult(
+        make_verification_report(tuple(records), certificate_tuple), certificate_tuple
+    )

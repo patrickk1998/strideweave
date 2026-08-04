@@ -25,6 +25,7 @@ from .model import (
     VerificationStage,
 )
 from .payloads import EncodedFloat32Payload
+from .reporting import make_verification_report
 from .stage_one import (
     StageOneResult,
     _case,
@@ -414,4 +415,4 @@ def run_stage_two(stage_one: StageOneResult) -> VerificationReport:
             continue
         for case in cases_by_operation[operation]:
             records.append(_target_case(kernel, case))
-    return VerificationReport(tuple(records))
+    return make_verification_report(tuple(records), stage_one.certificates)
