@@ -1,7 +1,7 @@
 # Contributing
 
 StrideWeave is an early-stage research project. Before proposing a change, read
-`README.md` for the current architecture, `INVARIANTS.md` for cross-cutting design
+`llms.md` for the current architecture, `INVARIANTS.md` for cross-cutting design
 constraints, and `AGENTS.md` for repository-specific engineering and documentation
 conventions.
 
@@ -41,7 +41,7 @@ When a change adds, removes, or materially changes a cross-cutting invariant, up
 implementation, enforcement type, and stable evidence locations so authors and coding
 agents can apply it before code is generated.
 
-Changes to public behavior or architecture should update `README.md`. Public
+Changes to public behavior or architecture should update `llms.md`. Public
 Python APIs must follow the docstring contract documented in `AGENTS.md`.
 
 ## Pull Requests
