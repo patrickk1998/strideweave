@@ -1,7 +1,5 @@
 # StrideWeave
 
-[![CI](https://github.com/patrickk1998/strideweave/actions/workflows/ci.yml/badge.svg)](https://github.com/patrickk1998/strideweave/actions/workflows/ci.yml)
-
 StrideWeave is a research tensor and autograd framework built around hierarchical,
 CuTe-style layouts. A tensor combines a carrier, a physical offset, and a
 layout. A carrier owns or references storage and dispatches the operations it
