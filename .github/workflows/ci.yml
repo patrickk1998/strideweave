@@ -44,8 +44,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group dev
 
+      # The real-Dolt suites run in the dolt-integration job, which is the one
+      # place that installs the runtime and starts a server. Only tests that
+      # resolve a session-server fixture, or that start servers of their own,
+      # carry those markers, so the store's pure helper, in-memory-double,
+      # stand-in-runtime, and path-default tests still run here — as does all
+      # report construction, binding, and provenance reconciliation.
       - name: Run tests
-        run: uv run pytest tests
+        run: >-
+          uv run pytest tests
+          -m "not dolt_integration and not dolt_lifecycle"
 
       - name: Check formatting
         run: uv run ruff format --check .
@@ -66,6 +74,50 @@ jobs:
 
       - name: Build distributions
         run: uv build
+
+  dolt-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DOLT_VERSION: "2.2.3"
+      DOLT_SHA256: >-
+        ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          save-cache: false
+          python-version: "3.12"
+
+      - name: Install the pinned Dolt runtime
+        run: |
+          set -euo pipefail
+          archive="dolt-linux-amd64.tar.gz"
+          curl -fsSL --retry 3 \
+            "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/${archive}" \
+            -o "$archive"
+          echo "${DOLT_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive"
+          sudo install dolt-linux-amd64/bin/dolt /usr/local/bin/dolt
+          dolt version
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      # dolt_integration shares one managed server and asserts that exactly one
+      # dolt sql-server runs and that no dolt sql subprocess is launched, so a
+      # lifecycle regression fails here. dolt_lifecycle is the manager's own
+      # test and deliberately starts, and may concurrently run, several
+      # independently owned servers.
+      - name: Run the real-Dolt suites
+        run: >-
+          uv run pytest tests
+          -m "dolt_integration or dolt_lifecycle"
 
   native-strict-warnings:
     runs-on: ubuntu-latest
@@ -109,6 +161,16 @@ jobs:
       - name: Build sanitizer-instrumented extensions
         run: uv sync --frozen --group dev --reinstall-package strideweave
 
+      # Sanitizers instrument StrideWeave's own extension modules. The real-Dolt
+      # suites are deselected because their work happens inside an
+      # uninstrumented external Dolt process, so running them here would cost
+      # minutes and prove nothing about native StrideWeave code. Nothing native
+      # leaves with them: tests/conftest.py makes every binding that reaches
+      # sw.test_backend, native kernel metadata, the installed compilation
+      # manifest, or report binding refuse to run inside a marked item, so those
+      # suites persist pure-Python evidence and every test that does execute
+      # native code — Stage One, report binding, certificate reconstruction,
+      # provenance reconciliation, native metadata, CPU kernels — stays here.
       - name: Run tests with AddressSanitizer and UndefinedBehaviorSanitizer
         run: |
           asan_runtime="$(gcc -print-file-name=libasan.so)"
@@ -118,4 +180,5 @@ jobs:
             PYTHONUNBUFFERED="1" \
             ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:halt_on_error=1:symbolize=1" \
             UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
-            .venv/bin/python -m pytest --capture=no --maxfail=1 tests
+            .venv/bin/python -m pytest --capture=no --maxfail=1 tests \
+            -m "not dolt_integration and not dolt_lifecycle"
