@@ -10,7 +10,12 @@ from types import MappingProxyType
 
 from ..api import test_backend
 from ..model import VerificationReport
-from .base import EvidenceStore, SQLStatement, VerificationStoreError
+from .base import (
+    EvidenceStore,
+    SQLStatement,
+    VerificationStoreError,
+    is_diagnostic_closure_input,
+)
 from .recording import _report_manifest
 
 
@@ -272,14 +277,18 @@ def _closure_details(
 ) -> tuple[str, ...]:
     stored_rows = store.query(
         SQLStatement(
-            "SELECT k.kernel_id, k.variant, i.input_uri, i.content_digest "
-            "FROM run_kernel_builds rb "
+            "SELECT k.kernel_id, k.variant, i.input_kind, i.input_uri, "
+            "i.content_digest FROM run_kernel_builds rb "
             "JOIN kernel_builds k ON k.kernel_build_id = rb.kernel_build_id "
             "JOIN source_closure_inputs i ON i.closure_id = k.closure_id "
             "WHERE rb.run_id = ? ORDER BY k.kernel_id, k.variant, i.input_uri",
             (run_id,),
         )
     )
+    # Both sides are narrowed by the same rule. A store an earlier version
+    # wrote still holds external members, and comparing those against a current
+    # manifest that no longer offers them would report every unchanged report
+    # as stale.
     stored = {
         (
             _string(row, "kernel_id"),
@@ -287,6 +296,7 @@ def _closure_details(
             _string(row, "input_uri"),
         ): _string(row, "content_digest")
         for row in stored_rows
+        if is_diagnostic_closure_input(row.get("input_kind"))
     }
     manifest = _report_manifest(current_report)
     current = {
@@ -297,6 +307,7 @@ def _closure_details(
         ): item.content_digest
         for receipt in manifest.receipts
         for item in receipt.inputs
+        if is_diagnostic_closure_input(item.input_kind)
     }
     details = []
     for key in sorted(stored.keys() | current.keys()):

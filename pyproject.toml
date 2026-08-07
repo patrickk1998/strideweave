@@ -12,7 +12,14 @@ requires-python = ">=3.12"
 # NumPy supplies the reference binary32 mechanics for Generic Float32 storage
 # and arithmetic. It is imported lazily, on first concrete Float32 use, so a
 # CPU-only or Int32-only program never loads it.
-dependencies = ["numpy>=1.26"]
+#
+# PyMySQL is the pure-Python parameterized client the verification store uses to
+# talk to its internally managed Dolt server. It is imported lazily, on first
+# store use, so importing StrideWeave or running a kernel never loads it.
+dependencies = [
+    "numpy>=1.26",
+    "pymysql>=1.1",
+]
 
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -39,6 +46,7 @@ dev = [
     "pytest>=9.0.2",
     "ruff>=0.14.10",
     "torch~=2.6.0",
+    "types-pymysql>=1.1",
 ]
 
 [build-system]
@@ -74,6 +82,11 @@ known-first-party = ["strideweave"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = "--durations=10"
+markers = [
+    "dolt_integration: exercises a real local Dolt store on the shared session server (applied from fixture use)",
+    "dolt_lifecycle: starts and stops its own managed Dolt servers",
+]
 
 [tool.uv]
 required-version = ">=0.8.5"

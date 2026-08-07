@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+from evidence_doubles import RecordingEvidenceStore
 
-import strideweave as sw
+import strideweave.verification.status_cli as status_cli_module
 import strideweave.verification.store.recording as recording_module
 from strideweave.verification import (
     EvidenceRecord,
@@ -25,15 +25,7 @@ from strideweave.verification.store import (
     record_report,
 )
 
-
-def _require_dolt() -> None:
-    if shutil.which("dolt") is None:
-        pytest.skip("local Dolt runtime is not installed")
-
-
-@pytest.fixture(scope="module")
-def backend_report() -> VerificationReport:
-    return sw.test_backend()
+StorePathFactory = Callable[..., Path]
 
 
 def _count(store: DoltEvidenceStore, table: str) -> int:
@@ -43,12 +35,14 @@ def _count(store: DoltEvidenceStore, table: str) -> int:
     return value
 
 
-def test_record_persists_every_raw_fact_and_observation(
-    tmp_path: Path, backend_report: VerificationReport
+def test_record_binds_this_build_and_asks_for_one_atomic_transaction(
+    backend_report: VerificationReport,
 ) -> None:
-    _require_dolt()
-    store = DoltEvidenceStore(tmp_path / "evidence-store")
-    artifact_digest = "a" * 64
+    # Constructing the report, rebinding it against the installed build, and
+    # deriving its facts is the native half of recording, so it is proved here
+    # rather than behind a marker the sanitizer job deselects. What the store
+    # then does with those statements is proved against real Dolt.
+    store = RecordingEvidenceStore()
 
     result = record_report(
         backend_report,
@@ -56,86 +50,20 @@ def test_record_persists_every_raw_fact_and_observation(
         producer_id="test-runner",
         source_commit="commit-123",
         artifact_locator="artifact://verification/report.jsonl",
-        artifact_digest=artifact_digest,
+        artifact_digest="a" * 64,
     )
 
     assert result.evidence_count == len(backend_report.records)
-    assert _count(store, "verification_runs") == 1
-    assert _count(store, "evidence") == len(backend_report.records)
-    assert _count(store, "observations") == len(backend_report.records)
-    assert _count(store, "kernel_builds") > 0
-    assert _count(store, "source_closure_inputs") > 0
-    assert _count(store, "tolerance_policies") > 0
-    assert _count(store, "oracle_references") > 0
-    metadata = store.query(
-        SQLStatement(
-            "SELECT o.producer_id, o.source_commit, o.artifact_locator, "
-            "o.artifact_digest, e.outcome, e.deviations_json, e.plan_json, "
-            "t.definition_json AS tolerance_json, k.receipt_json, "
-            "c.descriptor_json AS closure_json, b.descriptor_json AS toolchain_json, "
-            "v.descriptor_json AS target_json "
-            "FROM observations o JOIN evidence e ON e.evidence_id = o.evidence_id "
-            "JOIN tolerance_policies t ON t.tolerance_policy_id = e.tolerance_policy_id "
-            "LEFT JOIN kernel_builds k ON k.kernel_build_id = e.kernel_build_id "
-            "LEFT JOIN source_closures c ON c.closure_id = k.closure_id "
-            "LEFT JOIN build_toolchains b ON b.toolchain_id = k.toolchain_id "
-            "LEFT JOIN verification_targets v ON v.target_id = k.target_id "
-            "WHERE e.plan_json IS NOT NULL AND k.kernel_build_id IS NOT NULL LIMIT 1"
-        )
-    )[0]
-    assert metadata["producer_id"] == "test-runner"
-    assert metadata["source_commit"] == "commit-123"
-    assert metadata["artifact_locator"] == "artifact://verification/report.jsonl"
-    assert metadata["artifact_digest"] == artifact_digest
-    assert metadata["outcome"] in {"passed", "deferred"}
-    assert metadata["deviations_json"]
-    assert metadata["plan_json"]
-    assert metadata["tolerance_json"]
-    assert metadata["receipt_json"]
-    assert metadata["closure_json"]
-    assert metadata["toolchain_json"]
-    assert metadata["target_json"]
-    deferred_count = store.query(
-        SQLStatement(
-            "SELECT COUNT(*) AS count FROM evidence WHERE outcome = 'deferred'"
-        )
-    )[0]["count"]
-    assert isinstance(deferred_count, int)
-    assert deferred_count > 0
-
-
-def test_duplicate_ingestion_is_idempotent_and_distinct_producers_coexist(
-    tmp_path: Path, backend_report: VerificationReport
-) -> None:
-    _require_dolt()
-    store = DoltEvidenceStore(tmp_path / "evidence-store")
-    first = record_report(backend_report, store, producer_id="producer-a")
-    repeated = record_report(backend_report, store, producer_id="producer-a")
-
-    assert repeated == first
-    assert _count(store, "verification_runs") == 1
-    assert _count(store, "evidence") == len(backend_report.records)
-    assert _count(store, "observations") == len(backend_report.records)
-
-    record_report(
-        backend_report,
-        store,
-        producer_id="producer-b",
-        source_commit="different-observation",
-    )
-
-    assert _count(store, "verification_runs") == 1
-    assert _count(store, "evidence") == len(backend_report.records)
-    assert _count(store, "observations") == 2 * len(backend_report.records)
-    producers = store.query(
-        SQLStatement(
-            "SELECT DISTINCT producer_id FROM observations ORDER BY producer_id"
-        )
-    )
-    assert tuple(row["producer_id"] for row in producers) == (
-        "producer-a",
-        "producer-b",
-    )
+    assert result.observation_count == len(backend_report.records)
+    assert len(store.transactions) == 1
+    tables = store.tables()
+    assert tables["verification_runs"] == 1
+    assert tables["evidence"] == len(backend_report.records)
+    assert tables["observations"] == len(backend_report.records)
+    assert tables["kernel_builds"] > 0
+    assert tables["source_closure_inputs"] > 0
+    assert tables["tolerance_policies"] > 0
+    assert tables["oracle_references"] > 0
 
 
 def test_stale_provenance_fails_before_the_store_is_created(
@@ -143,8 +71,10 @@ def test_stale_provenance_fails_before_the_store_is_created(
     backend_report: VerificationReport,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _require_dolt()
-    path = tmp_path / "evidence-store"
+    # Rebinding the report against the installed build is native work that
+    # rejects this report before any store, and therefore any Dolt runtime, is
+    # reached. The check belongs where native code is instrumented.
+    path = tmp_path / "verification-store"
     original_bind = recording_module.bind_report
 
     def stale_bind(
@@ -212,7 +142,9 @@ def test_inconsistent_certificate_fails_before_the_store_is_created(
         + "\n",
         encoding="utf-8",
     )
-    store_path = tmp_path / "evidence-store"
+    # The certificate set is reconstructed from the embedded evidence before
+    # any store is opened, so this rejection needs no Dolt runtime.
+    store_path = tmp_path / "verification-store"
 
     status = status_main(
         [
@@ -231,15 +163,24 @@ def test_inconsistent_certificate_fails_before_the_store_is_created(
     assert not store_path.exists()
 
 
-def test_record_cli_persists_locally_without_publication(
+def test_record_cli_validates_and_persists_locally_without_publication(
     tmp_path: Path,
     backend_report: VerificationReport,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _require_dolt()
+    # The command reads a real report and validates it against the installed
+    # build, which is the native work this covers. The store it writes to is
+    # substituted so that work stays in the instrumented suite.
     report_path = tmp_path / "report.jsonl"
-    store_path = tmp_path / "evidence-store"
     backend_report.write(report_path)
+    stores: list[RecordingEvidenceStore] = []
+
+    def make_store(path: str | None) -> RecordingEvidenceStore:
+        stores.append(RecordingEvidenceStore(path))
+        return stores[-1]
+
+    monkeypatch.setattr(status_cli_module, "DoltEvidenceStore", make_store)
 
     status = status_main(
         [
@@ -249,11 +190,110 @@ def test_record_cli_persists_locally_without_publication(
             "--producer",
             "cli-test",
             "--store",
-            str(store_path),
+            str(tmp_path / "evidence"),
             "--json",
         ]
     )
 
     assert status == 0
-    assert '"evidence_count":' in capsys.readouterr().out
-    assert _count(DoltEvidenceStore(store_path), "verification_runs") == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["evidence_count"] == len(backend_report.records)
+    assert "publication" not in payload
+    assert [store.tables()["verification_runs"] for store in stores] == [1]
+
+
+def test_record_persists_every_raw_fact_and_observation(
+    evidence_store_path: StorePathFactory, synthetic_report: VerificationReport
+) -> None:
+    store = DoltEvidenceStore(evidence_store_path())
+    artifact_digest = "a" * 64
+
+    result = recording_module._record_validated_report(
+        synthetic_report,
+        store,
+        producer_id="test-runner",
+        source_commit="commit-123",
+        artifact_locator="artifact://verification/report.jsonl",
+        artifact_digest=artifact_digest,
+    )
+
+    assert result.evidence_count == len(synthetic_report.records)
+    assert _count(store, "verification_runs") == 1
+    assert _count(store, "evidence") == len(synthetic_report.records)
+    assert _count(store, "observations") == len(synthetic_report.records)
+    assert _count(store, "kernel_builds") > 0
+    assert _count(store, "source_closure_inputs") > 0
+    assert _count(store, "tolerance_policies") > 0
+    assert _count(store, "oracle_references") > 0
+    metadata = store.query(
+        SQLStatement(
+            "SELECT o.producer_id, o.source_commit, o.artifact_locator, "
+            "o.artifact_digest, e.outcome, e.deviations_json, e.plan_json, "
+            "t.definition_json AS tolerance_json, k.receipt_json, "
+            "c.descriptor_json AS closure_json, b.descriptor_json AS toolchain_json, "
+            "v.descriptor_json AS target_json "
+            "FROM observations o JOIN evidence e ON e.evidence_id = o.evidence_id "
+            "JOIN tolerance_policies t ON t.tolerance_policy_id = e.tolerance_policy_id "
+            "LEFT JOIN kernel_builds k ON k.kernel_build_id = e.kernel_build_id "
+            "LEFT JOIN source_closures c ON c.closure_id = k.closure_id "
+            "LEFT JOIN build_toolchains b ON b.toolchain_id = k.toolchain_id "
+            "LEFT JOIN verification_targets v ON v.target_id = k.target_id "
+            "WHERE e.plan_json IS NOT NULL AND k.kernel_build_id IS NOT NULL LIMIT 1"
+        )
+    )[0]
+    assert metadata["producer_id"] == "test-runner"
+    assert metadata["source_commit"] == "commit-123"
+    assert metadata["artifact_locator"] == "artifact://verification/report.jsonl"
+    assert metadata["artifact_digest"] == artifact_digest
+    assert metadata["outcome"] in {"passed", "deferred"}
+    assert metadata["deviations_json"]
+    assert metadata["plan_json"]
+    assert metadata["tolerance_json"]
+    assert metadata["receipt_json"]
+    assert metadata["closure_json"]
+    assert metadata["toolchain_json"]
+    assert metadata["target_json"]
+    deferred_count = store.query(
+        SQLStatement(
+            "SELECT COUNT(*) AS count FROM evidence WHERE outcome = 'deferred'"
+        )
+    )[0]["count"]
+    assert isinstance(deferred_count, int)
+    assert deferred_count > 0
+
+
+def test_duplicate_ingestion_is_idempotent_and_distinct_producers_coexist(
+    evidence_store_path: StorePathFactory, synthetic_report: VerificationReport
+) -> None:
+    store = DoltEvidenceStore(evidence_store_path())
+    first = recording_module._record_validated_report(
+        synthetic_report, store, producer_id="producer-a"
+    )
+    repeated = recording_module._record_validated_report(
+        synthetic_report, store, producer_id="producer-a"
+    )
+
+    assert repeated == first
+    assert _count(store, "verification_runs") == 1
+    assert _count(store, "evidence") == len(synthetic_report.records)
+    assert _count(store, "observations") == len(synthetic_report.records)
+
+    recording_module._record_validated_report(
+        synthetic_report,
+        store,
+        producer_id="producer-b",
+        source_commit="different-observation",
+    )
+
+    assert _count(store, "verification_runs") == 1
+    assert _count(store, "evidence") == len(synthetic_report.records)
+    assert _count(store, "observations") == 2 * len(synthetic_report.records)
+    producers = store.query(
+        SQLStatement(
+            "SELECT DISTINCT producer_id FROM observations ORDER BY producer_id"
+        )
+    )
+    assert tuple(row["producer_id"] for row in producers) == (
+        "producer-a",
+        "producer-b",
+    )

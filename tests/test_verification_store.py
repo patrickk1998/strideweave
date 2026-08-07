@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import shutil
+import subprocess
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import strideweave.verification.store.dolt as dolt_store_module
+import strideweave.verification.store.server as server_module
 from strideweave.verification.store import (
     DoltEvidenceStore,
     SQLStatement,
@@ -13,10 +16,17 @@ from strideweave.verification.store import (
     default_store_path,
 )
 
+StorePathFactory = Callable[..., Path]
 
-def _require_dolt() -> None:
-    if shutil.which("dolt") is None:
-        pytest.skip("local Dolt runtime is not installed")
+
+def _target_statement(target_id: str) -> SQLStatement:
+    return SQLStatement(
+        "INSERT INTO verification_targets "
+        "(target_id, architecture, vendor, operating_system, abi, "
+        "endianness, pointer_bits, descriptor_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (target_id, "x86_64", "test", "test", "test", "little", 64, "{}"),
+    )
 
 
 def test_default_store_path_uses_the_explicit_status_home_without_creating_it(
@@ -33,9 +43,10 @@ def test_default_store_path_uses_the_explicit_status_home_without_creating_it(
     assert not status_home.exists()
 
 
-def test_first_use_creates_and_repeated_use_validates_the_store(tmp_path: Path) -> None:
-    _require_dolt()
-    path = tmp_path / "verification-store"
+def test_first_use_creates_and_repeated_use_validates_the_store(
+    evidence_store_path: StorePathFactory,
+) -> None:
+    path = evidence_store_path()
     store = DoltEvidenceStore(path)
 
     assert not path.exists()
@@ -63,21 +74,16 @@ def test_first_use_creates_and_repeated_use_validates_the_store(tmp_path: Path) 
     } <= tables
 
 
-def test_transaction_rollback_leaves_no_partial_facts(tmp_path: Path) -> None:
-    _require_dolt()
-    store = DoltEvidenceStore(tmp_path / "verification-store")
+def test_transaction_rollback_leaves_no_partial_facts(
+    evidence_store_path: StorePathFactory,
+) -> None:
+    store = DoltEvidenceStore(evidence_store_path())
     target = "a" * 64
 
     with pytest.raises(VerificationStoreError, match="operation failed"):
         store.execute_transaction(
             (
-                SQLStatement(
-                    "INSERT INTO verification_targets "
-                    "(target_id, architecture, vendor, operating_system, abi, "
-                    "endianness, pointer_bits, descriptor_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (target, "x86_64", "test", "test", "test", "little", 64, "{}"),
-                ),
+                _target_statement(target),
                 SQLStatement("INSERT INTO table_that_does_not_exist VALUES (1)"),
             )
         )
@@ -90,9 +96,10 @@ def test_transaction_rollback_leaves_no_partial_facts(tmp_path: Path) -> None:
     assert rows == ()
 
 
-def test_sql_values_are_data_not_executable_sql(tmp_path: Path) -> None:
-    _require_dolt()
-    store = DoltEvidenceStore(tmp_path / "verification-store")
+def test_sql_values_are_data_not_executable_sql(
+    evidence_store_path: StorePathFactory,
+) -> None:
+    store = DoltEvidenceStore(evidence_store_path())
     hostile = "value'); DROP TABLE verification_targets; --\\"
     target = "b" * 64
     store.execute_transaction(
@@ -116,9 +123,10 @@ def test_sql_values_are_data_not_executable_sql(tmp_path: Path) -> None:
     assert rows[0]["architecture"] == hostile
 
 
-def test_changed_migration_checksum_is_refused(tmp_path: Path) -> None:
-    _require_dolt()
-    path = tmp_path / "verification-store"
+def test_changed_migration_checksum_is_refused(
+    evidence_store_path: StorePathFactory,
+) -> None:
+    path = evidence_store_path()
     store = DoltEvidenceStore(path)
     store.initialize()
     store.execute_transaction(
@@ -134,9 +142,10 @@ def test_changed_migration_checksum_is_refused(tmp_path: Path) -> None:
         DoltEvidenceStore(path).initialize()
 
 
-def test_unknown_migration_version_is_refused_as_schema_skew(tmp_path: Path) -> None:
-    _require_dolt()
-    path = tmp_path / "verification-store"
+def test_unknown_migration_version_is_refused_as_schema_skew(
+    evidence_store_path: StorePathFactory,
+) -> None:
+    path = evidence_store_path()
     store = DoltEvidenceStore(path)
     store.initialize()
     store.execute_transaction(
@@ -155,7 +164,6 @@ def test_unknown_migration_version_is_refused_as_schema_skew(tmp_path: Path) -> 
 
 
 def test_a_beads_workspace_path_is_refused_before_creation(tmp_path: Path) -> None:
-    _require_dolt()
     (tmp_path / ".beads").mkdir()
     path = tmp_path / "verification-store"
 
@@ -175,12 +183,127 @@ def test_a_missing_runtime_has_an_actionable_store_diagnostic(tmp_path: Path) ->
 
 
 def test_an_incompatible_runtime_has_an_actionable_store_diagnostic(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dolt_server: object
 ) -> None:
-    _require_dolt()
-    monkeypatch.setattr(dolt_store_module, "_MINIMUM_DOLT_VERSION", (999, 0, 0))
+    monkeypatch.setattr(server_module, "_MINIMUM_DOLT_VERSION", (999, 0, 0))
     store = DoltEvidenceStore(tmp_path / "verification-store")
 
     with pytest.raises(VerificationStoreError, match=r"runtime .* is incompatible"):
         store.initialize()
     assert not store.path.exists()
+
+
+def test_a_store_created_by_an_earlier_version_stays_readable_and_migratable(
+    legacy_evidence_store_path: Path, dolt_server: object
+) -> None:
+    store = DoltEvidenceStore(legacy_evidence_store_path)
+
+    store.initialize()
+    store.execute_transaction((_target_statement("c" * 64),))
+
+    versions = store.query(
+        SQLStatement("SELECT version, migration_name FROM schema_migrations")
+    )
+    assert [row["version"] for row in versions] == [1]
+    assert versions[0]["migration_name"] == "0001_raw_evidence.sql"
+    assert DoltEvidenceStore(legacy_evidence_store_path).query(
+        SQLStatement(
+            "SELECT target_id FROM verification_targets WHERE target_id = ?",
+            ("c" * 64,),
+        )
+    ) == ({"target_id": "c" * 64},)
+
+
+def test_stores_sharing_one_data_directory_stay_isolated(
+    evidence_store_path: StorePathFactory,
+) -> None:
+    first = DoltEvidenceStore(evidence_store_path("first"))
+    second = DoltEvidenceStore(evidence_store_path("second"))
+
+    first.execute_transaction((_target_statement("d" * 64),))
+    second.initialize()
+
+    assert (
+        first.query(SQLStatement("SELECT COUNT(*) AS n FROM verification_targets"))[0][
+            "n"
+        ]
+        == 1
+    )
+    assert (
+        second.query(SQLStatement("SELECT COUNT(*) AS n FROM verification_targets"))[0][
+            "n"
+        ]
+        == 0
+    )
+
+
+def test_store_operations_launch_no_dolt_sql_subprocesses(
+    evidence_store_path: StorePathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launches: list[tuple[str, ...]] = []
+    real_run = subprocess.run
+    real_popen = subprocess.Popen
+
+    def recording_run(arguments: Sequence[str], **keywords: Any) -> Any:
+        launches.append(tuple(arguments))
+        return real_run(arguments, **keywords)
+
+    def recording_popen(arguments: Sequence[str], **keywords: Any) -> Any:
+        launches.append(tuple(arguments))
+        return real_popen(arguments, **keywords)
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
+    store = DoltEvidenceStore(evidence_store_path())
+
+    store.initialize()
+    store.execute_transaction((_target_statement("e" * 64),))
+    store.query(SQLStatement("SELECT target_id FROM verification_targets"))
+    store.query(SQLStatement("SHOW TABLES"))
+
+    subcommands = [arguments[1] for arguments in launches if len(arguments) > 1]
+    assert "sql" not in subcommands
+    assert "init" not in subcommands
+    # The session server is already running and a cached runtime probe may
+    # already have run for this executable identity.
+    assert set(subcommands) <= {"version"}
+
+
+def test_every_real_dolt_test_shares_one_session_server(
+    dolt_data_directory: Path,
+    dolt_server: object,
+    live_dolt_server_count: Callable[[], int],
+) -> None:
+    assert server_module.started_server_directories() == (dolt_data_directory,)
+    assert live_dolt_server_count() == 1
+
+
+def test_repeated_statements_become_bounded_bulk_batches() -> None:
+    template = "INSERT INTO verification_targets VALUES (?)"
+    other = "INSERT INTO observations VALUES (?)"
+    statements = (
+        [SQLStatement(template, (index,)) for index in range(2500)]
+        + [SQLStatement(other, ("x",))]
+        + [SQLStatement(template, (9,))]
+        + [SQLStatement("DELETE FROM verification_targets")]
+    )
+
+    batches = dolt_store_module._batched(statements)
+
+    assert [(text, None if rows is None else len(rows)) for text, rows in batches] == [
+        ("INSERT INTO verification_targets VALUES (%s)", 1000),
+        ("INSERT INTO verification_targets VALUES (%s)", 1000),
+        ("INSERT INTO verification_targets VALUES (%s)", 500),
+        ("INSERT INTO observations VALUES (%s)", 1),
+        ("INSERT INTO verification_targets VALUES (%s)", 1),
+        ("DELETE FROM verification_targets", None),
+    ]
+
+
+def test_a_statement_placeholder_is_never_confused_with_a_format_specifier() -> None:
+    text, parameters = dolt_store_module._prepare(
+        SQLStatement("SELECT ? WHERE name LIKE '%s%'", ("value",))
+    )
+
+    assert text == "SELECT %s WHERE name LIKE '%%s%%'"
+    assert parameters == ("value",)
