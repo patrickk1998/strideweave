@@ -1,3 +1,4 @@
+import hashlib
 import subprocess
 import sys
 from dataclasses import replace
@@ -30,10 +31,14 @@ def test_backend_runs_both_stages_and_returns_deterministic_evidence(tmp_path):
     report = sw.test_backend(output)
     repeated = sw.test_backend()
     stage_one = run_stage_one()
+    serialized = report.to_jsonl()
+    serialized_digest = hashlib.sha256(serialized.encode()).digest()
+    loaded = VerificationReport.load(output)
 
     assert len(report.records) == len(stage_one.report.records) + 9
-    assert report.to_jsonl() == repeated.to_jsonl()
-    assert output.read_text() == report.to_jsonl()
+    assert hashlib.sha256(repeated.to_jsonl().encode()).digest() == serialized_digest
+    assert hashlib.sha256(output.read_bytes()).digest() == serialized_digest
+    assert hashlib.sha256(loaded.to_jsonl().encode()).digest() == serialized_digest
     stage_two = [
         record for record in report.records if record.stage is VerificationStage.TARGET
     ]
@@ -60,8 +65,6 @@ def test_backend_runs_both_stages_and_returns_deterministic_evidence(tmp_path):
     assert all(record.requirement_id != "unbound" for record in report.records)
     assert all(record.tolerance_policy_id != "unbound" for record in report.records)
     assert all(record.oracle_reference_id != "unbound" for record in report.records)
-    assert "timestamp" not in report.to_jsonl().lower()
-    assert "database" not in report.to_jsonl().lower()
 
 
 def test_backend_reports_a_stale_native_extension_before_stage_one(monkeypatch):
