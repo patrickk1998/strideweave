@@ -12,7 +12,12 @@ from typing import Any
 from ..model import KernelDescriptor, VerificationReport
 from ..provenance import CompilationManifest, parse_compilation_manifest
 from ..reporting import bind_report
-from .base import EvidenceStore, SQLStatement, VerificationStoreError
+from .base import (
+    EvidenceStore,
+    SQLStatement,
+    VerificationStoreError,
+    is_diagnostic_closure_input,
+)
 
 
 def _thaw(value: Any) -> Any:
@@ -245,7 +250,12 @@ def _compilation_statements(manifest: CompilationManifest) -> list[SQLStatement]
                     ),
                 )
             )
+            # The descriptor above already carries the complete closure, so
+            # ordinals stay those of the complete input sequence and only the
+            # diagnostic members become rows of their own.
             for ordinal, source_input in enumerate(receipt.inputs):
+                if not is_diagnostic_closure_input(source_input.input_kind):
+                    continue
                 statements.append(
                     _insert(
                         "source_closure_inputs",
@@ -634,7 +644,7 @@ def _run_and_evidence_statements(
     return run_id, report_digest, statements
 
 
-def record_report(
+def _record_validated_report(
     report: VerificationReport,
     store: EvidenceStore,
     *,
@@ -644,18 +654,16 @@ def record_report(
     artifact_digest: str | None = None,
     recorded_at: datetime | None = None,
 ) -> RecordResult:
-    """Validate and atomically record one report as immutable raw evidence.
+    """Atomically persist one report whose provenance is already validated.
 
-    Validation against the installed compilation, specification, oracle, and
-    tolerance facts completes before the store is initialized. Repeating the
-    same report and observation identity is idempotent; a different producer,
-    source commit, or artifact identity creates a coexisting observation.
+    This is the boundary between deciding that a report describes this build
+    and writing its facts. It exists so persistence can be exercised against
+    prevalidated evidence without re-running the native reconciliation that
+    :func:`record_report` performs, and it is not a public entry point:
+    reaching the store without that reconciliation is only ever correct for
+    evidence a caller has already established as current.
     """
 
-    if not isinstance(report, VerificationReport):
-        raise TypeError("report must be a VerificationReport")
-    if not isinstance(store, EvidenceStore):
-        raise TypeError("store must implement EvidenceStore")
     producer, commit, locator, artifact, timestamp = _validate_observation_provenance(
         producer_id=producer_id,
         source_commit=source_commit,
@@ -663,7 +671,6 @@ def record_report(
         artifact_digest=artifact_digest,
         recorded_at=recorded_at,
     )
-    _validate_current_report(report)
     manifest = _report_manifest(report)
 
     statements = _target_statements(manifest)
@@ -686,4 +693,38 @@ def record_report(
         report_digest=report_digest,
         evidence_count=len(report.records),
         observation_count=len(report.records),
+    )
+
+
+def record_report(
+    report: VerificationReport,
+    store: EvidenceStore,
+    *,
+    producer_id: str,
+    source_commit: str | None = None,
+    artifact_locator: str | None = None,
+    artifact_digest: str | None = None,
+    recorded_at: datetime | None = None,
+) -> RecordResult:
+    """Validate and atomically record one report as immutable raw evidence.
+
+    Validation against the installed compilation, specification, oracle, and
+    tolerance facts completes before the store is initialized. Repeating the
+    same report and observation identity is idempotent; a different producer,
+    source commit, or artifact identity creates a coexisting observation.
+    """
+
+    if not isinstance(report, VerificationReport):
+        raise TypeError("report must be a VerificationReport")
+    if not isinstance(store, EvidenceStore):
+        raise TypeError("store must implement EvidenceStore")
+    _validate_current_report(report)
+    return _record_validated_report(
+        report,
+        store,
+        producer_id=producer_id,
+        source_commit=source_commit,
+        artifact_locator=artifact_locator,
+        artifact_digest=artifact_digest,
+        recorded_at=recorded_at,
     )

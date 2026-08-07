@@ -25,8 +25,12 @@ void register_cpu_native_operation(const CpuKernelMetadata& metadata,
                                    const char* owning_source,
                                    CpuOperationFactory operation_factory);
 
-inline void register_cpu_native_operation(const CpuKernelMetadata& metadata,
-                                          CpuOperationFactory operation_factory) {
+// CMake defines STRIDEWEAVE_KERNEL_SOURCE separately for each operation source.
+// Keep this macro-expanded helper translation-unit-local: external inline linkage
+// would give it different definitions across translation units and violate the ODR.
+[[maybe_unused]] static inline void
+register_cpu_native_operation(const CpuKernelMetadata& metadata,
+                              CpuOperationFactory operation_factory) {
 #ifdef STRIDEWEAVE_KERNEL_SOURCE
     constexpr const char* owning_source = STRIDEWEAVE_KERNEL_SOURCE;
 #else

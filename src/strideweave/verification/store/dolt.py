@@ -1,25 +1,32 @@
-"""Local Dolt implementation of the verification-store boundary."""
+"""Local Dolt implementation of the verification-store boundary.
+
+Statements reach Dolt over a persistent MySQL-compatible session on the
+internally managed server rather than through one ``dolt`` process per
+statement. Each store path names one served database inside the data directory
+that holds it, so several stores under one directory share a single server.
+"""
 
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
-import shutil
-import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .base import EvidenceStore, SQLStatement, SQLValue, VerificationStoreError
+from .server import ManagedDoltServer, acquire_server, client_module, validate_runtime
+
+if TYPE_CHECKING:
+    from pymysql.connections import Connection
 
 _PROJECT_DIRECTORY = "strideweave/kernel-evidence"
-_MINIMUM_DOLT_VERSION = (1, 40, 0)
+_BULK_STATEMENT_ROWS = 1000
 
 
 def default_store_path() -> Path:
@@ -39,50 +46,64 @@ def default_store_path() -> Path:
     return base / _PROJECT_DIRECTORY
 
 
-def _sql_literal(value: SQLValue) -> str:
-    if value is None:
-        return "NULL"
-    if type(value) is bool:
-        return "TRUE" if value else "FALSE"
-    if type(value) is int:
-        return str(value)
+def _bind_value(value: SQLValue) -> object:
+    """Return one statement value in the form the client driver sends as data.
+
+    The value never becomes part of a statement's text. Timestamps are
+    normalized to naive UTC, which is how the schema stores them, and the
+    unrepresentable values the store refuses are rejected here rather than
+    silently encoded.
+    """
+
+    if value is None or type(value) is bool or type(value) is int:
+        return value
     if type(value) is float:
         if not math.isfinite(value):
             raise ValueError("verification-store SQL values must be finite")
-        return repr(value)
+        return value
     if type(value) is datetime:
         if value.tzinfo is None:
             raise ValueError("verification-store timestamps must include a timezone")
-        normalized = value.astimezone(timezone.utc).replace(tzinfo=None)
-        value = normalized.isoformat(timespec="microseconds")
-    if type(value) is str:
-        encoded = value.encode("utf-8").hex()
-        return f"CONVERT(0x{encoded} USING utf8mb4)"
-    if type(value) is bytes:
-        return f"0x{value.hex()}"
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    if type(value) is str or type(value) is bytes:
+        return value
     raise TypeError(f"unsupported verification-store SQL value {type(value).__name__}")
 
 
-def _render_statement(statement: SQLStatement) -> str:
-    pieces = statement.template.split("?")
-    if len(pieces) - 1 != len(statement.parameters):
+def _prepare(statement: SQLStatement) -> tuple[str, tuple[object, ...] | None]:
+    """Translate one internal statement into driver text and bound parameters."""
+
+    placeholders = statement.template.count("?")
+    if placeholders != len(statement.parameters):
         raise ValueError(
             "verification-store SQL placeholder count does not match values"
         )
-    rendered = [pieces[0]]
-    for value, suffix in zip(statement.parameters, pieces[1:], strict=True):
-        rendered.extend((_sql_literal(value), suffix))
-    return "".join(rendered)
-
-
-def _parse_version(output: str) -> tuple[int, int, int]:
-    for token in output.replace("-", " ").split():
-        pieces = token.lstrip("v").split(".")
-        if len(pieces) >= 3 and all(piece.isdigit() for piece in pieces[:3]):
-            return tuple(int(piece) for piece in pieces[:3])  # type: ignore[return-value]
-    raise VerificationStoreError(
-        "verification store runtime returned an unrecognized version"
+    if not statement.parameters:
+        return statement.template, None
+    text = "%s".join(
+        piece.replace("%", "%%") for piece in statement.template.split("?")
     )
+    return text, tuple(_bind_value(value) for value in statement.parameters)
+
+
+def _decode_value(value: object) -> object:
+    """Return one stored column value in the store's deterministic Python form."""
+
+    if type(value) is datetime:
+        return value.isoformat(sep=" ", timespec="microseconds")
+    if type(value) is date:
+        return value.isoformat()
+    if type(value) is bytes:
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _quoted_identifier(name: str, subject: str) -> str:
+    if not name or "`" in name or "\x00" in name:
+        raise VerificationStoreError(
+            f"verification store {subject} {name!r} is not a usable database name"
+        )
+    return f"`{name}`"
 
 
 class DoltEvidenceStore(EvidenceStore):
@@ -94,6 +115,8 @@ class DoltEvidenceStore(EvidenceStore):
         self._path = Path(path) if path is not None else default_store_path()
         self._executable = executable
         self._initialized = False
+        self._connection: Connection[Any] | None = None
+        self._session_process_id: int | None = None
 
     @property
     def path(self) -> Path:
@@ -108,7 +131,7 @@ class DoltEvidenceStore(EvidenceStore):
             return
         self._validate_location()
         self._validate_runtime()
-        self._create_repository_if_needed()
+        self._create_database_if_needed()
         self._apply_migrations()
         self._initialized = True
 
@@ -118,26 +141,56 @@ class DoltEvidenceStore(EvidenceStore):
         self.initialize()
         if not statements:
             return
-        body = "\n".join(f"{_render_statement(statement)};" for statement in statements)
-        self._run_sql(f"START TRANSACTION;\n{body}\nCOMMIT;\n")
+        connection = self._session()
+        try:
+            connection.begin()
+            with connection.cursor() as cursor:
+                for text, parameter_sets in _batched(statements):
+                    if parameter_sets is None:
+                        cursor.execute(text)
+                    elif len(parameter_sets) == 1:
+                        cursor.execute(text, parameter_sets[0])
+                    else:
+                        cursor.executemany(text, parameter_sets)
+            connection.commit()
+        except client_module().Error as error:
+            self._discard_failed_transaction(connection)
+            raise VerificationStoreError(
+                f"verification store operation failed{_diagnostic(error)}"
+            ) from error
 
     def query(self, statement: SQLStatement) -> tuple[Mapping[str, object], ...]:
         """Execute one read-only query and return immutable decoded rows."""
 
         self.initialize()
-        completed = self._run(
-            ("sql", "--result-format", "json", "--query", _render_statement(statement))
-        )
+        return self._query(statement, "query")
+
+    def _query(
+        self, statement: SQLStatement, subject: str
+    ) -> tuple[Mapping[str, object], ...]:
+        text, parameters = _prepare(statement)
+        connection = self._session()
+        client = client_module()
         try:
-            payload = json.loads(completed.stdout)
-            rows = payload.get("rows", [])
-            if type(rows) is not list or any(type(row) is not dict for row in rows):
-                raise ValueError
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            with connection.cursor(client.cursors.DictCursor) as cursor:
+                cursor.execute(text, parameters)
+                rows = cursor.fetchall()
+            # A read opens a transaction whose snapshot would otherwise hide
+            # every later write from this same session. Ending it by rollback
+            # rather than commit releases the snapshot without asking Dolt to
+            # write a working set for a query that changed nothing.
+            connection.rollback()
+        except client.Error as error:
+            self._discard_failed_transaction(connection)
             raise VerificationStoreError(
-                "verification store returned malformed query data"
+                f"verification store {subject} failed{_diagnostic(error)}"
             ) from error
-        return tuple(MappingProxyType(row) for row in rows)
+        return tuple(
+            MappingProxyType(
+                {name: _decode_value(value) for name, value in row.items()}
+            )
+            for row in rows
+        )
 
     def _validate_location(self) -> None:
         candidate = self._path.expanduser().absolute()
@@ -148,40 +201,81 @@ class DoltEvidenceStore(EvidenceStore):
                 )
 
     def _validate_runtime(self) -> None:
-        resolved = shutil.which(self._executable)
-        if resolved is None:
-            raise VerificationStoreError(
-                "verification store runtime is unavailable; install Dolt 1.40 or newer "
-                "or configure its executable path"
-            )
-        self._executable = resolved
-        completed = self._run(("version",), cwd=Path.cwd())
-        version = _parse_version(completed.stdout)
-        if version < _MINIMUM_DOLT_VERSION:
-            required = ".".join(str(part) for part in _MINIMUM_DOLT_VERSION)
-            observed = ".".join(str(part) for part in version)
-            raise VerificationStoreError(
-                f"verification store runtime {observed} is incompatible; "
-                f"version {required} or newer is required"
-            )
+        self._executable = validate_runtime(self._executable)
 
-    def _create_repository_if_needed(self) -> None:
-        if (self._path / ".dolt").is_dir():
+    def _data_directory(self) -> Path:
+        return self._path.expanduser().absolute().parent
+
+    def _database(self) -> str:
+        return self._path.expanduser().absolute().name
+
+    def _server(self) -> ManagedDoltServer:
+        self._data_directory().mkdir(parents=True, exist_ok=True)
+        return acquire_server(self._data_directory(), executable=self._executable)
+
+    def _session(self) -> Connection[Any]:
+        if self._session_process_id not in (None, os.getpid()):
+            self._discard_inherited_session()
+        connection = self._connection
+        if connection is not None and connection.open:
+            return connection
+        self._connection = self._server().connect(self._database())
+        self._session_process_id = os.getpid()
+        return self._connection
+
+    def _discard_inherited_session(self) -> None:
+        """Release a session inherited across a fork without speaking to it.
+
+        The session belongs to the process that opened it. Closing it normally
+        would write client protocol traffic onto a socket that process is still
+        using, so the inherited connection is dropped and its own descriptor
+        released directly; the parent's connection is unaffected.
+        """
+
+        connection = self._connection
+        self._connection = None
+        self._session_process_id = None
+        if connection is None:
             return
-        if self._path.exists() and any(self._path.iterdir()):
+        release = getattr(connection, "_force_close", None)
+        if callable(release):
+            release()
+
+    def _discard_failed_transaction(self, connection: Connection[Any]) -> None:
+        """Leave the store unchanged and the session reusable after a failure."""
+
+        try:
+            connection.rollback()
+        except client_module().Error:
+            connection.close()
+        if self._connection is not None and not self._connection.open:
+            self._connection = None
+
+    def _create_database_if_needed(self) -> None:
+        if (self._path / ".dolt").is_dir():
+            self._server()
+            return
+        if self._path.exists():
+            if any(self._path.iterdir()):
+                raise VerificationStoreError(
+                    "verification store path exists but is not an initialized store"
+                )
+            # Dolt refuses to create a database over an existing directory, and
+            # this one is provably empty, so it is released before creation.
+            self._path.rmdir()
+        server = self._server()
+        identifier = _quoted_identifier(self._database(), "path")
+        connection = server.connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(f"CREATE DATABASE {identifier}")
+            connection.commit()
+        except client_module().Error as error:
             raise VerificationStoreError(
-                "verification store path exists but is not an initialized store"
-            )
-        self._path.mkdir(parents=True, exist_ok=True)
-        self._run(
-            (
-                "init",
-                "--name",
-                "StrideWeave Verification Store",
-                "--email",
-                "verification-store@strideweave.invalid",
-            )
-        )
+                f"verification store could not be created{_diagnostic(error)}"
+            ) from error
+        finally:
+            connection.close()
 
     def _migration_files(self) -> tuple[tuple[int, str, str, str], ...]:
         root = resources.files("strideweave.verification.store.migrations")
@@ -207,13 +301,16 @@ class DoltEvidenceStore(EvidenceStore):
 
     def _apply_migrations(self) -> None:
         migrations = self._migration_files()
-        table_rows = self._query_without_initialization(
-            "SHOW TABLES LIKE 'schema_migrations'"
+        table_rows = self._query(
+            SQLStatement("SHOW TABLES LIKE 'schema_migrations'"), "migration"
         )
         if table_rows:
-            applied_rows = self._query_without_initialization(
-                "SELECT version, migration_name, migration_checksum "
-                "FROM schema_migrations ORDER BY version"
+            applied_rows = self._query(
+                SQLStatement(
+                    "SELECT version, migration_name, migration_checksum "
+                    "FROM schema_migrations ORDER BY version"
+                ),
+                "migration",
             )
         else:
             applied_rows = ()
@@ -232,58 +329,74 @@ class DoltEvidenceStore(EvidenceStore):
                     f"verification store migration history disagrees at version {version}"
                 )
         for version, name, checksum, sql in migrations[len(applied_rows) :]:
-            applied_at = datetime.now(timezone.utc)
-            insert = _render_statement(
-                SQLStatement(
-                    "INSERT INTO schema_migrations "
-                    "(version, migration_name, migration_checksum, applied_at_utc) "
-                    "VALUES (?, ?, ?, ?)",
-                    (version, name, checksum, applied_at),
-                )
+            self._apply_one_migration(version, name, checksum, sql)
+
+    def _apply_one_migration(
+        self, version: int, name: str, checksum: str, sql: str
+    ) -> None:
+        """Apply one migration script and its history row in one transaction.
+
+        The script holds several repository-owned statements, so it runs on a
+        separate multi-statement session. The ordinary store session stays
+        single-statement, where no parameter can extend a statement.
+        """
+
+        applied_at = datetime.now(timezone.utc)
+        insert_text, insert_parameters = _prepare(
+            SQLStatement(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, migration_checksum, applied_at_utc) "
+                "VALUES (?, ?, ?, ?)",
+                (version, name, checksum, applied_at),
             )
-            self._run_sql(f"START TRANSACTION;\n{sql}\n{insert};\nCOMMIT;\n")
-
-    def _query_without_initialization(
-        self, query: str
-    ) -> tuple[Mapping[str, Any], ...]:
-        completed = self._run(("sql", "--result-format", "json", "--query", query))
+        )
+        connection = self._server().connect_multi_statement(self._database())
         try:
-            payload = json.loads(completed.stdout)
-            rows = payload.get("rows", [])
-            if type(rows) is not list or any(type(row) is not dict for row in rows):
-                raise ValueError
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            connection.begin()
+            with connection.cursor() as cursor:
+                cursor.execute(sql)
+                while cursor.nextset():
+                    pass
+                cursor.execute(insert_text, insert_parameters)
+            connection.commit()
+        except client_module().Error as error:
             raise VerificationStoreError(
-                "verification store returned malformed migration data"
+                f"verification store migration {name} failed{_diagnostic(error)}"
             ) from error
-        return tuple(rows)
+        finally:
+            connection.close()
 
-    def _run_sql(self, script: str) -> None:
-        self._run(("sql",), input_text=script)
 
-    def _run(
-        self,
-        arguments: Sequence[str],
-        *,
-        cwd: Path | None = None,
-        input_text: str | None = None,
-    ) -> subprocess.CompletedProcess[str]:
-        try:
-            return subprocess.run(
-                (self._executable, *arguments),
-                cwd=cwd or self._path,
-                input=input_text,
-                capture_output=True,
-                check=True,
-                text=True,
-            )
-        except FileNotFoundError as error:
-            raise VerificationStoreError(
-                "verification store runtime is unavailable; install Dolt 1.40 or newer"
-            ) from error
-        except subprocess.CalledProcessError as error:
-            diagnostic = (error.stderr or error.stdout).strip()
-            suffix = f": {diagnostic}" if diagnostic else ""
-            raise VerificationStoreError(
-                f"verification store operation failed{suffix}"
-            ) from error
+def _diagnostic(error: BaseException) -> str:
+    text = str(error).strip()
+    return f": {text}" if text else ""
+
+
+def _batched(
+    statements: Sequence[SQLStatement],
+) -> list[tuple[str, list[tuple[object, ...]] | None]]:
+    """Group consecutive statements sharing one template into bounded batches.
+
+    Statement order is preserved, so foreign-key ordering inside a transaction
+    is unchanged; only repetitions of one template are combined, and each batch
+    is capped so a large ingestion sends bounded statements rather than one
+    unbounded statement or thousands of individually parsed ones.
+    """
+
+    batches: list[tuple[str, list[tuple[object, ...]] | None]] = []
+    for statement in statements:
+        text, parameters = _prepare(statement)
+        if parameters is None:
+            batches.append((text, None))
+            continue
+        if batches:
+            previous_text, previous_parameters = batches[-1]
+            if (
+                previous_text == text
+                and previous_parameters is not None
+                and len(previous_parameters) < _BULK_STATEMENT_ROWS
+            ):
+                previous_parameters.append(parameters)
+                continue
+        batches.append((text, [parameters]))
+    return batches

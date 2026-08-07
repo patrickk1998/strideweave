@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-import shutil
-from dataclasses import replace
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
+import synthetic_evidence
 
-import strideweave as sw
-from strideweave.verification import VerificationOutcome, VerificationReport
-from strideweave.verification.provenance import load_compilation_manifest
-from strideweave.verification.reporting import bind_report
+import strideweave.verification.store.recording as recording_module
+from strideweave.verification import VerificationReport
 from strideweave.verification.status_cli import main as status_main
 from strideweave.verification.store import (
     DoltEvidenceStore,
@@ -18,22 +16,16 @@ from strideweave.verification.store import (
     query_stale,
     query_status,
     query_todo,
-    record_report,
 )
 
-
-def _require_dolt() -> None:
-    if shutil.which("dolt") is None:
-        pytest.skip("local Dolt runtime is not installed")
+StorePathFactory = Callable[..., Path]
+ARCHITECTURE = synthetic_evidence.ARCHITECTURE
 
 
-@pytest.fixture(scope="module")
-def backend_report() -> VerificationReport:
-    return sw.test_backend()
-
-
-def _architecture() -> str:
-    return load_compilation_manifest().target.architecture
+def _text(row: Mapping[str, object], field: str) -> str:
+    value = row[field]
+    assert isinstance(value, str)
+    return value
 
 
 def _count(store: DoltEvidenceStore, table: str) -> int:
@@ -44,33 +36,24 @@ def _count(store: DoltEvidenceStore, table: str) -> int:
     return value
 
 
-def test_status_filters_stably_and_preserves_contradictory_observations(
-    tmp_path: Path, backend_report: VerificationReport
-) -> None:
-    _require_dolt()
-    store = DoltEvidenceStore(tmp_path / "evidence-store")
-    original = backend_report.records[0]
-    changed_records = (
-        replace(
-            original,
-            outcome=VerificationOutcome.FAILED,
-            diagnostic="independent producer observed a mismatch",
-        ),
-        *backend_report.records[1:],
+def _record(
+    report: VerificationReport, store: DoltEvidenceStore, producer: str
+) -> recording_module.RecordResult:
+    return recording_module._record_validated_report(
+        report, store, producer_id=producer
     )
-    assert backend_report.header is not None
-    changed_records, changed_header = bind_report(
-        changed_records,
-        (),
-        certificate_facts_override=backend_report.header.certificates,
-    )
-    changed_report = VerificationReport(
-        changed_records, changed_header.schema_version, changed_header
-    )
-    record_report(backend_report, store, producer_id="producer-a")
-    record_report(changed_report, store, producer_id="producer-b")
 
-    observations = query_status(store, architecture=_architecture())
+
+def test_status_filters_stably_and_preserves_contradictory_observations(
+    evidence_store_path: StorePathFactory, synthetic_report: VerificationReport
+) -> None:
+    store = DoltEvidenceStore(evidence_store_path())
+    original = synthetic_report.records[0]
+    changed_report = synthetic_evidence.contradicting_report(synthetic_report)
+    _record(synthetic_report, store, "producer-a")
+    _record(changed_report, store, "producer-b")
+
+    observations = query_status(store, architecture=ARCHITECTURE)
     order = tuple(
         (
             item.kernel_id,
@@ -94,7 +77,7 @@ def test_status_filters_stably_and_preserves_contradictory_observations(
 
     filtered = query_status(
         store,
-        architecture=_architecture(),
+        architecture=ARCHITECTURE,
         kernel_id=original.case.kernel_id,
         variant=original.case.variant,
         test_class=original.test_class.value,
@@ -106,13 +89,13 @@ def test_status_filters_stably_and_preserves_contradictory_observations(
 
 
 def test_stale_reports_each_changed_identity_axis_and_closure_member(
-    tmp_path: Path, backend_report: VerificationReport
+    evidence_store_path: StorePathFactory, synthetic_current_facts: VerificationReport
 ) -> None:
-    _require_dolt()
-    store = DoltEvidenceStore(tmp_path / "evidence-store")
-    result = record_report(backend_report, store, producer_id="producer")
-    manifest = load_compilation_manifest()
-    assert backend_report.header is not None
+    report = synthetic_current_facts
+    store = DoltEvidenceStore(evidence_store_path())
+    result = _record(report, store, "producer")
+    manifest = recording_module._report_manifest(report)
+    assert report.header is not None
     fake_target = "1" * 64
     fake_toolchain = "2" * 64
     fake_specification = "3" * 64
@@ -150,7 +133,7 @@ def test_stale_reports_each_changed_identity_axis_and_closure_member(
                 "definition_json FROM verification_specs WHERE verification_spec_id = ?",
                 (
                     fake_specification,
-                    backend_report.header.verification_spec["verification_spec_id"],
+                    report.header.verification_spec["verification_spec_id"],
                 ),
             ),
             SQLStatement(
@@ -191,7 +174,7 @@ def test_stale_reports_each_changed_identity_axis_and_closure_member(
         )
     )
 
-    stale = query_stale(store, architecture=_architecture())
+    stale = query_stale(store, architecture=ARCHITECTURE)
 
     assert len(stale) == 1
     axes = {item.axis for item in stale[0].differences}
@@ -210,17 +193,144 @@ def test_stale_reports_each_changed_identity_axis_and_closure_member(
     assert any(detail.endswith(":changed") for detail in closure.details)
 
 
-def test_todo_is_a_read_only_deterministic_unranked_set_difference(
-    tmp_path: Path, backend_report: VerificationReport
+def test_stored_closure_members_are_project_owned_while_identity_stays_complete(
+    evidence_store_path: StorePathFactory, synthetic_report: VerificationReport
 ) -> None:
-    _require_dolt()
-    store = DoltEvidenceStore(tmp_path / "evidence-store")
+    store = DoltEvidenceStore(evidence_store_path())
+    _record(synthetic_report, store, "producer")
+
+    stored_kinds = {
+        row["input_kind"]
+        for row in store.query(
+            SQLStatement("SELECT DISTINCT input_kind FROM source_closure_inputs")
+        )
+    }
+    closure = store.query(
+        SQLStatement(
+            "SELECT closure_id, descriptor_json FROM source_closures "
+            "WHERE root_kind = ? ORDER BY closure_id LIMIT 1",
+            ("repository-source",),
+        )
+    )[0]
+    described = json.loads(_text(closure, "descriptor_json"))["inputs"]
+    members = store.query(
+        SQLStatement(
+            "SELECT input_ordinal, input_uri FROM source_closure_inputs "
+            "WHERE closure_id = ? ORDER BY input_ordinal",
+            (_text(closure, "closure_id"),),
+        )
+    )
+
+    # The closure descriptor, and therefore the content-addressed closure_id,
+    # still binds every transitive input; only project- and build-owned members
+    # become rows, at the ordinals they hold in the complete input sequence.
+    assert "external_header" in {item["input_kind"] for item in described}
+    assert "external_header" not in stored_kinds
+    assert stored_kinds <= {"build_input", "generated_header", "header", "source"}
+    assert tuple((row["input_ordinal"], row["input_uri"]) for row in members) == tuple(
+        (ordinal, item["uri"])
+        for ordinal, item in enumerate(described)
+        if item["input_kind"] != "external_header"
+    )
+
+
+def test_an_external_only_closure_change_is_stale_without_a_member_difference(
+    evidence_store_path: StorePathFactory, synthetic_current_facts: VerificationReport
+) -> None:
+    store = DoltEvidenceStore(evidence_store_path())
+    result = _record(synthetic_current_facts, store, "producer")
+    build = store.query(
+        SQLStatement(
+            "SELECT k.kernel_build_id, k.closure_id FROM run_kernel_builds rb "
+            "JOIN kernel_builds k ON k.kernel_build_id = rb.kernel_build_id "
+            "WHERE rb.run_id = ? ORDER BY k.kernel_build_id LIMIT 1",
+            (result.run_id,),
+        )
+    )[0]
+    rebound = "e" * 64
+    # A changed external header moves nothing this store keeps a member row for:
+    # the project-owned members and their digests are identical, and only the
+    # content-addressed closure identity differs.
+    store.execute_transaction(
+        (
+            SQLStatement(
+                "INSERT INTO source_closures SELECT ?, hash_algorithm, root_kind, "
+                "root_uri, descriptor_json FROM source_closures WHERE closure_id = ?",
+                (rebound, _text(build, "closure_id")),
+            ),
+            SQLStatement(
+                "INSERT INTO source_closure_inputs SELECT ?, input_ordinal, "
+                "input_kind, input_uri, content_digest, descriptor_json "
+                "FROM source_closure_inputs WHERE closure_id = ?",
+                (rebound, _text(build, "closure_id")),
+            ),
+            SQLStatement(
+                "UPDATE kernel_builds SET closure_id = ? WHERE kernel_build_id = ?",
+                (rebound, _text(build, "kernel_build_id")),
+            ),
+        )
+    )
+
+    stale = query_stale(store, architecture=ARCHITECTURE)
+
+    closure = next(
+        item for item in stale[0].differences if item.axis == "source_closure"
+    )
+    assert rebound in closure.stored
+    assert rebound not in closure.current
+    assert closure.details == ()
+
+
+def test_closure_members_an_earlier_version_stored_report_no_difference(
+    evidence_store_path: StorePathFactory, synthetic_current_facts: VerificationReport
+) -> None:
+    store = DoltEvidenceStore(evidence_store_path())
+    _record(synthetic_current_facts, store, "producer")
+    closure = store.query(
+        SQLStatement(
+            "SELECT closure_id FROM source_closures WHERE root_kind = ? "
+            "ORDER BY closure_id LIMIT 1",
+            ("repository-source",),
+        )
+    )[0]
+    external_digest = "b" * 64
+    store.execute_transaction(
+        (
+            SQLStatement(
+                "INSERT INTO source_closure_inputs (closure_id, input_ordinal, "
+                "input_kind, input_uri, content_digest, descriptor_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    _text(closure, "closure_id"),
+                    100000,
+                    "external_header",
+                    f"cpp-external://sha256/{external_digest}/legacy.hpp",
+                    external_digest,
+                    "{}",
+                ),
+            ),
+        )
+    )
+
+    stale = query_stale(store, architecture=ARCHITECTURE)
+
+    # A store an earlier version wrote still holds external members. The
+    # current manifest no longer offers them individually, so comparing them
+    # would report an unchanged report as stale.
+    assert stale[0].differences == ()
+
+
+def test_todo_is_a_read_only_deterministic_unranked_set_difference(
+    evidence_store_path: StorePathFactory, synthetic_current_facts: VerificationReport
+) -> None:
+    report = synthetic_current_facts
+    store = DoltEvidenceStore(evidence_store_path())
     store.initialize()
     before = tuple(_count(store, table) for table in ("verification_runs", "evidence"))
 
-    missing = query_todo(store, architecture=_architecture())
+    missing = query_todo(store, architecture=ARCHITECTURE)
 
-    assert len(missing) == len(backend_report.records)
+    assert len(missing) == len(report.records)
     keys = tuple(
         (item.kernel_id, item.variant, item.test_class, item.case_id)
         for item in missing
@@ -231,10 +341,10 @@ def test_todo_is_a_read_only_deterministic_unranked_set_difference(
         == before
     )
 
-    record_report(backend_report, store, producer_id="producer")
+    _record(report, store, "producer")
     counts = tuple(_count(store, table) for table in ("verification_runs", "evidence"))
-    assert query_todo(store, architecture=_architecture()) == ()
-    assert query_stale(store, architecture=_architecture())[0].differences == ()
+    assert query_todo(store, architecture=ARCHITECTURE) == ()
+    assert query_stale(store, architecture=ARCHITECTURE)[0].differences == ()
     assert (
         tuple(_count(store, table) for table in ("verification_runs", "evidence"))
         == counts
@@ -242,21 +352,18 @@ def test_todo_is_a_read_only_deterministic_unranked_set_difference(
 
 
 def test_query_cli_emits_stable_json(
-    tmp_path: Path,
-    backend_report: VerificationReport,
+    evidence_store_path: StorePathFactory,
+    synthetic_report: VerificationReport,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _require_dolt()
-    store_path = tmp_path / "evidence-store"
-    record_report(
-        backend_report, DoltEvidenceStore(store_path), producer_id="cli-producer"
-    )
+    store_path = evidence_store_path()
+    _record(synthetic_report, DoltEvidenceStore(store_path), "cli-producer")
 
     status = status_main(
         [
             "status",
             "--arch",
-            _architecture(),
+            ARCHITECTURE,
             "--producer",
             "cli-producer",
             "--store",
@@ -267,7 +374,7 @@ def test_query_cli_emits_stable_json(
 
     assert status == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["total"] == len(backend_report.records)
+    assert payload["total"] == len(synthetic_report.records)
     assert all(
         item["producer_id"] == "cli-producer" for item in payload["observations"]
     )

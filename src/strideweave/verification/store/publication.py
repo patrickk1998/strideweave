@@ -15,7 +15,12 @@ from urllib.parse import unquote, urlparse
 
 from ..model import VerificationReport
 from . import recording
-from .base import EvidenceStore, SQLStatement, VerificationStoreError
+from .base import (
+    EvidenceStore,
+    SQLStatement,
+    VerificationStoreError,
+    is_diagnostic_closure_input,
+)
 
 _SNAPSHOT_SCHEMA = "strideweave.kernel-evidence-snapshot.v1"
 _PUBLISH_ENVIRONMENT = "STRIDEWEAVE_STATUS_PUBLISH_DESTINATION"
@@ -395,9 +400,17 @@ def _snapshot_rows(
     selected["source_closures"] = _query_by_values(
         store, "source_closures", "closure_id", closure_ids
     )
-    selected["source_closure_inputs"] = _query_by_values(
-        store, "source_closure_inputs", "closure_id", closure_ids
-    )
+    # A store an earlier version wrote may still hold external members. They
+    # are not part of what this version records, so they are not republished:
+    # a snapshot carrying them would disagree with the facts its own embedded
+    # reports rebuild.
+    selected["source_closure_inputs"] = [
+        row
+        for row in _query_by_values(
+            store, "source_closure_inputs", "closure_id", closure_ids
+        )
+        if is_diagnostic_closure_input(row.get("input_kind"))
+    ]
     toolchain_ids = {
         _row_text(row, "toolchain_id") for row in selected["kernel_builds"]
     }

@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 import struct
 from dataclasses import replace
 from typing import Any, cast
@@ -408,6 +409,38 @@ def test_prototype_v1_evidence_only_files_are_rejected_not_migrated():
 
     with pytest.raises(ValueError, match="JSONL line 1: report header"):
         VerificationReport.from_jsonl(json.dumps(old_record) + "\n")
+
+
+@pytest.mark.parametrize(
+    ("line_index", "field", "expected"),
+    [
+        (
+            0,
+            "timestamp",
+            "JSONL line 1: report header fields do not match: "
+            "missing=[], unexpected=['timestamp']",
+        ),
+        (
+            1,
+            "database",
+            "JSONL line 2: record has unexpected fields database",
+        ),
+    ],
+)
+def test_verification_report_rejects_status_store_fields(
+    line_index: int, field: str, expected: str
+) -> None:
+    lines = (
+        VerificationReport((make_record("status-store-field"),)).to_jsonl().splitlines()
+    )
+    value = json.loads(lines[line_index])
+    value[field] = "not-report-metadata"
+    lines[line_index] = json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+    with pytest.raises(ValueError, match=re.escape(expected)) as caught:
+        VerificationReport.from_jsonl("\n".join(lines) + "\n")
+
+    assert str(caught.value) == expected
 
 
 @pytest.mark.parametrize(
