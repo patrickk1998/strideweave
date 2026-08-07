@@ -1371,6 +1371,16 @@ deterministic runs, evidence, and producer observations. Bit-exact and
 tolerance evidence remain different unranked classes; contradictory producer
 observations coexist.
 
+A stored closure keeps its complete transitive input set in the receipt, the
+closure descriptor, and therefore the content-addressed closure identity.
+Normalized member rows are narrower on purpose: they exist to name which input
+changed, so recording, publication, and staleness share one rule that keeps
+project-owned sources and headers, generated headers, and build inputs, and
+omits external headers, which are unactionable individually and are the large
+majority of members. The reduction is roughly 98 percent of member rows rather
+than of stored payload, because the descriptor deliberately retains the full
+auditable closure.
+
 The compilation-receipt abstraction is framework-neutral, while current
 execution scope is native C++ FP32 kernels built through CMake. Per-kernel
 identity covers the operation source, the compiler-reported complete transitive
@@ -1425,6 +1435,60 @@ When set, `STRIDEWEAVE_STATUS_HOME` replaces only the platform base; the stable
 complete location for one command. First use initializes the directory and
 requires Dolt 1.40 or newer; imports and help do not initialize it.
 
+StrideWeave owns the Dolt process model, and users neither configure nor operate
+it. The installed runtime is resolved and version-checked once per executable
+identity for the life of the process. SQL transport is an internally managed
+`dolt sql-server`: at most one server per resolved data directory inside one
+Python process, serving every Dolt database under that directory, listening on a
+loopback port reserved for this process, keeping its configuration, privilege,
+branch-control, and log state in a private temporary directory, and terminated —
+gracefully, then forcibly — before the interpreter exits. The managed server
+also does not flush Dolt usage events, because that flush is a detached child
+that would outlive the lifecycle this process guarantees and recreate the
+private directory teardown had already removed. A startup or readiness
+failure raises with the server's own output attached rather than a bare timeout.
+Being registered and being running are the same condition: a shutdown or a
+failed startup retires the server it releases, so an acquisition racing either
+one starts a fresh server instead of returning a running server that no
+registry entry, and therefore no interpreter-exit cleanup, still covers.
+Stopping is a registry state of its own rather than the absence of one. A
+directory whose shutdown has begun stays reserved until that server's process
+has exited and released its database locks, so an acquisition racing a shutdown
+waits for the old process rather than starting a replacement the old one would
+refuse; the wait is bounded and reports the directory it was waiting for. A
+directory therefore has exactly one owner at every moment.
+Ownership is per process rather than per object. A forked child inherits server
+objects and open sessions but owns none of them: it starts with an empty
+registry, treats an inherited server as neither running nor connectable, never
+signals a parent's server or deletes its private state, and releases an
+inherited session's own descriptor rather than writing client protocol traffic
+onto a socket its parent is still using. A child that uses a store therefore
+acquires its own server, and each process's exit stops only what it started.
+No lifecycle API is exported, and no environment variable or command-line option
+selects a host, port, or server. PyMySQL is the parameterized client for that
+protocol and is imported lazily, on first store transport use, so importing
+StrideWeave or running a kernel never loads it.
+
+Each store path names one served database inside the data directory that holds
+it, so several stores under one directory share one server and stay isolated
+from one another. Creation, checked migrations, queries, and atomic transactions
+all run over one persistent session for that database: no operation launches a
+`dolt sql` process. Values always travel as bound driver parameters rather than
+statement text, and the ordinary session is single-statement, so no value can
+extend the statement it belongs to; only the repository's own migration scripts
+run on a separate multi-statement session. A transaction sends its statements in
+order and combines consecutive repetitions of one template into bounded
+multi-row batches, so ingesting a full report is a few bounded statements rather
+than thousands of individually parsed ones. Stores created by earlier
+StrideWeave versions with `dolt init` are served and migrated unchanged.
+
+A running server serves the databases that existed in its data directory when it
+started, plus the ones it creates itself. A store another process creates in
+that same directory while this process's server runs is therefore not visible
+until the next process starts. Ordinary use is unaffected: a command creates its
+own store through the server, and an existing store is already on disk before
+anything starts.
+
 ```bash
 strideweave-kernel-status record --report kernel-evidence.jsonl \
   --producer local-dev --source-commit "$REVISION"
@@ -1454,8 +1518,12 @@ strideweave-kernel-status todo --arch arm64 --json
 `status` lists each matching observation separately and supports exact
 kernel, variant, class, and producer filters; timestamps never resolve
 contradictions. `stale` compares compilation manifests and receipts, individual
-closure members where available, targets, toolchains, verification
-specifications, tolerance policies, and oracle identities independently.
+project- and build-owned closure members where available, targets, toolchains,
+verification specifications, tolerance policies, and oracle identities
+independently. A changed external header still moves the content-addressed
+closure identity and is reported on the closure axis; it simply has no
+individual member row to name, and a store an earlier version wrote is compared
+by the same rule, so its retained external members never report a difference.
 `todo` sorts missing requirements by kernel, variant, class, and case without a
 risk score. The latter two commands construct the current installed verification
 baseline locally; all three commands are offline, read-only queries.
@@ -1481,8 +1549,8 @@ namespace, canonical JSON and content-derived identities, the complete
 foreign-key graph, every embedded report and its evidence rows, and observation
 provenance. Publication selects the producer relationship graph and refresh
 looks up incoming primary keys through deterministic rendered-byte-budgeted
-query batches, so neither operation loads unrelated tables or exceeds the Dolt
-process-argument budget as evidence accumulates. New rows use strict inserts
+query batches, so neither operation loads unrelated tables or grows an unbounded
+statement as evidence accumulates. New rows use strict inserts
 after explicit idempotency and immutable-conflict checks, and the complete merge
 is atomic. Independent producer
 observations therefore coexist, exact synchronization repeats do nothing, and
@@ -1516,7 +1584,8 @@ or code review.
 
 ```bash
 uv sync --group dev
-uv run pytest tests
+uv run pytest tests -m "not dolt_integration and not dolt_lifecycle"
+uv run pytest tests -m "dolt_integration or dolt_lifecycle"
 uv run ruff format --check .
 uv run ruff check .
 uv run python tools/lint_invariants.py
@@ -1542,10 +1611,35 @@ is older than the Python verification sources, `sw.test_backend()` fails closed
 with the rebuild command instead of skipping native verification.
 
 The repository invariant checker uses Python's built-in AST and reports
-StrideWeave-specific source contracts without importing the package. Native sanitizer
-coverage runs in Linux CI with `STRIDEWEAVE_SANITIZERS=ON`; it instruments the extension
-modules with AddressSanitizer and UndefinedBehaviorSanitizer before running the full
-Python test suite.
+StrideWeave-specific source contracts without importing the package.
+
+CI runs five separately visible checks: `test` (the non-Dolt suite plus
+formatting, lint, invariants, native formatting, type checking, and the
+distribution build), `dolt-integration`, `native-strict-warnings`,
+`native-sanitizers`, and `duplication`. `dolt-integration` is the only job that
+installs a Dolt runtime — a pinned, checksum-verified release — and it runs both
+real-Dolt suites. The `dolt_integration` suite shares one session server and
+asserts that exactly one `dolt sql-server` runs and that no `dolt sql`
+subprocess is launched; the `dolt_lifecycle` suite is the manager's own test and
+deliberately starts, and may concurrently run, several independently owned
+servers. Native sanitizer coverage runs in Linux CI with
+`STRIDEWEAVE_SANITIZERS=ON`, instrumenting the extension modules with
+AddressSanitizer and UndefinedBehaviorSanitizer. It deselects those same two
+markers, because their work happens inside an uninstrumented external Dolt
+process. The promise that makes this exact is that the deselected selection
+contains no native work at all: for the whole of a marked item — fixture setup,
+call, and teardown — `tests/conftest.py` replaces every imported binding of
+`sw.test_backend`, native kernel metadata, the installed compilation manifest,
+and report binding with one that refuses, including module-level aliases that
+tests or fixtures captured before the marked protocol began. This is a
+pragmatic accidental-use guard over imported module attributes, not an
+adversarial sandbox over references hidden in locals, closures, or object state.
+Marked tests therefore persist the deterministic pure-Python facts in
+`tests/synthetic_evidence.py`, while report construction, binding, provenance
+reconciliation, and their rejection paths are covered by unmarked tests and
+stay instrumented. The markers are narrow rather than per file, so the store's
+pure helper, in-memory-double, stand-in-runtime, and path-default tests run in
+both the regular and sanitizer jobs.
 
 The duplication gate uses the exact `jscpd` version locked by npm and the checked-in
 `.jscpd.json` configuration to scan production code under `src/`. The post-binary-
@@ -1560,6 +1654,45 @@ movement, modules, and public docstrings. `tests/test_dtype_conformance.py`
 additionally enumerates the operation policy's registry and compares `Generic`
 against native `CPU` for every registered operation, so a backend that drifts
 from the shared plans fails there rather than in review.
+
+Tests that need a real local Dolt store carry the `dolt_integration` marker and
+share one managed server for the whole session, defined by the fixtures in
+`tests/conftest.py`. `evidence_store_path` hands each test a unique database in
+that one data directory and drops it afterwards, so the tests keep real
+creation, migration, transaction, query, publication, refresh, and conflict
+coverage while paying for one server rather than one per test. That marker is
+derived from each test's fixture closure rather than written by hand, so a test
+leaves the sanitizer-instrumented suite exactly when it asks for the server it
+was deselected for; a test that owns server processes of its own carries
+`dolt_lifecycle` explicitly instead, and that suite is the one place where
+several servers run at once.
+
+The evidence a marked test persists is built in Python by
+`tests/synthetic_evidence.py`: a complete, internally consistent provenance
+graph — two kernels owned by two sources, closures carrying both project-owned
+and external members, a specification, tolerance policies, an oracle reference,
+deferred coverage, and a resolved plan — that depends on no installed native
+build. Those tests reach the store through the internal post-validation
+boundary in `recording.py` rather than the public `record_report(...)`, which
+still fails closed by rebinding a report against this build before any store is
+touched and is exercised, together with report construction, reconciliation,
+and the CLI's own validation, by unmarked tests against a non-Dolt store.
+`tests/test_native_boundary.py` proves the guard covers every imported binding
+of the native entry points — including the compiled `_cpu_native_kernel_metadata`
+export itself and aliases captured in test or fixture modules, not only the
+Python wrapper that calls it — that it refuses and restores them, and that the
+two selections stay disjoint, exhaustive, and derived. Everything else in the store
+files — SQL rendering and batching, publication selection and merge over
+in-memory doubles, stand-in-runtime failures, and the default store path —
+stays in the regular suite. Both markers skip when no Dolt runtime is
+installed. Select or exclude them with pytest's `-m`:
+
+```bash
+uv run pytest tests -m "not dolt_integration and not dolt_lifecycle"
+uv run pytest tests -m "dolt_integration or dolt_lifecycle"
+```
+
+`--durations=10` is on by default, so every run reports its slowest steps.
 
 ## License
 
