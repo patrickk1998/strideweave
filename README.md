@@ -4,9 +4,7 @@
 
 # StrideWeave
 
-<p align="center">
-  <a href="https://github.com/patrickk1998/strideweave/actions/workflows/ci.yml"><img src="https://github.com/patrickk1998/strideweave/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-</p>
+[![CI](https://github.com/patrickk1998/strideweave/actions/workflows/ci.yml/badge.svg)](https://github.com/patrickk1998/strideweave/actions/workflows/ci.yml)
 
 StrideWeave is an experimental framework for tensor computation being developed by Patrick Krusiec. It is currently in a state of rapid development. I hope to release a somewhat stable version very soon. What makes StrideWeave different from other machine learning libraries? Well...
 

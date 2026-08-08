@@ -16,3 +16,7 @@ compile_commands.json
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Generated documentation site
+site/
+_site/

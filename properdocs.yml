@@ -1,0 +1,77 @@
+site_name: Strideweave Specifications
+site_description: Behavior contracts for the Strideweave tensor framework.
+
+# Mounted as a subdirectory of the project site: the landing page keeps the
+# root and the specs site is assembled into /spec/ by .github/workflows/specs.yml.
+site_url: https://strideweave.org/spec/
+repo_url: https://github.com/patrickk1998/strideweave
+repo_name: strideweave
+edit_uri: edit/main/
+
+# No docs/ directory of hand-written pages: everything is generated from
+# openspec/specs/. docs_dir must still exist, so keep it empty (or add
+# hand-written pages there later and they will merge with generated ones).
+docs_dir: docs
+
+# Specs live outside docs_dir, so serve would not notice edits to them
+# without this. Covers in-flight changes too.
+watch:
+  - openspec/specs
+  - openspec/changes
+  - scripts/gen_spec_pages.py
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - content.action.edit
+    - search.highlight
+    - search.suggest
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - scripts/gen_spec_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 4
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+
+extra_css:
+  - stylesheets/spec.css
+
+not_in_nav: |
+  SUMMARY.md

@@ -1,0 +1,28 @@
+/* Make Requirement / Scenario headings scannable. Requirements are the
+   contract; scenarios are the tests. They should not look alike. */
+
+.md-typeset h3[id] {
+  border-left: 3px solid var(--md-primary-fg-color);
+  padding-left: 0.6rem;
+  margin-top: 2.2rem;
+}
+
+.md-typeset h4[id] {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-top: 1.4rem;
+}
+
+/* GIVEN / WHEN / THEN bullets read as a block, not a shopping list. */
+.md-typeset h4[id] + ul {
+  border-left: 1px dashed var(--md-default-fg-color--lighter);
+  padding-left: 1rem;
+  list-style: none;
+}
+
+.md-typeset h4[id] + ul > li::before {
+  content: "▸ ";
+  color: var(--md-accent-fg-color);
+}

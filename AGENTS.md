@@ -44,6 +44,37 @@ that the planner and reviewer use; they do not authorize direct implementation.
 - `openspec-onboard` is a tutorial. For repository work, stop its walkthrough before
   its direct implementation phase and enter the planner-to-Beads flow above.
 
+### Spec Publication
+
+`openspec/specs/*/spec.md` feeds the public specifications site at
+`https://strideweave.org/spec/`, built by `.github/workflows/specs.yml` from
+`scripts/gen_spec_pages.py`. Publication is opt-in per spec through YAML front matter:
+
+```yaml
+---
+title: Friendly Tensor Creation
+publish: true
+status: stable
+order: 10
+summary: One sentence describing what the spec governs.
+---
+```
+
+A spec with no front matter, or with `publish` unset or false, is silently omitted from
+the site. That default is deliberate — an unfinished contract should not publish by
+accident — but nothing warns about the omission, so a spec that should be public stays
+invisible until someone adds the block. When a change archives a spec whose behavior is
+delivered and intended to be public, add or update its front matter in the same change.
+
+`status` renders a banner on the page unless it is `stable`, so use `stable` only for
+delivered behavior. `order` sorts the index; `title` and `summary` populate its table.
+
+Preview what is being held back with `SW_DOCS_INCLUDE_INTERNAL=1 uv run --no-project
+properdocs build --strict`, which also renders unarchived changes under
+`openspec/changes/`. Never publish those: an unarchived change is a proposal, not the
+contract. Front matter is invisible to `openspec validate`, so both consumers accept
+the same file.
+
 ## Tensor Indexing Style
 
 Prefer `tensor[i, j]` style for coordinate indexing in source code and tests.

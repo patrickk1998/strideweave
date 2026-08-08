@@ -1,3 +1,11 @@
+---
+title: Friendly Tensor Creation
+publish: true
+status: stable
+order: 10
+summary: How friendly CPU tensor creation validates an explicitly supplied layout before consuming the caller's values.
+---
+
 # friendly-tensor-creation Specification
 
 ## Purpose
