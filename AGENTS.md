@@ -19,6 +19,31 @@ Identify the relevant invariant IDs while planning a change. When adding, removi
 materially changing a cross-cutting invariant, update `INVARIANTS.md` and its stated
 enforcement evidence in the same change.
 
+## OpenSpec and Beads Workflow
+
+OpenSpec sits above the Beads implementation lifecycle. OpenSpec artifacts define the
+approved intent, behavioral requirements, design constraints, and acceptance boundary
+that the planner and reviewer use; they do not authorize direct implementation.
+
+- Do not use `openspec-apply-change` in this repository, even when that skill is
+  installed. The apply phase is owned by the Beads workflow below.
+- Treat an OpenSpec `tasks.md` as planning input and acceptance-oriented decomposition,
+  not as the executable work queue.
+- After the required OpenSpec artifacts are coherent, the planner/reviewer agent uses
+  `create-task` to translate them into dependency-aware Beads implementation tasks, a
+  review bead, and the appropriate worktree.
+- An implementer agent uses `do-task` to claim and complete ready Beads work. It does
+  not implement directly from the OpenSpec change.
+- The planner/reviewer agent reviews the implementation against the OpenSpec proposal,
+  specs, design, repository invariants, and Beads acceptance criteria. Review findings
+  become Beads fix work through `create-task`, and review remains dependent on every
+  outstanding fix.
+- Repeat implementation and review until the review is approved. Archive the OpenSpec
+  change only after the review bead and all implementation or fix beads are closed.
+  Use `openspec-sync-specs` before that point only when explicitly requested.
+- `openspec-onboard` is a tutorial. For repository work, stop its walkthrough before
+  its direct implementation phase and enter the planner-to-Beads flow above.
+
 ## Tensor Indexing Style
 
 Prefer `tensor[i, j]` style for coordinate indexing in source code and tests.
