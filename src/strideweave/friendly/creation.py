@@ -83,6 +83,8 @@ def tensor(
     """
 
     if layout is not None:
+        if not isinstance(layout, Layout):
+            raise TypeError("layout must be a Layout")
         values = list(values)
         if len(values) != layout.size:
             raise ValueError("values length must equal the layout logical size")

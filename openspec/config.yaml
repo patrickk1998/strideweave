@@ -1,0 +1,59 @@
+schema: spec-driven
+
+context: |
+  StrideWeave uses OpenSpec as the normative source for observable system
+  behavior. llms.md explains the current architecture and supported surface.
+  INVARIANTS.md defines cross-cutting implementation constraints. Tests are
+  executable evidence. Beads is the durable implementation and review queue.
+
+  OpenSpec sits above the Beads lifecycle. Completed OpenSpec artifacts are
+  handed to a planner, which translates them into Beads work through
+  create-task. Implementers execute Beads work through do-task, and reviewers
+  evaluate the result against the OpenSpec artifacts.
+
+  This is a brownfield specification migration. Behavior absent from the main
+  specs may be uncaptured rather than unsupported. Do not infer contractual
+  intent from code or tests alone when the documentation and intended behavior
+  are unclear.
+
+rules:
+  proposal:
+    - "Identify the exact new or modified capability paths."
+    - "Distinguish baseline documentation capture from an actual behavior change."
+    - "State whether the proposal captures confirmed behavior, introduces intended behavior, or reconciles conflicting evidence."
+    - "Identify affected llms.md sections and relevant INVARIANTS.md IDs."
+    - "Keep implementation mechanics in design.md rather than the proposal."
+
+  specs:
+    - "Specify externally observable behavior, inputs, outputs, errors, and compatibility constraints."
+    - "Use stable requirement names and testable WHEN/THEN scenarios."
+    - "During baseline migration, include only behavior confirmed by documentation, tests or code evidence, and maintainer intent."
+    - "Do not promote observed behavior to a contract when intent is unresolved."
+    - "Do not embed implementation details, source layout, agent workflow, or Beads mechanics in normative requirements."
+    - "Preserve existing capability paths when modifying accepted behavior."
+
+  design:
+    - "Explain how the implementation will satisfy the specs and why the selected approach was chosen."
+    - "Identify every relevant invariant ID and explain how its canonical choice is preserved."
+    - "State whether llms.md or INVARIANTS.md must change."
+    - "Record important alternatives, risks, migration concerns, and explicit non-goals."
+    - "Do not repeat normative requirements already captured in the specs."
+
+  tasks:
+    - "Treat tasks.md as an acceptance-oriented handoff to the planner, not as the executable work queue."
+    - "Describe implementation outcomes and validation obligations that the planner can refine into Beads tasks."
+    - "Do not assign agents, create worktrees, claim issues, or encode Beads dependency mechanics."
+    - "Include required tests, documentation updates, invariant checks, and OpenSpec validation."
+
+operations:
+  apply:
+    guidance:
+      - "Direct OpenSpec application is not used in this repository."
+      - "Stop after planning artifacts are coherent and hand the change to the planner for create-task."
+      - "Implementation must proceed through Beads and do-task."
+
+  archive:
+    guidance:
+      - "Archive only after the review bead and every implementation or fix bead are closed."
+      - "Confirm the implementation was reviewed against the proposal, specs, design, invariants, and acceptance criteria."
+      - "Confirm required llms.md and INVARIANTS.md updates are present before archiving."
