@@ -51,6 +51,11 @@ def test_tensor_with_explicit_layout_fills_logical_order():
     assert tensor[1, 1] == 4.0
 
 
+def test_tensor_rejects_invalid_explicit_layout_before_consuming_values():
+    with pytest.raises(TypeError, match="layout must be a Layout"):
+        friendly.tensor(object(), layout=object())  # type: ignore[arg-type]
+
+
 def test_tensor_rejects_ragged_and_empty_values():
     with pytest.raises(ValueError, match="rectangular"):
         friendly.tensor([[1.0, 2.0], [3.0]])
