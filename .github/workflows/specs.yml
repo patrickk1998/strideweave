@@ -1,0 +1,87 @@
+name: Specs site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openspec/specs/**"
+      - "docs/**"
+      - "scripts/gen_spec_pages.py"
+      - "properdocs.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/specs.yml"
+      # The landing page ships in the same artifact, so it must retrigger too.
+      - "index.html"
+      - "assets/**"
+      - "CNAME"
+  pull_request:
+    paths:
+      - "openspec/specs/**"
+      - "scripts/gen_spec_pages.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: specs-site
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install documentation dependencies
+        run: uv sync --frozen --only-group docs
+
+      # --strict turns broken internal links and nav warnings into failures,
+      # so a spec referencing a requirement that no longer exists breaks CI.
+      - name: Build the specs site
+        run: uv run --no-project properdocs build --strict
+
+      # One Pages site serves both: the hand-written landing page keeps the
+      # root, and the generated specs site is mounted under /spec/.
+      - name: Assemble the Pages artifact
+        run: |
+          mkdir -p _site/spec
+          cp index.html _site/
+          cp CNAME _site/
+          cp -R assets _site/assets
+          cp -R site/. _site/spec/
+
+      - name: Upload the Pages artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
