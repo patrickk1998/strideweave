@@ -13,7 +13,128 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Neither trigger carries a `paths` filter, and neither may gain one. The
+  # `main-protector` ruleset requires `test`, `duplication`,
+  # `native-strict-warnings`, and `native-sanitizers` by name, and a workflow
+  # that never starts never reports them, so a filtered trigger would leave a
+  # documentation-only pull request waiting forever on checks that can no
+  # longer arrive. The workflow therefore always starts and the individual
+  # jobs skip instead: a job skipped by `if:` reports `skipped`, which
+  # satisfies a required check.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+
+    steps:
+      # Classification is a deny list, so an unrecognised path — a new
+      # top-level directory, a workflow edit, a build-configuration change —
+      # runs the full CI. `README.md`, `LICENSE`, and `.github/**` are
+      # deliberately absent from the non-code set: `pyproject.toml` declares
+      # `readme = "README.md"` and `license-files = ["LICENSE"]` and the
+      # distribution build fails without either, and a workflow edit has to
+      # exercise the workflows. Every uncertain case resolves the same way. A
+      # missing base commit, a failed or unreadable API response, an empty
+      # file list, and a change set large enough for the compare endpoint to
+      # truncate all fall through to running everything.
+      - name: Classify the changed paths
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: >-
+            ${{ github.event_name == 'pull_request'
+            && github.event.pull_request.base.sha
+            || github.event.before }}
+          HEAD: >-
+            ${{ github.event_name == 'pull_request'
+            && github.event.pull_request.head.sha
+            || github.sha }}
+        run: |
+          # A `run:` step with no `shell:` key executes as `bash -e {0}`, so
+          # errexit is on before the first line and `set -uo pipefail` does
+          # not clear it. Clear it explicitly: every failure below has a
+          # fail-open branch, and errexit would abort the step ahead of them
+          # and leave no verdict in `$GITHUB_OUTPUT`.
+          set +e
+          set -uo pipefail
+
+          emit() {
+            echo "code=$1" >> "$GITHUB_OUTPUT"
+            echo "Changed-path gate: code=$1"
+            exit 0
+          }
+
+          # A push that creates a branch reports an all-zero base commit.
+          zeroes="0000000000000000000000000000000000000000"
+          if [ -z "${BASE}" ] || [ "${BASE}" = "${zeroes}" ]; then
+            echo "No usable base commit; running the full CI."
+            emit true
+          fi
+
+          # The three-dot form of the compare endpoint diffs against the merge
+          # base, which is what a pull request means by "changed files".
+          if ! payload="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/compare/${BASE}...${HEAD}?per_page=300")"
+          then
+            echo "Could not list the changed files; running the full CI."
+            emit true
+          fi
+
+          if [ -z "${payload}" ]; then
+            echo "Empty compare response; running the full CI."
+            emit true
+          fi
+
+          total="$(printf '%s' "${payload}" | jq '.files | length')"
+          case "${total}" in
+            '' | *[!0-9]*)
+              echo "Unreadable compare payload; running the full CI."
+              emit true
+              ;;
+          esac
+
+          # The compare endpoint caps its file list at 300 entries, so a
+          # change at or above that size may be reporting a partial list.
+          if [ "${total}" -eq 0 ] || [ "${total}" -ge 300 ]; then
+            echo "Empty or truncated change set (${total}); running the full CI."
+            emit true
+          fi
+
+          # A rename is one entry whose `filename` is the new path and whose
+          # `previous_filename` is the old one. Both endpoints have to be
+          # classified: moving a source file into a deny-listed directory
+          # would otherwise report only the new, ignorable path and skip the
+          # CI that would have caught the move.
+          files="$(printf '%s' "${payload}" \
+            | jq -r '.files[] | .filename, (.previous_filename // empty)')"
+
+          while IFS= read -r file; do
+            case "${file}" in
+              openspec/* | .agents/* | .codex/* | .claude/* | .beads/*) ;;
+              docs/* | assets/*) ;;
+              index.html | CNAME | .nojekyll | properdocs.yml) ;;
+              skills-lock.json) ;;
+              AGENTS.md | CLAUDE.md | INVARIANTS.md | llms.md) ;;
+              CONTRIBUTING.md | SECURITY.md) ;;
+              *)
+                echo "Code-affecting path: ${file}"
+                emit true
+                ;;
+            esac
+          done <<< "${files}"
+
+          echo "Only non-code paths changed; skipping the code jobs."
+          emit false
+
   duplication:
+    needs: changes
+    # The comparison is against `false` rather than `true`, and `!cancelled()`
+    # lets the job run even when `changes` failed, so a gate that crashes or
+    # never writes its output runs the full CI instead of silently skipping
+    # it. A gate failure must never look like a clean documentation change.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -28,6 +149,8 @@ jobs:
         run: npm run duplication
 
   test:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -76,6 +199,8 @@ jobs:
         run: uv build
 
   dolt-integration:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -120,6 +245,8 @@ jobs:
           -m "dolt_integration or dolt_lifecycle"
 
   native-strict-warnings:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -140,6 +267,8 @@ jobs:
         run: uv build
 
   native-sanitizers:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
