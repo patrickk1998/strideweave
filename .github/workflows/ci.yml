@@ -300,14 +300,62 @@ jobs:
       # suites persist pure-Python evidence and every test that does execute
       # native code — Stage One, report binding, certificate reconstruction,
       # provenance reconciliation, native metadata, CPU kernels — stays here.
+      # The suite runs in parallel because sanitizers cost about 6.8x and that
+      # cost is a long flat tail rather than a hot spot. --capture=no is gone
+      # because xdist does not support it, so a sanitizer report can no longer
+      # reach the log through the worker's own stderr. log_path replaces it:
+      # each process writes <log_path>.<pid>, so a crashed worker leaves its
+      # report on disk and the two failure steps below print and upload it. Do
+      # not remove log_path without restoring another path for the report — the
+      # report is the entire value of this job.
+      #
+      # Both option strings share one log_path prefix on purpose. ASan and UBSan
+      # share a single runtime here, so they share the common log_path flag and
+      # the last one parsed wins; giving them separate prefixes only mislabels
+      # the file, putting an AddressSanitizer report in a "ubsan" one.
+      #
+      # STRIDEWEAVE_EXPECT_SANITIZERS makes tests/conftest.py assert, in the
+      # controller and in every worker, that the process really did inherit the
+      # preloaded runtime. A worker that escaped it would otherwise pass every
+      # test while quietly reducing this job to an ordinary test run.
       - name: Run tests with AddressSanitizer and UndefinedBehaviorSanitizer
         run: |
+          mkdir -p sanitizer-reports
+          reports="$PWD/sanitizer-reports"
           asan_runtime="$(gcc -print-file-name=libasan.so)"
           cxx_runtime="$(g++ -print-file-name=libstdc++.so.6)"
           LD_PRELOAD="$asan_runtime:$cxx_runtime" \
             PYTHONMALLOC="malloc" \
             PYTHONUNBUFFERED="1" \
-            ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:halt_on_error=1:symbolize=1" \
-            UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
-            .venv/bin/python -m pytest --capture=no --maxfail=1 tests \
+            STRIDEWEAVE_EXPECT_SANITIZERS="1" \
+            ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:halt_on_error=1:symbolize=1:log_path=$reports/sanitizer" \
+            UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:log_path=$reports/sanitizer" \
+            .venv/bin/python -m pytest -n auto --maxfail=1 tests \
             -m "not dolt_integration and not dolt_lifecycle"
+
+      # xdist names the test a crashed worker was running; these files carry the
+      # sanitizer diagnosis for it. Printing them keeps the report readable in
+      # the log without downloading the artifact.
+      - name: Show sanitizer reports
+        if: failure()
+        run: |
+          shopt -s nullglob
+          reports=(sanitizer-reports/*)
+          if [ "${#reports[@]}" -eq 0 ]; then
+            echo "No sanitizer report was written; the failure was not a" \
+              "sanitizer diagnostic."
+            exit 0
+          fi
+          for report in "${reports[@]}"; do
+            echo "::group::$report"
+            cat "$report"
+            echo "::endgroup::"
+          done
+
+      - name: Upload sanitizer reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sanitizer-reports
+          path: sanitizer-reports/
+          if-no-files-found: ignore

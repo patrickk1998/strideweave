@@ -26,6 +26,7 @@ stays in the unmarked, sanitizer-instrumented suite.
 
 from __future__ import annotations
 
+import ctypes
 import importlib
 import os
 import shutil
@@ -73,6 +74,46 @@ NATIVE_ENTRY_POINTS = (
     ("strideweave.verification.reporting", "_raw_compilation_manifest"),
     ("strideweave.verification.reporting", "bind_report"),
 )
+
+
+def sanitizer_runtime_loaded() -> bool:
+    """Report whether the sanitizer runtime is resident in THIS process.
+
+    The environment variable that injected it is not a reliable witness: macOS
+    strips ``DYLD_INSERT_LIBRARIES`` from the environment block once dyld has
+    applied it, and a preload can be overridden downstream. Resolving a symbol
+    the runtime itself exports asks the only question that matters — is the
+    runtime in this process.
+    """
+
+    try:
+        ctypes.CDLL(None).__asan_init
+    except (AttributeError, OSError):
+        return False
+    return True
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Refuse a sanitizer session in a process that escaped the runtime.
+
+    The sanitizer job runs in parallel, and its xdist workers inherit the
+    ``LD_PRELOAD`` that injects the ASan runtime through their environment. A
+    worker that did not would still pass every test, silently reducing that job
+    to an ordinary test run and losing the only thing it exists to provide. The
+    job therefore sets ``STRIDEWEAVE_EXPECT_SANITIZERS``, and this hook — which
+    runs once in the controller and once in every worker — turns that silent
+    degradation into a loud failure.
+    """
+
+    if os.environ.get("STRIDEWEAVE_EXPECT_SANITIZERS") != "1":
+        return
+    if not sanitizer_runtime_loaded():
+        process = os.environ.get("PYTEST_XDIST_WORKER", "the controller")
+        raise pytest.UsageError(
+            f"{process} is not running under the sanitizer runtime: "
+            "STRIDEWEAVE_EXPECT_SANITIZERS is set, but this process cannot "
+            "resolve __asan_init, so the preloaded runtime did not reach it."
+        )
 
 
 def native_bindings() -> tuple[tuple[ModuleType, str], ...]:

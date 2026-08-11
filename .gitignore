@@ -20,3 +20,6 @@ compile_commands.json
 # Generated documentation site
 site/
 _site/
+
+# Per-process sanitizer reports written by the native-sanitizers job
+sanitizer-reports/

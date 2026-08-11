@@ -1676,6 +1676,27 @@ stay instrumented. The markers are narrow rather than per file, so the store's
 pure helper, in-memory-double, stand-in-runtime, and path-default tests run in
 both the regular and sanitizer jobs.
 
+That sanitizer job is the only one that runs pytest in parallel, with `-n auto`
+over pytest-xdist; every other job runs serially. Sanitizers cost roughly 6.8x,
+and the cost is a long flat tail across the whole suite rather than a few slow
+tests, so worker parallelism is what shortens it. Parallelism changes how a
+sanitizer diagnosis reaches a human, and the job is arranged around that.
+`--capture=no` is unsupported under xdist, so a report can no longer surface
+through the worker's own stderr; `ASAN_OPTIONS` and `UBSAN_OPTIONS` therefore
+share one `log_path` prefix under `sanitizer-reports/`, where each process
+writes `sanitizer.<pid>`. Because `abort_on_error=1` and `halt_on_error=1` kill
+the process on the first diagnostic, that file is what survives: xdist names the
+test the crashed worker was running, and the report file explains why. Two
+`if: failure()` steps then print every report into the log and upload the
+directory as a `sanitizer-reports` artifact. The two option strings share one
+prefix deliberately — ASan and UBSan share a runtime and therefore the common
+`log_path` flag, so separate prefixes would only file an AddressSanitizer report
+under a `ubsan` name. The job also exports `STRIDEWEAVE_EXPECT_SANITIZERS=1`,
+which makes `tests/conftest.py` assert in the controller and in every worker
+that the process actually inherited the preloaded runtime, since a worker that
+escaped `LD_PRELOAD` would pass every test while silently reducing the job to an
+ordinary test run.
+
 The duplication gate uses the exact `jscpd` version locked by npm and the checked-in
 `.jscpd.json` configuration to scan production code under `src/`. The post-binary-
 operation-refactor baseline was 4.7% duplicated lines with 5-line/50-token minimum
