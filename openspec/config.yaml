@@ -31,6 +31,13 @@ rules:
     - "Do not promote observed behavior to a contract when intent is unresolved."
     - "Do not embed implementation details, source layout, agent workflow, or Beads mechanics in normative requirements."
     - "Preserve existing capability paths when modifying accepted behavior."
+    - "Scope one spec to one public API function. Cover semantically equivalent surfaces of the same function in that single spec and list every name and syntax form it has, for example `matmul` and the `@` operator. Do not specify private implementation functions."
+    - "Name every input and state its semantic definition outright, then add SHALL clauses that constrain it exactly. Never leave an input's meaning implicit or inferable only from its constraints."
+    - "State what each function returns on success, including when it returns nothing."
+    - "For an optional input, state that it is optional and give the value it SHALL default to. Do not write `SHALL accept an optional argument` and stop there."
+    - "State every failure explicitly with the condition that triggers it and the observable failure, for example `SHALL fail with TypeError when ...`. Do not leave a failure implied by the absence of a success case."
+    - "Assert what is true, not what is false. Write `SHALL be interpreted as a logical coordinate`, not `SHALL NOT be interpreted as a physical offset`; a negative construction never establishes the positive contract."
+    - "Use one term per concept, matching the term used in llms.md and the public API, for example `size` rather than `logical cardinality`."
 
   design:
     - "Explain how the implementation will satisfy the specs and why the selected approach was chosen."
