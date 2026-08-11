@@ -69,6 +69,19 @@ wheel.packages = ["src/strideweave"]
 [tool.ruff]
 target-version = "py312"
 line-length = 88
+# These are exactly the directories the CI changed-paths gate treats as
+# non-code, so a change confined to them skips the `test` job. Ruff's default
+# discovery would still descend into them from the repository root, which
+# would let a Python helper added under one of them land unformatted and then
+# fail `test` for the next, unrelated change. The two sets have to agree.
+extend-exclude = [
+    ".agents",
+    ".beads",
+    ".claude",
+    ".codex",
+    "docs",
+    "openspec",
+]
 
 [tool.ruff.lint]
 extend-select = [

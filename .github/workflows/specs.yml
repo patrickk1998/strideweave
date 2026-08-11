@@ -15,10 +15,24 @@ on:
       - "index.html"
       - "assets/**"
       - "CNAME"
+  # Deliberately the same list as `push`. Merging one of these paths deploys
+  # to Pages, so every one of them has to survive `--strict` on the pull
+  # request first; a narrower list here would let a broken link or a bad
+  # `properdocs.yml` reach production without ever having been built. GitHub
+  # Actions does not expand YAML anchors, so the list is repeated by hand and
+  # the two have to be edited together.
   pull_request:
     paths:
       - "openspec/specs/**"
+      - "docs/**"
       - "scripts/gen_spec_pages.py"
+      - "properdocs.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/specs.yml"
+      - "index.html"
+      - "assets/**"
+      - "CNAME"
   workflow_dispatch:
 
 permissions:

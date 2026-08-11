@@ -1613,12 +1613,47 @@ with the rebuild command instead of skipping native verification.
 The repository invariant checker uses Python's built-in AST and reports
 StrideWeave-specific source contracts without importing the package.
 
-CI runs five separately visible checks: `test` (the non-Dolt suite plus
+CI runs five separately visible code checks: `test` (the non-Dolt suite plus
 formatting, lint, invariants, native formatting, type checking, and the
 distribution build), `dolt-integration`, `native-strict-warnings`,
-`native-sanitizers`, and `duplication`. `dolt-integration` is the only job that
-installs a Dolt runtime — a pinned, checksum-verified release — and it runs both
-real-Dolt suites. The `dolt_integration` suite shares one session server and
+`native-sanitizers`, and `duplication`. A sixth job, `changes`, gates them. It
+classifies the paths a change touches and the five code checks run only when
+that classification is anything other than a purely non-code change, so a pull
+request that only adds an OpenSpec spec, an agent skill, or repository prose
+does not build the extension three times to prove nothing. The non-code set is
+`openspec/`, `.agents/`, `.codex/`, `.claude/`, `.beads/`, `docs/`, `assets/`,
+`index.html`, `CNAME`, `.nojekyll`, `properdocs.yml`, `skills-lock.json`, and
+the root prose files other than `README.md` and `LICENSE`, which the
+distribution build consumes. Nothing in that set is read by any of the five;
+the one script that reads `openspec/specs/` is `scripts/gen_spec_pages.py`,
+which belongs to the specs site workflow and filters its own triggers. Ruff's
+own discovery is kept aligned with that set through `extend-exclude` in
+`pyproject.toml`, so a Python helper added under a non-code directory cannot
+land unformatted and then fail `test` for the next unrelated change.
+
+The gate is structured around two hazards. The first is that `test`,
+`duplication`, `native-strict-warnings`, and `native-sanitizers` are required
+status checks, and a required check that never reports blocks a pull request
+permanently rather than failing it, so the triggers deliberately carry no
+`paths` filter: the workflow always starts and the jobs skip individually,
+because a job skipped by `if:` reports `skipped` and satisfies the requirement.
+The second is that a wrong classification must be wrong in the safe direction.
+Classification is therefore a deny list rather than an allow list — an
+unrecognised path runs the full CI — `README.md`, `LICENSE`, and `.github/**`
+are held out of the non-code set because the distribution build fails without
+the first two and a workflow edit has to exercise the third, and a missing base
+commit, a failed or unreadable compare response, or a change set large enough
+for the compare endpoint to truncate its file list all resolve to running
+everything. A rename is classified by both of its endpoints, because the
+compare endpoint reports one entry whose `filename` is the new path, so reading
+that alone would let a source file move into a documentation directory
+unexamined. The dependent jobs compare against `false` rather than `true` and
+carry `!cancelled()`, so a gate that crashes or writes no verdict runs the full
+CI instead of silently skipping it.
+
+`dolt-integration` is the only job that installs a Dolt runtime — a pinned,
+checksum-verified release — and it runs both real-Dolt suites. The
+`dolt_integration` suite shares one session server and
 asserts that exactly one `dolt sql-server` runs and that no `dolt sql`
 subprocess is launched; the `dolt_lifecycle` suite is the manager's own test and
 deliberately starts, and may concurrently run, several independently owned
