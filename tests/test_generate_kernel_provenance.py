@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import pytest
 
 from tools import generate_kernel_provenance as generator
+
+# A compiler launcher such as ccache is invoked as "<launcher> <compiler> ...",
+# so CMake writes it as argument zero and the real compiler becomes argument
+# one. These tests execute the probe through a shim that merely execs its
+# arguments, which reproduces that shape without making ccache a dependency.
+_LAUNCHER = "strideweave-test-launcher"
 
 
 def _entry(
@@ -111,6 +120,174 @@ def test_dependency_probe_requests_system_headers() -> None:
 
     assert "-M" in arguments
     assert "-MM" not in arguments
+
+
+class _LauncherProject(NamedTuple):
+    compiler: str
+    source: Path
+    header: Path
+    include: Path
+    project: Path
+    build: Path
+
+
+@pytest.fixture
+def launcher_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> _LauncherProject:
+    """Build a compilable source tree and put an exec-only launcher on PATH."""
+
+    compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+    if compiler is None:
+        pytest.skip("executing the dependency probe requires a C++ compiler")
+    project = tmp_path / "project"
+    build = tmp_path / "build"
+    include = project / "include"
+    for directory in (project / "ops", include, build):
+        directory.mkdir(parents=True)
+    header = include / "shared.hpp"
+    header.write_text("#pragma once\nint shared_value();\n", encoding="utf-8")
+    source = project / "ops" / "add.cpp"
+    source.write_text(
+        '#include "shared.hpp"\nint add() { return shared_value(); }\n',
+        encoding="utf-8",
+    )
+    launcher_directory = tmp_path / "bin"
+    launcher_directory.mkdir()
+    launcher = launcher_directory / _LAUNCHER
+    launcher.write_text('#!/bin/sh\nexec "$@"\n', encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{launcher_directory}{os.pathsep}{os.environ['PATH']}")
+    return _LauncherProject(
+        compiler=compiler,
+        source=source,
+        header=header,
+        include=include,
+        project=project,
+        build=build,
+    )
+
+
+def _compile_command(project: _LauncherProject, object_path: Path) -> list[str]:
+    return [
+        project.compiler,
+        "-I",
+        str(project.include),
+        "-c",
+        str(project.source),
+        "-o",
+        str(object_path),
+    ]
+
+
+def test_dependency_probe_keeps_a_launcher_and_its_compiler() -> None:
+    source = Path("input.cpp")
+    bare = generator._dependency_arguments(
+        ["/usr/bin/c++", "-DX", "-c", "input.cpp", "-o", "input.o"], source
+    )
+
+    launched = generator._dependency_arguments(
+        ["ccache", "/usr/bin/c++", "-DX", "-c", "input.cpp", "-o", "input.o"], source
+    )
+
+    assert bare[0] == "/usr/bin/c++"
+    assert launched[0] == "ccache"
+    assert launched[1] == "/usr/bin/c++"
+    # The launcher only prepends: every other argument, and the appended probe
+    # flags, are rebuilt exactly as they are for a bare compiler entry.
+    assert launched == ["ccache", *bare]
+    assert launched[-4:] == ["-M", "-MT", "strideweave-kernel", "input.cpp"]
+
+
+def test_dependency_probe_keeps_a_launcher_from_a_command_string() -> None:
+    source = Path("input.cpp")
+    entry = {
+        "command": "ccache /usr/bin/c++ -DX -c input.cpp -o input.o",
+        "directory": ".",
+        "file": "input.cpp",
+    }
+
+    launched = generator._dependency_arguments(
+        generator._compile_arguments(entry), source
+    )
+
+    assert launched[0] == "ccache"
+    assert launched[1] == "/usr/bin/c++"
+    assert launched[-4:] == ["-M", "-MT", "strideweave-kernel", "input.cpp"]
+
+
+def test_a_launcher_prefixed_probe_discovers_the_same_dependencies(
+    launcher_project: _LauncherProject,
+) -> None:
+    build = launcher_project.build
+    directory = str(build)
+    bare = _compile_command(launcher_project, build / "bare.o")
+    launched = [_LAUNCHER, *_compile_command(launcher_project, build / "launched.o")]
+
+    bare_dependencies = generator.discover_dependencies(
+        {"arguments": bare, "directory": directory}, launcher_project.source
+    )
+    launched_dependencies = generator.discover_dependencies(
+        {"arguments": launched, "directory": directory}, launcher_project.source
+    )
+
+    assert launcher_project.source.resolve() in bare_dependencies
+    assert launcher_project.header.resolve() in bare_dependencies
+    assert launched_dependencies == bare_dependencies
+
+
+def _launcher_records(
+    launcher_project: _LauncherProject,
+) -> tuple[dict[str, object], dict[str, object]]:
+    build = launcher_project.build
+    bare = _compile_command(launcher_project, build / "bare.o")
+    launched = [_LAUNCHER, *_compile_command(launcher_project, build / "launched.o")]
+    records = []
+    for arguments in (bare, launched):
+        subprocess.run(arguments, check=True, cwd=build)
+        records.append(
+            generator.build_source_record(
+                entry={"arguments": arguments, "directory": str(build)},
+                source=launcher_project.source,
+                project_root=launcher_project.project,
+                build_root=build,
+                build_inputs=(),
+            )
+        )
+    return records[0], records[1]
+
+
+def test_a_launcher_records_the_same_dependency_closure(
+    launcher_project: _LauncherProject,
+) -> None:
+    bare_record, launched_record = _launcher_records(launcher_project)
+
+    assert launched_record["inputs"] == bare_record["inputs"]
+    assert launched_record["object_digest"] == bare_record["object_digest"]
+    assert launched_record["source"] == bare_record["source"]
+
+
+def test_a_launcher_moves_its_compiler_into_the_recorded_invocation(
+    launcher_project: _LauncherProject,
+) -> None:
+    """Pin the one recorded axis a compiler launcher does move.
+
+    Argument zero is the executable and is never recorded, so a bare entry omits
+    its compiler while a launched entry omits the launcher and records the
+    compiler it runs as an ordinary argument. The dependency closure is
+    unaffected, but `closure_id` covers the invocation too, so adopting a
+    launcher re-identifies every per-source closure once.
+    """
+
+    bare_record, launched_record = _launcher_records(launcher_project)
+    bare_invocation = cast(tuple[str, ...], bare_record["compile_invocation"])
+    launched_invocation = cast(tuple[str, ...], launched_record["compile_invocation"])
+    compiler_token = f"${{EXTERNAL}}/{Path(launcher_project.compiler).name}"
+
+    assert compiler_token not in bare_invocation
+    assert launched_invocation == (compiler_token, *bare_invocation)
+    assert _LAUNCHER not in launched_invocation
+    assert launched_record["closure_id"] != bare_record["closure_id"]
 
 
 def test_dependency_cache_reuses_unchanged_sources_and_invalidates_affected_inputs(
