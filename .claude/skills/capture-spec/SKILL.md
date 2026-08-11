@@ -23,13 +23,18 @@ reveals that the implementation is wrong rather than unspecified, stop and say s
 
 ### 1. Fix the scope
 
-One spec per public API function. Semantically equivalent surfaces of the same
-function share a single spec that lists every name and syntax form (for example
-`matmul` and the `@` operator). Private helpers get no spec.
+A capability is a domain area, not a function. `core-layout` is a single
+capability holding sixteen requirements that span many functions — match that
+granularity. Never create a capability per public API function.
 
-The capability path is a kebab-case directory under `openspec/specs/`. Run
-`openspec spec list` first: if a spec already covers the function, edit that file
-rather than adding a second one.
+Run `openspec spec list` and prefer an existing capability, editing its
+`spec.md`; a new one is a kebab-case directory under `openspec/specs/`.
+
+Within the capability, name each requirement for the behavior it pins, not for a
+function. One function's contract may span several requirements. What matters is
+that it is covered completely, with semantically equivalent surfaces documented
+together and every name and syntax form listed (for example `matmul` and the `@`
+operator). Private helpers get no requirement.
 
 ### 2. Load the authoring rules
 
