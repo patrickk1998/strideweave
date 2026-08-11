@@ -16,6 +16,25 @@ from tools import generate_kernel_provenance as generator
 # arguments, which reproduces that shape without making ccache a dependency.
 _LAUNCHER = "strideweave-test-launcher"
 
+# These tests are the only ones in the suite that spawn a real compiler, and in
+# the native-sanitizers job they would inherit the preloaded sanitizer runtime
+# and its options. A compiler is not instrumented, so that buys nothing, and it
+# costs: the runtime would police the compiler's allocator, and any diagnostic
+# it raised would abort the compiler under abort_on_error and land in the same
+# report directory the job reserves for StrideWeave's own diagnostics, where the
+# failure steps would print it as though StrideWeave had produced it. Clearing
+# these from the environment the fixture leaves behind covers both the probe the
+# generator runs and the compile the tests run, because neither passes an
+# explicit env. This is a property of running the generator from inside the
+# instrumented suite, not of the generator, which CMake invokes at build time
+# with none of these set — so it is fixed here rather than in the tool.
+_SANITIZER_ENVIRONMENT = (
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "ASAN_OPTIONS",
+    "UBSAN_OPTIONS",
+)
+
 
 def _entry(
     source: Path, object_path: Path, *, dependency_file: Path | None = None
@@ -158,6 +177,8 @@ def launcher_project(
     launcher.write_text('#!/bin/sh\nexec "$@"\n', encoding="utf-8")
     launcher.chmod(0o755)
     monkeypatch.setenv("PATH", f"{launcher_directory}{os.pathsep}{os.environ['PATH']}")
+    for variable in _SANITIZER_ENVIRONMENT:
+        monkeypatch.delenv(variable, raising=False)
     return _LauncherProject(
         compiler=compiler,
         source=source,
@@ -214,6 +235,38 @@ def test_dependency_probe_keeps_a_launcher_from_a_command_string() -> None:
     assert launched[0] == "ccache"
     assert launched[1] == "/usr/bin/c++"
     assert launched[-4:] == ["-M", "-MT", "strideweave-kernel", "input.cpp"]
+
+
+def test_the_launcher_fixture_clears_an_inherited_sanitizer_environment(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A compiler spawned by these tests must not inherit the runtime.
+
+    The variables are set before the fixture is requested so that the assertion
+    means something off the sanitizer job too; without that, a developer machine
+    that never sets them would pass this vacuously.
+    """
+
+    for variable in _SANITIZER_ENVIRONMENT:
+        monkeypatch.setenv(variable, "leaked-into-the-compiler")
+
+    request.getfixturevalue("launcher_project")
+
+    # Read them from a real child, the way the compiler would see them, rather
+    # than from os.environ, which would not prove inheritance.
+    report = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            'printf "%s" "${LD_PRELOAD-}${DYLD_INSERT_LIBRARIES-}'
+            '${ASAN_OPTIONS-}${UBSAN_OPTIONS-}"',
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert report.stdout == ""
 
 
 def test_a_launcher_prefixed_probe_discovers_the_same_dependencies(
