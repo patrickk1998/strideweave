@@ -159,3 +159,32 @@ def test_the_two_ci_selections_are_disjoint_exhaustive_and_derived() -> None:
         # This is what keeps native work out of the uninstrumented selection at
         # collection time rather than only when a marked test happens to run.
         assert not (item in marked and "backend_report" in fixtures)
+
+
+def test_a_process_that_escaped_the_sanitizer_runtime_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The parallel sanitizer job must not degrade quietly to a plain test run."""
+
+    config = pytest.Config.fromdictargs({}, [])
+    monkeypatch.setenv("STRIDEWEAVE_EXPECT_SANITIZERS", "1")
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
+    monkeypatch.setattr(conftest, "sanitizer_runtime_loaded", lambda: False)
+
+    with pytest.raises(pytest.UsageError, match="gw3 is not running under"):
+        conftest.pytest_configure(config)
+
+    monkeypatch.setattr(conftest, "sanitizer_runtime_loaded", lambda: True)
+    conftest.pytest_configure(config)
+
+
+def test_the_sanitizer_guard_is_inert_outside_the_sanitizer_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every other job runs uninstrumented and must be unaffected."""
+
+    config = pytest.Config.fromdictargs({}, [])
+    monkeypatch.delenv("STRIDEWEAVE_EXPECT_SANITIZERS", raising=False)
+    monkeypatch.setattr(conftest, "sanitizer_runtime_loaded", lambda: False)
+
+    conftest.pytest_configure(config)

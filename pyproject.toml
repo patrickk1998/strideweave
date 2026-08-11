@@ -44,6 +44,9 @@ dev = [
     "numpy>=2.0",
     "pyright>=1.1.407",
     "pytest>=9.0.2",
+    # The native-sanitizers job runs the instrumented suite in parallel. Only
+    # that job passes -n; every other job runs pytest serially.
+    "pytest-xdist>=3.6",
     "ruff>=0.14.10",
     "torch~=2.6.0",
     "types-pymysql>=1.1",
