@@ -1002,13 +1002,16 @@ batched-matmul kernel.
 ## Operation Profiling
 
 `profile` is a single-use context manager that records carrier-dispatched
-operation executions on the current thread. It records execution attempts, not
-dispatch factory lookups. Events contain the canonical operation name, exact
-dispatching carrier and implementation classes, monotonic start time, inclusive
-and self synchronous host wall time, thread identity, parent relationship, and
-success status. With `record_shapes=True`, tensor argument positions also carry
-immutable snapshots of their hierarchical shapes; non-tensor positions are
-represented by `None`.
+operation computations on the current thread. It records the post-preflight
+computation-and-Tensor-result-validation boundary, not dispatch factory lookups,
+execution-option validation, structural Tensor preflight, or post-computation
+autograd attachment. Failures before that boundary produce no event; failures
+after entry do. Events contain the canonical operation name, exact dispatching
+carrier and implementation classes, monotonic start time, inclusive and self
+synchronous host wall time, thread identity, parent relationship, and success
+status. With `record_shapes=True`, tensor argument positions also carry immutable
+snapshots of their hierarchical shapes; non-tensor positions are represented by
+`None`.
 Typed execution options travel through the profiled call separately and are not
 reported as positional inputs or saved as autograd tensors.
 
@@ -1044,7 +1047,7 @@ cross-thread exit abandons that registration so the owner thread recovers
 before its next dispatched operation or profiler context. Timings measure
 synchronous host wall time only; asynchronous
 accelerator activity is not modeled. Directly instantiated operations without
-carrier dispatch metadata and unannotated registry move operations are excluded.
+carrier dispatch metadata and public `move` executions are excluded.
 Results become available after the context exits, including when its body raises;
 the original exception still propagates.
 
