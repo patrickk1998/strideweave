@@ -2,18 +2,26 @@
 
 ## Project Orientation
 
-Read `llms.md` and `INVARIANTS.md` before making changes. `llms.md` describes the
-project's architecture, carriers, operation dispatch, autograd model, supported public
-APIs, interoperability, and current limitations. The invariant registry contains
-cross-cutting constraints that must shape code during design and generation, before
-linting, tests, or review detect violations.
+Read `llms.md` and `INVARIANTS.md` before making changes. `llms.md` is the
+architectural mental model — carriers, operation dispatch, autograd, the public
+surface, interoperability, and current boundaries. It is deliberately lossy about
+behavior that a spec under `openspec/specs/` already owns; its "Specifications And
+This Document" section maps each area to its owning spec, and where the two
+disagree the spec is authoritative. The invariant registry contains cross-cutting
+constraints that must shape code during design and generation, before linting,
+tests, or review detect violations. Contributor workflow — environment setup,
+verification commands, test markers, and CI — lives in `CONTRIBUTING.md`.
 
-When planning or reviewing a change, check whether it would make any part of
-`llms.md` inaccurate or incomplete. Propose corresponding `llms.md` updates for
-changes to architecture, carriers, dtypes, operation dispatch, autograd,
-public capabilities, interoperability, development commands, or documented
-limitations. When implementing such a change, update `llms.md` in the same
-change unless the user explicitly excludes documentation work.
+When a change alters external behavior, update the owning spec in the same change,
+through the OpenSpec flow below. Update `llms.md` when the change makes its mental
+model inaccurate or incomplete: a new or removed subsystem, a changed
+architectural relationship, a public capability that needs orienting explanation,
+or a documented boundary that no longer holds. Do not restate a spec-owned
+contract in `llms.md` — two maintained statements of one contract is the
+duplication this split removed. Where behavior has no owning spec yet — operation
+semantics beyond dtype planning, the module system, `strideweave.nn` — `llms.md`
+is still the statement of record and must be updated in the same change unless
+the user explicitly excludes documentation work.
 
 Identify the relevant invariant IDs while planning a change. When adding, removing, or
 materially changing a cross-cutting invariant, update `INVARIANTS.md` and its stated

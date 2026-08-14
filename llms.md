@@ -7,10 +7,56 @@ supports; StrideWeave deliberately has no separate device abstraction.
 
 The project is currently a tested prototype rather than a complete PyTorch
 replacement. It provides native CPU kernels, a Python reference carrier,
-autograd, hierarchical layout transformations, a small module system, and
-ergonomic layers (`strideweave.nn` with a minimal layer library and optimizer,
-`strideweave.friendly` with tensor factories), but does not yet include
-accelerator carriers.
+autograd, hierarchical layout transformations, a small module system, and a
+user-facing tensor layer (`strideweave.friendly`), with a minimal model layer
+(`strideweave.nn`) above it as a backstop. It does not yet include accelerator
+carriers.
+
+## Specifications And This Document
+
+The normative contracts live in `openspec/specs/<capability>/spec.md` and are
+published at <https://strideweave.org/spec/>. A spec states external behavior in
+testable terms: what a conforming implementation must do, for someone who has
+never seen this repository.
+
+This document is the mental model. It says what the pieces are, why they are
+shaped the way they are, and how they fit together, so that reading a spec — or a
+source file — starts from the right picture. It is deliberately **lossy** about
+anything a spec owns: it gives the shape of a rule and names the spec that states
+it exactly. Where the two disagree, the spec is authoritative and this file is the
+bug.
+
+The looseness is the point. This file grew long because it was the only source of
+truth, so every clarification had to be defended here. Re-enumerating a
+spec-owned contract rebuilds exactly that. When behavior changes, update the
+owning spec; update this file only when the mental model itself changes.
+
+| Area | Owning spec |
+| --- | --- |
+| Hierarchical layout values, coordinate mapping, structural transforms, broadcasting, tiling algebra | [`core-layout`](openspec/specs/core-layout/spec.md) |
+| Tensor construction, representation validation, carrier ownership, multi-subtensor boundaries | [`core-tensor-representation`](openspec/specs/core-tensor-representation/spec.md) |
+| Zero-copy views, their layout transformations, failures, and reverse-mode behavior | [`core-tensor-views`](openspec/specs/core-tensor-views/spec.md) |
+| Reverse-mode graph construction, backward traversal, accumulation, functional VJPs | [`autograd`](openspec/specs/autograd/spec.md) |
+| The layout command language behind every description string, and the lowering each command compiles to | [`layout-commands`](openspec/specs/layout-commands/spec.md) |
+| DLPack export, the carrier hook enabling it, and cross-carrier movement | [`interop-movement`](openspec/specs/interop-movement/spec.md) |
+| Dtype identity, hierarchy, discovery, immutability, extension, serialization | [`dtype-descriptors`](openspec/specs/dtype-descriptors/spec.md) |
+| Compound storage schemas, representation rules, block-scaled structure | [`dtype-representations`](openspec/specs/dtype-representations/spec.md) |
+| Carrier construction, storage dtypes, value access, factories, mutation, versioning, release | [`carrier-storage`](openspec/specs/carrier-storage/spec.md) |
+| Operation dispatch, exact-class metadata, backend extension, preflight, composite lowering | [`carrier-dispatch`](openspec/specs/carrier-dispatch/spec.md) |
+| Evictable hierarchy construction, ownership, residency transitions, lifecycle | [`carrier-composition`](openspec/specs/carrier-composition/spec.md) |
+| Overload selection, promotion, arithmetic, accumulation, result dtype | [`operation-dtype-policy`](openspec/specs/operation-dtype-policy/spec.md) |
+| Capability descriptors, registration, introspection, enforcement | [`backend-capabilities`](openspec/specs/backend-capabilities/spec.md) |
+| Profiling lifecycle, event evidence, nesting, timing, aggregation, reporting | [`operation-profiling`](openspec/specs/operation-profiling/spec.md) |
+| Staged local verification of the installed backend | [`kernel-verification`](openspec/specs/kernel-verification/spec.md) |
+| Verification report format, strict loading, filtering, summaries, CLI | [`verification-report`](openspec/specs/verification-report/spec.md) |
+| Raw evidence persistence, provenance, store lifecycle, contributor exchange | [`kernel-evidence-tracking`](openspec/specs/kernel-evidence-tracking/spec.md) |
+| `strideweave.friendly` creation, layout builders, scalar reductions, value extraction | [`friendly-tensor-creation`](openspec/specs/friendly-tensor-creation/spec.md), [`friendly-layout-builders`](openspec/specs/friendly-layout-builders/spec.md), [`friendly-scalar-reductions`](openspec/specs/friendly-scalar-reductions/spec.md), [`friendly-value-extraction`](openspec/specs/friendly-value-extraction/spec.md) |
+
+Areas this document still states in full, because no spec owns them yet, are
+operation semantics beyond dtype planning — structural alignment, reductions,
+convolution, indexing, selection — the module system, and `strideweave.nn`.
+Those sections are correspondingly precise: they are the contract until a spec
+takes it over.
 
 ## Core Model
 
@@ -21,21 +67,16 @@ accelerator carriers.
   adjacent `Layout` between each pair of levels. The carrier, offset, and layout
   properties read subtensor zero rather than parallel fields.
 - `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
-  coordinates to physical storage indices.
-- `layout.profile` exposes the shape tree's leaf-and-nesting recipe without its
-  extents or strides. `layout.is_injective` reports whether every logical
-  coordinate maps to a distinct physical offset, including exact detection of
-  stride-zero and overlapping non-zero layouts. `layout.broadcast_to(shape)`
-  widens only extent-one leaves at the same hierarchical positions, setting
-  their strides to zero; it never flattens, rank-aligns, inserts, removes, or
-  reorders modes. Layout complement is undefined for non-injective layouts and
-  refuses them explicitly.
-- `Tiler` is the public type alias for a read-only sequence of `Layout` values.
-  Layout composition APIs use tilers to describe one tile per leading
-  hierarchical mode: `Layout.compose` accepts a tiler directly, while
-  `Layout.divide_tiler` and `Layout.zipped_divide` use its layouts to divide
-  the corresponding leading modes. Lists, tuples, and other compatible
-  sequences are accepted.
+  coordinates to physical storage indices. `layout.profile` exposes the shape
+  tree's leaf-and-nesting recipe without its extents or strides, and
+  `layout.is_injective` reports whether every logical coordinate maps to a
+  distinct physical offset. `layout.broadcast_to(shape)` widens only extent-one
+  leaves at the same hierarchical positions, setting their strides to zero; it
+  never flattens, rank-aligns, inserts, removes, or reorders modes. That
+  refusal to guess is the layout algebra's defining choice.
+- `Tiler` is the public type alias for a read-only sequence of `Layout` values,
+  used by the composition APIs (`Layout.compose`, `Layout.divide_tiler`,
+  `Layout.zipped_divide`) to describe one tile per leading hierarchical mode.
 - `layout.size` is the logical element count, while `layout.cosize` is the
   physical storage size the layout addresses (one past its largest offset).
   They are equal for compact layouts but `cosize` is larger for strided or
@@ -48,52 +89,38 @@ accelerator carriers.
   target coordinate space and returns its replication extent. The proof is
   rank-bounded and never enumerates logical coordinates.
 - Operations dispatch through `tensor.carrier.dispatch_op(operation_name)`.
-  The base `Carrier` method owns the shared dispatch policy: it calls the
-  backend `_dispatch_op` factory hook, requires a fresh `Operation`, and tags
-  that operation with its canonical name and exact dispatching carrier class.
-  Custom carrier implementations must override `_dispatch_op`, not
-  `dispatch_op`. Dispatch is uniformly instance-based; class-level
-  `dispatch_op` calls are not part of the public contract. A carrier composing
-  another handles custom names in its own `_dispatch_op` and returns a
-  composite-owned operation adapter for delegated names. The adapter owns the
-  visible autograd node, obtains a fresh nested operation through the owned
-  carrier's public `dispatch_op`, lowers tensor arguments into representations
-  that operation accepts, invokes it through sealed lowered execution, and wraps
-  results and gradients back into the composite representation.
+  The base `Carrier` method owns the shared dispatch policy and tags each fresh
+  operation with its canonical name and exact dispatching carrier class; custom
+  carriers override the `_dispatch_op` factory hook rather than `dispatch_op`.
+  Dispatch is uniformly instance-based. A carrier composing another returns a
+  composite-owned adapter for delegated names: the adapter owns the visible
+  autograd node, lowers tensor arguments into the representation the nested
+  operation accepts, runs it through sealed lowered execution, and wraps results
+  and gradients back into the composite representation.
 - Python and native operations inherit from the shared native `Operation` base.
   `Operation._forward` is a protected implementation hook and must not be
   invoked directly. Call public `forward`, or use the framework-owned sealed
   lowered-execution path from a composite adapter, so operation preflight,
-  result validation, profiling, and autograd bookkeeping remain intact. Direct
-  `_forward` calls are unsupported. The v0 c0 layout views (`permute`, `slice`,
-  `reshape`, `as_strided`, `broadcast_to`, `squeeze`, and
-  `unsqueeze`) are the only operations that may
-  execute on a validated multi-subtensor representation; all other operations
-  retain the one-subtensor preflight.
+  result validation, profiling, and autograd bookkeeping remain intact.
 - Views may use different layouts and offsets while sharing the same carrier.
 - In the generalized representation, placement layout `L_i` maps level
   coordinate space `c_i` into carrier `i`, while adjacent layout `S_i` maps
   `c_i` to an integer decoded in `c_(i+1).shape`. Both are ordinary CuTe-style
   `Layout` values; their structural positions distinguish physical placement
-  from logical grouping. Universal validation checks the logical dtype's
-  storage schema, identity-matched carrier dtypes, exact carrier-class
-  homogeneity, offsets, `cosize` bounds, and adjacent source/target
-  compatibility before any dtype-specific rule runs.
-- Current Tensor operations take a structural one-subtensor fast path. Native
-  CPU access, views, results, movement, scatter, autograd, and DLPack all read
-  carrier, offset, layout, dtype, and version state through that authoritative
-  representation. Autograd snapshots the complete ordered version token of
-  every unique constituent carrier. Validated multi-subtensor representations
-  support only the pure c0 layout views named above: they preserve every
-  carrier, offset, deeper layout, and adjacent level while rebuilding L0/S0
-  and revalidating the complete representation. Coordinate indexing, mutation, arithmetic,
-  movement, scatter, backward, and DLPack still reject them before allocation
-  or carrier mutation until their remaining per-plane semantics are implemented.
-- External representation rules annotate `validate` with the public
-  `RepresentationValidationContext` protocol, available from both
-  `strideweave` and `strideweave.carriers.dtype`. Its read-only fields expose
-  the logical dtype, ordered storage dtypes, placement and adjacent layouts,
-  and level shapes only after universal validation succeeds.
+  from logical grouping. Universal validation checks that structure — storage
+  schema, carrier dtypes and classes, offsets, `cosize` bounds, adjacent
+  compatibility — before any dtype-specific rule runs.
+- Current Tensor operations take a structural one-subtensor fast path, and
+  native CPU access, views, results, movement, scatter, autograd, and DLPack all
+  read carrier, offset, layout, dtype, and version state through the
+  authoritative representation. Validated multi-subtensor representations
+  support only the pure c0 layout views (`permute`, `slice`, `reshape`,
+  `as_strided`, `broadcast_to`, `squeeze`, `unsqueeze`), which preserve every
+  carrier, offset, and deeper layout while rebuilding and revalidating the top
+  level; everything else refuses them before allocation or carrier mutation.
+- An external representation rule annotates `validate` with the public
+  `RepresentationValidationContext` protocol, whose read-only fields become
+  available only after universal validation succeeds.
 
 For example, this creates a two-mode column-major tensor backed by a Python carrier:
 
@@ -117,6 +144,16 @@ The core namespace deliberately exposes only these composable primitives.
 High-level factories such as `tensor`, `zeros`, and `ones` live in the
 separate `strideweave.friendly` submodule (see Ergonomic Layers below); callers
 working with the core API construct the carrier and layout explicitly.
+
+Three specs state this model exactly:
+[`core-layout`](openspec/specs/core-layout/spec.md) for the layout algebra and
+its coordinate mapping, transforms, broadcasting, and tiling;
+[`core-tensor-representation`](openspec/specs/core-tensor-representation/spec.md)
+for construction, the ordered representation, validation, and the
+multi-subtensor boundary; and
+[`core-tensor-views`](openspec/specs/core-tensor-views/spec.md) for the
+zero-copy views and their reverse-mode behavior. Dispatch itself is
+[`carrier-dispatch`](openspec/specs/carrier-dispatch/spec.md).
 
 ## Carriers
 
@@ -149,16 +186,20 @@ StrideWeave currently provides four carrier implementations:
   to secondary storage and blocks access until `promote()` restores them. Its
   constructor takes exclusive ownership of both supplied carriers.
 
+[`carrier-storage`](openspec/specs/carrier-storage/spec.md) states what each of
+these carriers accepts, allocates, and reports, and
+[`carrier-composition`](openspec/specs/carrier-composition/spec.md) states
+`Evictable`'s ownership and residency behavior.
+
 These four are closed implementations: `Carrier` is the extension interface and
 stays open, but `Generic`, `CPU`, `FileBacked`, and `Evictable` reject subclass
 creation with a message naming the supported alternative, and each is declared
 `@final` on every import path, so a type checker reports the same closure before
-the program runs. Each states its
-allocation factories, storage normalization, dispatch metadata, and capability
-declarations in terms of its exact class — `Evictable` in terms of its exact
-instances — so a specialization would inherit claims it cannot honor: a
-`Generic` subclass would advertise every plan `Generic` executes while
-`Generic.new_like` refused to allocate a result for it.
+the program runs. Each states its allocation factories, storage normalization,
+dispatch metadata, and capability declarations in terms of its exact class —
+`Evictable` in terms of its exact instances — so a specialization would inherit
+claims it cannot honor: a `Generic` subclass would advertise every plan
+`Generic` executes while `Generic.new_like` refused to allocate a result for it.
 
 A new backend is therefore a sibling `Carrier`, normally composed from the
 existing ones the way `Evictable` composes a memory hierarchy: it owns the
@@ -181,26 +222,27 @@ instance, as described under [Backend Capabilities](#backend-capabilities).
 
 Dtype descriptors form a small immutable hierarchy rooted at `DType`, and every
 registered descriptor is a singleton, so tags are compared with `is`. The
-attributes of `DType` are exactly the built-in descriptors. That namespace is
-frozen: reassigning or deleting a binding raises, and so does binding any
-further descriptor as a class attribute, so class lookup and `DType.from_name`
-can never disagree.
+attributes of `DType` are exactly the built-in descriptors, in a namespace that
+is frozen against rebinding, so class lookup and `DType.from_name` can never
+disagree.
 
 Constructing a descriptor is one transaction owned by the dtype model rather
-than a sequence an implementation has to order correctly. The most-derived
-`__init__` runs first and simply assigns its own fields; the finished descriptor
-is then validated, sealed against mutation, and published under the registry
-lock. Three properties follow from that single finalization boundary:
+than a sequence an implementation has to order correctly: the most-derived
+`__init__` assigns its own fields, and the finished descriptor is then
+validated, sealed against mutation, and published under the registry lock. A
+constructor that raises registers nothing, a concurrent lookup never observes a
+partly initialized descriptor, and claiming a name is thread-atomic.
+[`dtype-descriptors`](openspec/specs/dtype-descriptors/spec.md) states the
+identity, registration, extension, and serialization contract exactly.
 
-- A constructor that raises at any depth registers nothing, so a failed name and
-  its structure both stay free for a later descriptor.
-- A concurrent lookup never observes a partly initialized descriptor, because
-  the entry that makes it reachable is written after it is complete and sealed.
-- Claiming is thread-atomic: one lock guards every registry read and write, so a
-  name — and, for a block-scaled descriptor, a structure — is checked and
-  claimed indivisibly. Two threads constructing the same name therefore produce
-  exactly one descriptor, and every descriptor a constructor returns is the
-  identity that `DType.from_name` reports.
+Descriptors expose `name`, `supertype`, `supertypes()`, `is_simple()`,
+`is_category()`, `is_compound()`, `is_opaque_storage()`, and
+`is_subtype_of(other)`, and the registry is queried through `DType.registered()`
+and `DType.from_name(name)`, both narrowed to the receiving class. The kind
+predicates classify the *representation*, not backend availability: there is
+deliberately no global "is this storable" predicate, because storability is a
+decision of an exact carrier class together with a dtype. `E4M3` is a
+well-formed simple dtype that no carrier accepts today.
 
 The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
 
@@ -210,9 +252,10 @@ The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
   `DType.Bool` (8 bits) are the concrete simple storage dtypes carriers support
   today; `DType.Float64` is an accumulator-only descriptor used by operation
   plans and is not accepted as carrier storage; the registry also defines the
-  simple encodings `Int8`, `E8M0`, `E5M2`, `E4M3`,
-  `E3M2`, `E2M3`, and `E2M1`, which are structural only. Being simple describes
-  the encoding, not carrier support.
+  simple encodings `Int8`, `E8M0`, `E5M2`, `E4M3`, `E3M2`, `E2M3`, and `E2M1`,
+  which exist so the block-scaled formats can name their elements and scales and
+  are otherwise structural only. Being simple describes the encoding, not
+  carrier support.
 - `DTypeCategory` is an abstract relationship with no bit width. `DType.Any` is
   the root category, and `DType.Floating` and `DType.Integer` enclose the
   matching simple dtypes. A category is not itself a representation.
@@ -226,36 +269,23 @@ The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
   composed from several simple-dtype planes. It is never carrier storage
   itself; its ordered `simple_types` are the per-plane storage dtypes a
   multi-plane implementation would use, one carrier per plane. A compound
-  descriptor may also carry an ordered immutable tuple of
-  `RepresentationRule` values. The rule sequence is copied into descriptor
-  ownership and contributes once to canonical structure and pickle identity;
-  an empty sequence is valid. Rules add reusable representation constraints and
-  run only after the universal representation checks have succeeded.
-  `LevelExtent(level, extent)` is the first reusable rule: an integer extent
-  requires every coordinate in adjacent target level `level + 1` to group
-  exactly that many coordinates from level `level`, while `Whole` requires one
-  target coordinate covering the complete source level. It validates logical
-  grouping only, not physical placement or numerical encoding.
+  descriptor may also carry reusable `RepresentationRule` values, which
+  constrain logical grouping only and run after the universal representation
+  checks succeed. `LevelExtent(level, extent)` is the first such rule.
+  [`dtype-representations`](openspec/specs/dtype-representations/spec.md) owns
+  the compound and rule contract.
 
 Descriptors describe representation; they do not decide what an operation
 computes in or returns. That policy is specified in
-[`design/SimpleDType-operation-policy.md`](design/SimpleDType-operation-policy.md)
-and implemented by the backend-independent planner in
+[`operation-dtype-policy`](openspec/specs/operation-dtype-policy/spec.md) and
+implemented by the backend-independent planner in
 `strideweave.carriers.operation_policy`, which resolves overload selection,
 promotion, arithmetic, accumulation kind and accumulator dtype, and result dtype
-for the supported simple dtype operands. Floating reduction association order is
-backend-defined. The registry declares each operation once, including overloads
-such as tensor/tensor versus tensor/weak-scalar `mul` and `pow`, mixed-output
-operations such as Float32 predicates returning Bool or index reductions
-returning Int32, and the `dtype_operand_positions` that identify which full
-operation-call arguments participate in dtype planning. Shape, axis, ordering,
-and other execution parameters never enter promotion as accidental weak
-scalars. `select` has a Bool/F32/F32 overload, while `clamp` has four exact
-tensor/weak-real bound overloads; these role signatures are selected centrally.
-Autograd eligibility follows from the result dtype by the same
-floating-dtype rule the tensor layer applies to every tensor, so the plan does
-not restate it. The policy is a deliberately evolvable starting point rather
-than a compatibility promise.
+from the operands alone. Shape, axis, ordering, and other execution parameters
+never enter promotion as accidental weak scalars, and autograd eligibility
+follows from the result dtype rather than being restated per plan. Floating
+reduction association order is backend-defined. The policy is a deliberately
+evolvable starting point rather than a compatibility promise.
 
 `Generic` executes those plans and is the reference every other backend
 conforms to. Native `CPU` resolves the same plans: each operation asks the
@@ -264,6 +294,13 @@ while the GIL is still held, then releases it to run the kernel that plan
 selected. No backend carries a promotion table of its own, so Generic and CPU
 agree on Float32, Int32, and Bool storage/results by construction rather than by
 parallel maintenance.
+
+One consequence of the policy is worth calling out for `pow`: an exponent
+preserves an `Int32` result only when it is a weak *integer* in
+`[0, 2**31 - 1]`. A float exponent takes the floating path even when its value
+is integral, so `int_tensor ** 2` stays `Int32` while `int_tensor ** 2.0` is
+`Float32`. On the integer path the exponent is used exactly rather than carried
+through a float, so an exponent above `2**24` keeps its parity.
 
 #### Backend Capabilities
 
@@ -286,49 +323,27 @@ carrier.unsupported_plan_reason(plan)      # None when supported
 carrier.require_operation_plan(plan)       # the capability, or raises
 ```
 
-`operation_capabilities(operation_name=None)` returns immutable
-`OperationCapability` descriptors — operation, per-operand source dtype and
-conversion target, compute arithmetic, accumulation kind and accumulator dtype,
-and output dtype — in a
-deterministic order. The four queries answer from whichever set owns that
-carrier: an independent carrier's exact class declarations, or the frozen
-snapshot a dependent carrier generated for that instance. A caller asks the
-carrier and never has to know which, and a new backend of either kind gets the
-right answer without overriding these methods. The query describes the carrier's
-capabilities rather than its own storage dtype, so a `Float32` CPU carrier still
-reports the `Int32` plans CPU executes. An operation the backend has nothing for
-yields an empty tuple and a reason naming the operation; a plan whose shape is
-unsupported yields a reason describing the shape; `require_operation_plan` raises
-`UnsupportedOperationPlan` in both cases. These are the same entries execution
-is accepted against, so an advertised plan is executable and an executed plan
-was advertised.
+The four queries answer from whichever set owns that carrier: an independent
+carrier's exact-class declarations, or the frozen snapshot a dependent carrier
+generated for that instance. A caller asks the carrier and never has to know
+which. The query describes the carrier's *capabilities* rather than its own
+storage dtype, so a `Float32` CPU carrier still reports the `Int32` plans CPU
+executes, and these are the same entries execution is accepted against, so an
+advertised plan is executable and an executed plan was advertised. An
+unsupported plan yields a reason naming the operation or the shape, and
+`require_operation_plan` raises `UnsupportedOperationPlan`.
+[`backend-capabilities`](openspec/specs/backend-capabilities/spec.md) states the
+descriptor fields, ordering, registration, sealing, and refusal contract.
 
 Capabilities belong to an exact carrier class and are never resolved through its
-bases: a class that declares nothing supports nothing. Every shipped independent
-carrier — `Generic`, `CPU`, and `FileBacked` — declares its entries once during
-carrier-package initialization and is sealed afterwards, through a
-framework-internal path that is exported nowhere. `FileBacked` declares the
-empty set: it plans no operation of its own, and declaring that makes it a
-stated fact rather than an unclaimed class. `Evictable` declares nothing at all,
-because what a hierarchy executes depends on the tiers it was handed; it
-generates its capabilities per instance, as described below. Registration
-accepts only an independent `Carrier`
-implementation — never `object`, the `Carrier` root, an unrelated class, a
-`DependentCarrier` class, or a sealed built-in — so no call can widen what a
-shipped carrier claims to execute.
-
-A class declares once, and its answer is fixed from then on. The complete set is
-published and sealed in the same call, so no observer sees part of a declaration
-and no second call can add to one — including after an empty declaration, which
-is itself a complete statement. Observation seals as well: querying or requiring
-a plan of an independent class that has not declared seals its empty set on the
-spot, so first observation is the final answer rather than a provisional one.
-That is what lets one carrier snapshot another class's reach without the
-snapshot going stale; the practical rule is to declare a custom carrier's
-capabilities in its own module, at import time, before anything can ask.
-
-A custom carrier declares its own capabilities against its exact class, which is
-what that class executes and nothing else:
+bases: a class that declares nothing supports nothing. A class declares once —
+`Generic`, `CPU`, and `FileBacked` during carrier-package initialization,
+`FileBacked` declaring the empty set as a stated fact — and its answer is fixed
+from then on, because publication and sealing happen in the same call and first
+observation seals an undeclared class's empty set. That is what lets one carrier
+snapshot another class's reach without the snapshot going stale; the practical
+rule is to declare a custom carrier's capabilities in its own module, at import
+time, before anything can ask.
 
 ```python
 from strideweave.carriers.operation_capability import (
@@ -378,32 +393,16 @@ class Mirror(sw.DependentCarrier):
 ```
 
 `_generate_operation_capabilities` is unimplemented by the base: how an instance
-decides what it executes is entirely its own, whether that means enumerating a
-composed carrier's capabilities, filtering them by what it can store, or
-building entries outright.
-
-Finalization is explicit and cooperative rather than automatic. The base never
-calls the generator itself — only the concrete carrier knows when its
-dependencies are complete — so construction calls
-`_finalize_dependent_capabilities()` as its last step, in the same thread, before
-the unfinished instance becomes reachable anywhere else. Finalization is not a
-thread-safe initialization protocol: concurrent calls and leaking `self` during
-construction are outside the supported extension contract. Within that
-construction step, the call materializes the generated iterable once, rejects
-anything that is not an `OperationCapability` and any exact shape generated
-twice, and freezes a deterministically ordered immutable snapshot. Before it,
-the instance answers no capability query, which keeps a half-built hierarchy
-from advertising an empty set a caller then trusts; a later call is an error, so
-a snapshot is never quietly replaced; and a generation that fails publishes
-nothing rather than a partial set. Capabilities are frozen against the
-dependencies the instance ended up with, so two instances of one dependent class
-may answer differently, and a dependent class cannot declare class-level
-capabilities at all — it knows nothing about the carriers its instances will be
-handed. Until an instance finalizes, its four capability queries raise rather
-than answering. Unlike the shipped concrete carriers, `DependentCarrier` and the
-dependent carriers built on it stay open to subclassing — but not to overriding
-those four queries, which `Carrier` owns so that introspection and enforcement
-cannot disagree.
+decides what it executes is entirely its own. Finalization is explicit and
+cooperative rather than automatic, because only the concrete carrier knows when
+its dependencies are complete — construction calls
+`_finalize_dependent_capabilities()` as its last step, in the same thread,
+before the unfinished instance becomes reachable anywhere else, and the call
+materializes, validates, and freezes the snapshot once. Before it, the instance
+answers no capability query, which keeps a half-built hierarchy from advertising
+an empty set a caller then trusts. This is a construction protocol, not a
+thread-safe initialization one: concurrent calls and leaking `self` during
+construction are outside the supported extension contract.
 
 `Evictable` is the shipped example. At the end of construction it takes the
 plans its own promoted primary executes — asked of the carrier, so a primary
@@ -421,60 +420,7 @@ hierarchies that generate their own.
 Like the policy itself, the capability surface is evolvable rather than a
 compatibility promise.
 
-One consequence is worth calling out for `pow`: an exponent preserves an
-`Int32` result only when it is a weak *integer* in `[0, 2**31 - 1]`. A float
-exponent takes the floating path even when its value is integral, so
-`int_tensor ** 2` stays `Int32` while `int_tensor ** 2.0` is `Float32`. On the
-integer path the exponent is used exactly rather than carried through a float,
-so an exponent above `2**24` keeps its parity — `(-1) ** (2**24 + 1)` is `-1`,
-where a float-carried exponent rounded to an even one and returned `1`.
-
-### Generic Reference Semantics
-
-On concrete storage `Generic` implements the encodings faithfully rather than
-approximating them with Python's own numeric types:
-
-- `Float32` storage holds binary32-exact values, and arithmetic rounds to
-  binary32 at every step. IEEE singularities are results rather than
-  exceptions, in forward and backward alike: dividing by zero yields `±inf`,
-  `0.0 / 0.0` and `0.0 ** -1` follow IEEE-754, and an overflowing magnitude
-  saturates to an infinity instead of raising.
-- Floating `reduce_sum` and `matmul` advertise both the default `Float32`
-  accumulator and an explicit `Float64` accumulator. Widening happens only
-  after loading already encoded `Float32` terms; products and stored outputs
-  remain `Float32`. A matmul backward contraction reuses that call's retained
-  accumulator choice without treating the option as a tensor input.
-- `Int32` storage holds in-range integers. Arithmetic is exact and narrowing is
-  checked, so an out-of-range result raises `OverflowError` rather than
-  wrapping. A reduction accumulates exactly and checks only the final sum, so a
-  partial sum may legitimately leave `Int32` range. `Int32` tensors are not
-  differentiable.
-- `Bool` storage contains only `False` and `True`. Comparisons and
-  `logical_not` produce Bool tensors, which are non-differentiable; Bool is not
-  implicitly promoted into Float32 or Int32 arithmetic. Generic normalizes
-  stored values to Python `bool`, while CPU uses one-byte `0`/`1` storage.
-- Concrete storage is normalized and owned. Values are converted when stored,
-  including through `carrier[i] = value` and `scatter`, and the carrier copies
-  the supplied sequence, so no caller-held alias can place an unrepresentable
-  value or change stored values without the version counter observing it.
-  Legacy `Any` and `Floating` storage keeps its documented aliasing behavior.
-- NumPy supplies the binary32 mechanics and is imported lazily on first
-  concrete `Float32` use, so importing StrideWeave, or using only `CPU`,
-  `Int32`, or the legacy dtypes, never loads it.
-
-The legacy dtypes are outside this policy. An operation whose operands mix
-legacy `Any`/`Floating` storage with concrete storage stays on Generic's
-historical Python arithmetic rather than silently selecting a concrete plan,
-which means the concrete operand's binary32 semantics are downgraded to
-binary64 for that operation. Legacy `Any` values are never routed through
-checked integer arithmetic.
-
-`DType` and `CompoundDType` are abstract at runtime, as is any subclass that
-does not declare `abstract=False`, so a class that describes no representation
-of its own cannot produce descriptors that claim registry names. The kinds are
-also closed: every
-descriptor is a `DTypeCategory`, a `SimpleDType`, or a `CompoundDType`, and a
-subclass of the root that is none of them is rejected.
+### Extending The Dtype Model
 
 A concrete compound representation is added by subclassing, using public APIs
 only. The subclass declares `abstract=False`, hands its ordered planes to
@@ -493,130 +439,22 @@ assert sw.CompoundDType.from_name("Planar32") is pair
 assert pair.num_carriers == 2
 ```
 
-`CompoundDType` copies the planes into a tuple it owns and validates that copy,
-so a mapping that is empty, not iterable, or not all `SimpleDType` descriptors
-never reaches the registry, and mutating the collection the caller passed in
-changes nothing afterwards.
-
-More generally, a descriptor's stored fields and the accessors that report its
-representation — `name`, `value`, `supertype`, `supertypes()`, `structure()`,
-`is_subtype_of()`, the kind predicates, `bits`, `simple_types`, `num_carriers`,
-`element`, `levels`, `num_axes`, and `bits_per_element` — are owned by the
-model, and a subclass that redefines one of them, whether as a slot, a property,
-or a method, is refused when the class is created. The attribute machinery
-itself — `__getattribute__`, `__getattr__`, `__setattr__`, and `__delattr__` —
-is owned on the same terms, because intercepting attribute access decides what
-every accessor answers. Each would otherwise let a
-registered descriptor report a representation that disagrees with the structure
-recorded for its identity and its pickle. A subclass extends the model by adding
-its own fields and, when its representation carries state of its own, by
-overriding `structure_extension()`.
-
-Ownership is layered by contract class — the root descriptor, categories,
-simple, compound, and block-scaled dtypes each own what they define, and every
-class below inherits that — and the layers live in the dtype module rather than
-on the classes themselves. Assigning to or deleting a class attribute therefore
-cannot weaken the policy: the same rule applies to a later `setattr` on a
-descriptor class as to its class body. An implementation's own declared slots
-stay protected against a further subclass on top of that.
-
-Those layers are part of a wider rule: a descriptor's identity is composed by
-the model, not reported by the descriptor. Each contract class has one immutable
-specification held in the dtype module, carrying the members it owns, the
-fragment it contributes to a canonical structure, the validation it requires,
-and whether its descriptors are additionally unique by structure. Finalizing a
-descriptor resolves the specifications its class inherits through the method
-resolution order, general to specific, and applies them in that order — so a
-`CompoundDType` implementation is bound by the root and compound contracts, and
-a `BlockScaledDType` subclass by those two plus the block-scaled one. Nothing
-about identity is dispatched through the descriptor, so an implementation cannot
-omit a canonical layer from its fingerprint, decline the uniqueness its contract
-imposes, or weaken a check it still claims to satisfy. The names the model once
-dispatched through — `_contract_structure`, `_structural_key`,
-`_structure_conflict`, and `_validate_finalized` — are reserved on the same
-terms as the accessors, so defining one is refused at class creation rather than
-silently ignored. Contracts are not registrable: an external representation
-inherits a recognized one and is first-class through registration, subtype and
-kind queries, discovery, copying, pickling, and `structure_extension()`.
-
-The check spans the whole hierarchy a descriptor class is built from, not only
-its class body: a mixin supplying an owned accessor or an attribute-interception
-method is refused at class creation, whichever side of the contract class it is
-listed on, and the error names the member and the base it came from. Mixins that
-add behavior of their own remain ordinary bases. Only the hierarchy as defined
-is checked — a class and its bases are trusted to stay what they were when the
-descriptor class was created.
-
-The rule covers a descriptor's own state as well as its class. Declaring
-`__slots__` is optional, so an implementation may keep its fields in an instance
-dictionary — but an entry named like an owned member, such as a `structure` or
-an `is_compound` assigned in `__init__`, would take precedence over the
-inherited accessor, so finalization rejects the descriptor before it is sealed
-or registered. The check runs again after finalization has consulted
-`structure_extension()`, the one hook that runs after the constructor and can
-assign to `self` just as `__init__` does, so an accidental shadow introduced
-there is caught before anything is claimed. Its name and structural key stay
-free and the rejected object keeps neither structure nor seal.
-
-Together these rules describe guardrails, not a sandbox. What the model actually
-does is bounded and worth stating exactly. It validates a descriptor class's
-initial hierarchy when the class is created, validates the completed descriptor
-during finalization — as its constructor leaves it and again after the hooks
-that describe it — seals every registered instance against mutation, and keeps
-the built-in `DType` namespace frozen. Within that, both slotted and
-dictionary-backed implementations are supported, an implementation's own fields
-stay its own, and a registered descriptor's model-owned accessors agree with the
-structure recorded for its identity, which is what pickling and structural
-uniqueness use.
-
-The rest is contract rather than enforcement. From the moment a descriptor
-class is created, that extension class and every base contributing behavior to
-it must stay as they were: Python classes remain mutable, and the model checks a
-hierarchy when it is defined instead of watching it afterwards.
-Representation-bearing state must be initialized before registration and
-described by a pure, stable
-`structure_extension()`, read exactly once during finalization — a field an
-implementation keeps changing afterwards alters nothing about the registered
-identity, and an object an extension field merely refers to is not deep-frozen.
-
-The following are therefore unsupported rather than intercepted, and code that
-uses one forfeits the registry, structural-identity, pickle, and immutability
-guarantees above: a custom `__dict__` or other concealment of a descriptor's own
-state, reassigning `__slots__`, mutating an extension class or a participating
-mixin after the descriptor class is created, `object.__setattr__`,
-`type.__setattr__`, and reaching into the dtype module's private state. The
-dtype model is an API-integrity boundary against mistakes and drift in
-cooperative code, not a defense against hostile metaprogramming sharing the
-process.
-
-Field assignment inside `__init__` works because descriptor state is open
-exactly until finalization seals it; every published descriptor is immutable. An
-implementation that omits `super().__init__` is rejected rather than published
-without a name or without planes, and a construction that fails leaves the
-object inert: it keeps no structure and no seal, so it cannot later be used as
-another descriptor's supertype or plane.
-
-Descriptors expose `name`, `supertype`, `supertypes()`, `is_simple()`,
-`is_category()`, `is_compound()`, `is_opaque_storage()`, and
-`is_subtype_of(other)`. The kind predicates classify the *representation*, not
-backend availability: `is_simple()` reports that a dtype is one fixed-width
-scalar encoding, which stays true for an encoding no carrier accepts. There is
-deliberately no global "is this storable" predicate, because whether a dtype can
-be stored is a decision of an exact carrier class together with a dtype, not a
-property of the descriptor. `E4M3` is a perfectly well-formed simple dtype that
-no carrier accepts today, and `is_opaque_storage()` reports a descriptor's
-legacy disposition rather than permission from any carrier.
-
-`name` is the canonical descriptor field. `value` is a read-only compatibility
-alias returning the same string, kept because `DType` was previously an `Enum`
-whose members exposed `value`; code such as `tensor.dtype().value` therefore
-still works and can never disagree with `name`.
-
-`DType.registered()` and `DType.from_name(name)` query the registry and narrow
-to the receiving class in both value and type, so `SimpleDType.registered()`
-returns only simple dtypes and `SimpleDType.from_name("E4M3").bits` type-checks
-without a cast. Constructing a `SimpleDType` or `DTypeCategory` registers it
-under a unique name and extends the hierarchy.
+The governing idea is that a descriptor's identity is *composed by the model,
+not reported by the descriptor*. Each contract class — the root descriptor,
+categories, simple, compound, block-scaled — owns one immutable specification
+carrying the members it defines, the fragment it contributes to a canonical
+structure, the validation it requires, and whether its descriptors are
+additionally unique by structure. Finalizing a descriptor resolves those
+specifications through the method resolution order and applies them general to
+specific. Nothing about identity is dispatched through the descriptor, so an
+implementation cannot omit a canonical layer from its fingerprint, decline the
+uniqueness its contract imposes, or weaken a check it still claims to satisfy.
+Model-owned accessors and the names the model once dispatched through are
+reserved: redefining one — in the class body, in a mixin, or as an instance
+attribute that would shadow it — is refused rather than silently honored. An
+implementation extends the model by adding its own fields and, when its
+representation carries state of its own, by overriding `structure_extension()`,
+the one hook whose value it controls.
 
 Registration deliberately does not install a `DType` class attribute, which
 would let extensions collide with the built-in namespace and leave the
@@ -632,110 +470,27 @@ sw.DType.Float16 = extension                       # AttributeError: the namespa
 ```
 
 Copying and pickling preserve identity rather than producing a duplicate
-descriptor. A pickle carries the descriptor's name and its structure, which the
-*receiving* process resolves against its own registry; it never ships a dtype
-definition. A built-in therefore unpickles in any process that imports
-`strideweave`, while a dynamically registered dtype requires that process to
-register a matching descriptor first:
+descriptor. A pickle carries the descriptor's name and its recursively expanded
+structure, which the *receiving* process resolves against its own registry; it
+never ships a dtype definition. A built-in therefore unpickles anywhere
+`strideweave` is imported, while a dynamically registered dtype requires the
+receiving process to register a matching descriptor first, and a receiver whose
+matching name has a different width, category, or planes is rejected rather than
+silently substituted. Shipping the dtype definition itself — a cross-process
+descriptor schema — is deliberately out of scope and remains possible future
+work.
 
-```python
-payload = pickle.dumps(sw.SimpleDType("Float16", bits=16, supertype=sw.DType.Floating))
-
-# In the receiving process, registration must happen before the load.
-recreated = sw.SimpleDType("Float16", bits=16, supertype=sw.DType.Floating)
-assert pickle.loads(payload) is recreated
-```
-
-Without that registration the load raises `LookupError`, and if the receiving
-process registered `Float16` with a different width or category the load raises
-`ValueError` rather than silently substituting a different representation.
-
-That check covers the whole referenced graph, not a list of names. A structure
-records each contract class's own fields and expands every descriptor it names —
-supertype, compound plane, block element, scale — into that descriptor's
-structure recursively, so a receiver whose `E4M3` is 16 bits, whose `Floating`
-is not opaque, or whose compound planes differ is rejected even though every
-name matches. The error names the field that actually differs. `structure()`
-returns the recorded value, which is computed once at finalization and is the
-authority for structural identity.
-
-A descriptor may reference only descriptors that are *canonically registered* —
-finalized and still the descriptor their name resolves to. That keeps the graph
-acyclic and the expansion finite, and it keeps an object whose own registration
-was rejected from becoming the supertype or plane of a descriptor that does
-register.
-
-Every leaf of a structure is stored as a string naming its exact type alongside
-its value, so structures never compare through ordinary Python equality:
-`True`, `1`, and `1.0` are three different representations rather than one, and
-a `NaN` tag gets a single deterministic spelling instead of a value that is not
-equal to itself. Floats are recorded in exact hexadecimal form, so a tag
-round-trips through a pickle without precision loss.
-
-An implementation whose representation carries state beyond its contract
-declares it by overriding `structure_extension()` — the only part of a
-descriptor's identity an implementation controls — which returns exact strings,
-numbers, `None`, `Whole`, and tuples of those. Two descriptors that would
-otherwise be structurally identical are then distinguished for both pickle
-compatibility and structural uniqueness:
-
-```python
-class Tagged(sw.CompoundDType, abstract=False):
-    __slots__ = ("_tag",)
-
-    def __init__(self, name, *, tag):
-        super().__init__(
-            name,
-            supertype=sw.DType.Any,
-            simple_types=(sw.DType.Float32,),
-        )
-        self._tag = tag
-
-    def structure_extension(self):
-        return (self._tag,)
-```
-
-Shipping the dtype definition itself — a cross-process descriptor schema — is
-deliberately out of scope and remains possible future work.
-
-The narrow simple encodings `Int8`, `E8M0`, `E5M2`, `E4M3`, `E3M2`, `E2M3`, and
-`E2M1` are registered so the block-scaled formats below can name their elements
-and scales. They are structural descriptors only: no carrier stores them and no
-kernel interprets them yet, so `SimpleDType.registered()` deliberately returns
-more encodings than any carrier accepts.
-
-### Block-Scaled Descriptors
-
-`BlockScaledDType` is the currently implemented compound dtype: one simple
-element dtype plus a linear chain of simple scale `Level` entries. A level's
-`block` extent is measured in the *previous* level's coordinate space, so each
-level coarsens the grouping below it, and only the final level may use the
-symbolic `Whole` extent that produces a single scale for the entire tensor.
-`Whole` is a true singleton — `WholeExtent()`, copying, and unpickling all yield
-it — so equivalent whole-scaled formats cannot bypass structural uniqueness.
-
-- `simple_types` maps position to plane dtype, so plane `i` is stored by a
-  carrier whose dtype is `simple_types[i]`; `num_carriers` is its length.
-- `num_axes` counts the blocking axes a tensor of this dtype must be given,
-  which excludes `Whole` levels.
-- `bits_per_element` returns a `float`, or a `SymbolicBits` value with an
-  `evaluate(element_count)` method when the final level is `Whole`.
-- `representation_rules` contains one `LevelExtent(i, levels[i].block)` per
-  scale level. The rules are derived from the dtype's existing level chain and
-  use the same generic representation validator available to external compound
-  formats; Tensor validation contains no block-scaled-specific branch.
-
-The registered formats are `MXFP8_E4M3`, `MXFP8_E5M2`, `MXFP6_E3M2`,
-`MXFP6_E2M3`, `MXFP4`, `MXINT8`, and `NVFP4`. Block extents are fixed by each
-format, so no public signature other than the structural `Level` definition
-accepts one. Descriptors are unique by structure as well as by name: two
-descriptors describe the same representation only when they are the same
-object. That uniqueness is anchored at `BlockScaledDType` itself, so a subclass
-that adds no structure of its own describes an already registered
-representation and is rejected instead of becoming a second identity for it.
-
-These descriptors are structural. Block-scaled tensors, tilers, quantization,
-requantization, and dispatch eligibility are not implemented.
+Together these rules describe guardrails, not a sandbox. The model validates a
+descriptor class's hierarchy when the class is created, validates the completed
+descriptor during finalization, seals every registered instance, and keeps the
+built-in namespace frozen. Beyond that it is contract rather than enforcement:
+Python classes stay mutable, and code that reaches around the model — a custom
+`__dict__`, reassigned `__slots__`, a mixin mutated after the fact,
+`object.__setattr__`, or the dtype module's private state — forfeits the
+registry, structural-identity, pickle, and immutability guarantees rather than
+being intercepted. The dtype model is an API-integrity boundary against mistakes
+and drift in cooperative code, not a defense against hostile metaprogramming
+sharing the process.
 
 The runtime implementation is organized behind the stable
 `strideweave.carriers.dtype` facade. Private modules separate canonical
@@ -744,6 +499,59 @@ block-scaled definitions, built-in installation, and carrier-facing storage
 validation. This organization is internal: public import paths, class module
 identities, structure fingerprints, and pickle resolution continue to use
 `strideweave.carriers.dtype`.
+
+### Block-Scaled Descriptors
+
+`BlockScaledDType` is the currently implemented compound dtype: one simple
+element dtype plus a linear chain of simple scale `Level` entries. A level's
+`block` extent is measured in the *previous* level's coordinate space, so each
+level coarsens the grouping below it, and only the final level may use the
+symbolic `Whole` extent that produces a single scale for the entire tensor.
+`Whole` is a true singleton, so equivalent whole-scaled formats cannot bypass
+structural uniqueness. `simple_types` maps position to plane dtype, `num_axes`
+counts the blocking axes a tensor of this dtype must be given, and
+`representation_rules` derives one `LevelExtent` per scale level from that same
+chain, using the generic representation validator available to external compound
+formats — Tensor validation contains no block-scaled-specific branch.
+
+The registered formats are `MXFP8_E4M3`, `MXFP8_E5M2`, `MXFP6_E3M2`,
+`MXFP6_E2M3`, `MXFP4`, `MXINT8`, and `NVFP4`. Descriptors are unique by
+structure as well as by name, anchored at `BlockScaledDType` itself, so a
+subclass adding no structure of its own describes an already registered
+representation and is rejected instead of becoming a second identity for it.
+These descriptors are structural: block-scaled tensors, tilers, quantization,
+requantization, and dispatch eligibility are not implemented.
+[`dtype-representations`](openspec/specs/dtype-representations/spec.md) states
+the level algebra, derived rules, and registered formats exactly.
+
+### Generic Reference Semantics
+
+On concrete storage `Generic` implements the encodings faithfully rather than
+approximating them with Python's own numeric types. `Float32` storage holds
+binary32-exact values and rounds to binary32 at every step, with IEEE
+singularities as results rather than exceptions in forward and backward alike;
+`Int32` arithmetic is exact with checked narrowing, so an out-of-range result
+raises `OverflowError` rather than wrapping, while a reduction accumulates
+exactly and checks only the final sum; `Bool` storage contains only `False` and
+`True`, is non-differentiable, and is never implicitly promoted. Floating
+`reduce_sum` and `matmul` advertise both the default `Float32` accumulator and
+an explicit `Float64` one, widening only after loading already encoded `Float32`
+terms. Concrete storage is normalized and owned — values are converted when
+stored, and the carrier copies the supplied sequence — so no caller-held alias
+can place an unrepresentable value or change stored values without the version
+counter observing it. NumPy supplies the binary32 mechanics and is imported
+lazily on first concrete `Float32` use, so importing StrideWeave, or using only
+`CPU`, `Int32`, or the legacy dtypes, never loads it.
+[`carrier-storage`](openspec/specs/carrier-storage/spec.md) and
+[`operation-dtype-policy`](openspec/specs/operation-dtype-policy/spec.md) state
+these encodings and their arithmetic exactly.
+
+The legacy dtypes are outside this policy. An operation whose operands mix
+legacy `Any`/`Floating` storage with concrete storage stays on Generic's
+historical Python arithmetic rather than silently selecting a concrete plan,
+which means the concrete operand's binary32 semantics are downgraded to
+binary64 for that operation. Legacy `Any` values are never routed through
+checked integer arithmetic.
 
 ### Carrier Storage Dtypes
 
@@ -758,20 +566,13 @@ set of descriptors:
 | `Evictable` | Whatever both composed tiers accept, which must match |
 
 Each table row is the exact accepted set: membership is checked by object
-identity — never by equality, including in the native CPU parser, so an object
-that merely compares equal to `DType.Float32` is rejected like any other
-unsupported dtype — and every registered descriptor outside a carrier's row is
-rejected at construction.
-`Any` and `Floating` are accepted only where the table lists them, as legacy
-opaque storage; the category `Integer` is accepted nowhere; the narrow simple
-encodings have no carrier support yet; and a compound descriptor is rejected
-with an error naming the deferred capability rather than partially constructing
-a carrier that could hold only one of its planes. Every carrier gives that same diagnostic, including
-the native CPU parser. Multi-plane storage — one carrier per entry of
-`simple_types` — is future work; carrier-authoring code can reuse
-`strideweave.carriers.dtype.validate_storage_dtype` to get the same behavior.
-`Float64` is likewise outside every row: it currently names widened accumulator
-arithmetic only, not storage any carrier may allocate.
+identity rather than equality, in the native CPU parser as well as in Python,
+and every registered descriptor outside a carrier's row is rejected at
+construction with the same diagnostic — including a compound descriptor, whose
+multi-plane storage (one carrier per entry of `simple_types`) is future work,
+and `Float64`, which currently names widened accumulator arithmetic only.
+Carrier-authoring code reuses
+`strideweave.carriers.dtype.validate_storage_dtype` to get that behavior.
 
 The same table is readable at run time, without allocating anything:
 
@@ -782,50 +583,37 @@ sw.CPU(4).supports_storage_dtype(sw.DType.Integer)                         # Fal
 
 `supports_storage_dtype(dtype)` asks whether the carrier's *implementation* can
 allocate that dtype at all. It is structural rather than a report of state: it
-allocates nothing, changes nothing, and is unaffected by size, mutability,
-ownership, eviction residency, release, or which dtype the carrier currently
-holds, so a `Float32` CPU carrier still reports `Int32`. A dtype outside the
-carrier's row — an abstract category, an unimplemented narrow encoding, or a
-compound descriptor whose per-plane storage is deferred — is unsupported rather
-than an error; only a non-`DType` argument raises. `Evictable` reports the
-intersection of its tiers, because a value it cannot evict is a value it cannot
-hold. This is what lets a composed carrier decide, before any work begins,
-whether it could store an operation's result.
+allocates nothing and is unaffected by size, mutability, ownership, eviction
+residency, release, or the dtype the carrier currently holds. `Evictable`
+reports the intersection of its tiers, because a value it cannot evict is a
+value it cannot hold — which is what lets a composed carrier decide, before any
+work begins, whether it could store an operation's result. `Carrier` owns the
+public query and its validation; an implementation states its accepted set
+through the protected `_supports_storage_dtype(dtype)` hook, exactly as
+`_is_mutable()` works, and the conservative default claims only the dtype the
+instance currently holds.
 
-`Carrier` owns the public query and its validation; a carrier implementation
-states its accepted set through the protected `_supports_storage_dtype(dtype)`
-hook, exactly as `_is_mutable()` works. The conservative default claims only
-the dtype the instance currently holds, which is the most any carrier can be
-assumed to allocate without saying so, so a custom carrier that can allocate
-more overrides the hook.
+Fresh storage comes from two factories every carrier exposes: `allocate_like`
+for size-based allocation, where `empty=True` permits a backend to skip
+initialization so callers must write every element they read, and `new_like` for
+materializing supplied values.
 
 Only `Floating` and `Float32` tensors participate in autograd. That set is an
 explicit pair rather than a `Floating` category query, because the narrow
 floating encodings have no numerical semantics yet.
 
-Every carrier exposes `allocate_like(size, *, mutable=True, dtype=None,
-empty=False)` for fresh size-based allocation. The default requests initialized
-storage; `empty=True` permits a backend to skip initialization, so callers must
-write every element they will read. `new_like(values, ...)` remains the separate
-factory for materializing supplied values.
-
-Carriers may be mutable or immutable. Mutating shared storage increments a version
-counter visible through `tensor.version`. Calling `release()` permanently
-releases a carrier's storage. Eviction and promotion belong specifically to
-the composite `Evictable` carrier rather than the base `Carrier` or `Tensor` APIs.
-A carrier owned by a composite carrier remains readable through retained aliases
-while that tier is live, but rejects direct mutation, scatter, release, and
-move operations. A tier may be released and replaced during a hierarchy
-transition, after which an alias to the old tier is no longer readable. The
-owning carrier retains privileged access so mutation through the composite
-interface continues to follow its normal mutability and version rules.
-
-`is_mutable()` reports whether public interfaces may currently write the carrier,
-not only whether its storage was constructed mutable. Consequently, an
-owned child reports `False` while its mutable owning composite may report
-`True`. Carrier implementations define their intrinsic storage capability
-through the private `_is_mutable()` hook; ownership is applied centrally by
-`Carrier`.
+Carriers may be mutable or immutable, mutation increments a version counter
+visible through `tensor.version`, and `release()` permanently releases storage.
+`is_mutable()` reports whether public interfaces may currently write the
+carrier, not only whether its storage was constructed mutable, so a carrier
+owned by a composite reports `False` while its mutable owning composite reports
+`True`; ownership is applied centrally by `Carrier` over each implementation's
+`_is_mutable()` hook. Eviction and promotion belong specifically to `Evictable`
+rather than to the base `Carrier` or `Tensor` APIs.
+[`carrier-storage`](openspec/specs/carrier-storage/spec.md) and
+[`carrier-composition`](openspec/specs/carrier-composition/spec.md) own the
+allocation factories, mutation and versioning rules, and the ownership and
+residency contract.
 
 ```python
 import strideweave as sw
@@ -878,17 +666,17 @@ The public functional API includes the following v0 surface:
 
 `reduce_sum(..., accumulator_dtype=...)` and
 `matmul(..., accumulator_dtype=...)` select the floating accumulator without
-changing input encoding or planned output dtype. `None` uses the backend's
-default `Float32` accumulator; `DType.Float64` requests widened accumulation and
-must match an advertised backend capability. `Generic` and native `CPU` both
-advertise and execute the two choices for `reduce_sum` and `matmul`; CPU widens
-already encoded Float32 terms into a native `double` accumulator without adding
-Float64 carrier storage, and matmul backward reuses the accumulator its forward
-call selected. The `tensor @ other` spelling keeps the default; callers
-requesting `Float64` use `sw.matmul`. Exact-integer plans reject a floating accumulator request, and the
-operations whose accumulation order is normative — `cumsum`, `conv_general`,
-`scatter_add`, the product and extrema reductions, and the arg reductions —
-accept no accumulator option at all.
+changing input encoding or planned output dtype. Those two are the only
+operations that take the option, because they are the only sum reductions whose
+association order is not observable; every other combining operation pins a
+normative order and offers no accumulator choice. `None` uses the backend's
+default `Float32` accumulator, `DType.Float64` requests widened accumulation and
+must match an advertised backend capability, and the `tensor @ other` spelling
+keeps the default, so callers requesting `Float64` use `sw.matmul`. Matmul
+backward reuses the accumulator its forward call selected rather than treating
+the choice as a tensor input.
+[`operation-dtype-policy`](openspec/specs/operation-dtype-policy/spec.md) states
+which operations are configurable and how a request is refused.
 
 Binary pointwise operations (`add`, `sub`, `mul`, `elementwise_mul`, `div`,
 `pow`, `maximum`, `minimum`, `rem`, and the Float32 predicates) align
@@ -935,12 +723,14 @@ infinities, equal-winner splits, and `lower > upper`; no independent bound-order
 validation is performed. Tensor bounds receive staged VJPs, while weak scalar
 bounds do not receive gradients.
 
-Reductions lower a hierarchical description to a two-mode intermediate whose
-second mode is the reduction fiber. `reduce_sum`, `reduce_prod`, `reduce_max`,
-and `reduce_min` return Float32 results; `argmax` and `argmin` return Int32 first-
-winner indices. `cumsum` is an inclusive scan over one explicit top-level mode.
-Fibers must be non-empty, and `keepdims` is composed with `unsqueeze` rather
-than a reduction option.
+Reductions take a reduce command and lower it to a two-mode intermediate whose
+second mode is the reduction fiber — that lowering is the command language's,
+described under Layout Descriptions below; what each reduction then does with
+the fiber is its own. `reduce_sum`, `reduce_prod`, `reduce_max`, and
+`reduce_min` return Float32 results; `argmax` and `argmin` return Int32
+first-winner indices. `cumsum` is an inclusive scan over one explicit top-level
+mode. Fibers must be non-empty, and `keepdims` is composed with `unsqueeze`
+rather than a reduction option.
 
 `conv_general` is a grouped Float32 cross-correlation over arbitrary spatial
 rank. It supports explicit positive strides, non-negative padding, input and
@@ -958,25 +748,22 @@ dispatch names are not public operations.
 kernels that use cached expanded layout keys and release the GIL in hot loops.
 `FileBacked` does not dispatch computational operations.
 
-An Evictable tensor dispatches through a public `EvictableOperation` adapter.
-Each adapter owns one fresh operation from the primary carrier, lowers its
-inputs to temporary primary-backed tensors, and invokes the primary operation's
-generic lowered-execution route and `backward` method. Lowered execution shares
-framework execution hooks and result validation with regular execution but does
-not attach an inner autograd node or discard delegated state. The adapter is the
-sole visible autograd node and wraps primary results and gradients back into the
-same hierarchy. CPU and Generic implementations therefore do not need
-composition-specific code. Before it lowers anything, the adapter resolves the
-logical plan the central policy gives for its operation name and its *outer*
-operands plus typed execution options and requires that plan against the
-hierarchy's own frozen
-capabilities, so no plan the hierarchy does not advertise reaches a nested
-allocation or a kernel. Only an operation name the policy does not register and
-legacy opaque operand storage skip planning and keep their documented behavior;
-a registered operation handed operands its shape does not accept is refused by
-the resolver at that gate rather than further down.
-New operation results allocate only their promoted primary storage. Their
-secondary tier remains empty until the first eviction provisions it.
+An Evictable tensor dispatches through a public `EvictableOperation` adapter,
+which is the worked example of the composite lowering described under Core
+Model: it owns one fresh primary-carrier operation, lowers inputs to temporary
+primary-backed tensors, runs them through the framework's sealed
+lowered-execution route, and is the sole visible autograd node, so CPU and
+Generic implementations need no composition-specific code. Before it lowers
+anything, it resolves the plan the central policy gives for its *outer* operands
+and requires that plan against the hierarchy's own frozen capabilities, so a
+plan the hierarchy does not advertise never reaches a nested allocation or a
+kernel. New operation results allocate only their promoted primary storage; the
+secondary tier stays empty until the first eviction provisions it.
+[`carrier-dispatch`](openspec/specs/carrier-dispatch/spec.md) and
+[`carrier-composition`](openspec/specs/carrier-composition/spec.md) state the
+adapter, lowering, and residency contract.
+
+### Layout Descriptions
 
 StrideWeave layout descriptions preserve hierarchical modes and therefore do not
 have standard flat einops semantics. String forms include:
@@ -988,32 +775,38 @@ contracted = sw.einsum(lhs, rhs, "a b, c b -> a c")
 batched = sw.einsum(lhs, rhs, "b i k, b j k -> b i j")
 ```
 
-The native lexer and Python parsers compile these descriptions into layout
-trees and cache successful specifications. Einsum classifies each shared symbol
-by its output presence: an omitted shared symbol is contracted, while a retained
-shared symbol is a batch dimension. One-sided symbols are free dimensions and
-must appear in the output. A contraction without batch symbols keeps the
-two-mode matmul lowering. Batched contractions align both operands over their
-union symbol space with differentiable singleton broadcasts, multiply
-elementwise, and reduce only omitted shared symbols. This general lowering
-materializes the union-shaped product; it does not currently use a native
-batched-matmul kernel.
+The native lexer and Python parsers compile these descriptions into layout trees
+and cache successful specifications. The classification that matters for reading
+the code is by *output presence*: a shared symbol omitted from the output is
+contracted, a shared symbol retained in it is a batch dimension, and a one-sided
+symbol is free and must appear in the output. That distinction picks the
+lowering — a contraction without batch symbols keeps the two-mode matmul path,
+while a batched contraction aligns both operands over their union symbol space
+with differentiable singleton broadcasts, multiplies elementwise, and reduces
+only the omitted shared symbols. The general path materializes the union-shaped
+product; there is no native batched-matmul kernel yet.
+
+[`layout-commands`](openspec/specs/layout-commands/spec.md) states the command
+language exactly — lexing, the layout-reference grammar, the three command
+forms, their diagnostics, and the lowering each compiles to. It is one contract
+rather than a parser surface plus separate operations, and it governs *every*
+public entry point that takes a description string, not only the
+`strideweave.einops` exports: a command that compiles for `rearrange` or
+`einsum` compiles identically for `reduce_sum`, `reduce_max`, `argmin`, and
+their siblings, which then contribute their own operation semantics on top. The
+layout, view, dtype, dispatch, and autograd contracts the lowering executes stay
+with their own specs.
 
 ## Operation Profiling
 
 `profile` is a single-use context manager that records carrier-dispatched
-operation computations on the current thread. It records the post-preflight
-computation-and-Tensor-result-validation boundary, not dispatch factory lookups,
-execution-option validation, structural Tensor preflight, or post-computation
-autograd attachment. Failures before that boundary produce no event; failures
-after entry do. Events contain the canonical operation name, exact dispatching
-carrier and implementation classes, monotonic start time, inclusive and self
-synchronous host wall time, thread identity, parent relationship, and success
-status. With `record_shapes=True`, tensor argument positions also carry immutable
-snapshots of their hierarchical shapes; non-tensor positions are represented by
-`None`.
-Typed execution options travel through the profiled call separately and are not
-reported as positional inputs or saved as autograd tensors.
+operation computations on the current thread. The boundary it records is
+deliberately narrow: the post-preflight computation-and-result-validation step,
+not dispatch factory lookups, option validation, structural preflight, or
+autograd attachment. Events carry the canonical operation name, exact
+dispatching carrier and implementation classes, timing, thread identity, parent
+relationship, and success status, plus shape snapshots when
+`record_shapes=True`.
 
 ```python
 import strideweave as sw
@@ -1032,84 +825,73 @@ averages = prof.key_averages(group_by_input_shape=True)
 print(prof.table(sort_by="self_total_time_ns"))
 ```
 
-`carriers=None` records every exact carrier class; an iterable such as
-`{CPU, Evictable}` selects only those exact classes and does not retain carrier
-instances. Nested composite execution is visible when selected: an Evictable
-operation produces an outer Evictable event and a nested event for its promoted
-CPU or Generic operation. Filtering out that nested event does not charge its
-time to the parent's self time. Aggregates are derived from the immutable raw
-events by operation name and carrier class, optionally adding input shapes to
-the grouping key.
+Selection is by exact carrier class (`carriers=None` records every one), so
+nested composite execution is visible when selected: an Evictable operation
+produces an outer Evictable event and a nested event for its promoted CPU or
+Generic operation, and filtering the nested event out does not charge its time
+to the parent's self time. Aggregates derive from the immutable raw events.
 
 Profiling state is thread-local, so work on another thread requires its own
-context, and a context must exit on the thread that entered it. A rejected
-cross-thread exit abandons that registration so the owner thread recovers
-before its next dispatched operation or profiler context. Timings measure
-synchronous host wall time only; asynchronous
-accelerator activity is not modeled. Directly instantiated operations without
-carrier dispatch metadata and public `move` executions are excluded.
-Results become available after the context exits, including when its body raises;
-the original exception still propagates.
+context, and a context must exit on the thread that entered it. Timings measure
+synchronous host wall time only; asynchronous accelerator activity is not
+modeled. [`operation-profiling`](openspec/specs/operation-profiling/spec.md)
+states the recorded boundary, event fields, nesting and timing arithmetic,
+thread rules, exclusions, and report determinism exactly.
 
 ## Autograd
 
 Operations attach an autograd context when gradient construction is enabled,
 the result is differentiable, and at least one tensor input is differentiable.
 Backward traversal is iterative and topological, so shared subgraphs accumulate
-their pending gradients before their operation runs.
+their pending gradients before their operation runs. Differentiability follows
+the logical dtype — only `Floating` and `Float32` tensors participate, and `Any`
+and `Int32` tensors reject the gradient APIs.
 
-- `backward(gradient=None, retain_graph=False)` releases the saved inputs,
-  versions, and operation context for every reached operation after a successful
-  traversal. Calling backward through that graph again raises an error naming
-  `retain_graph=True`; pass that flag on an earlier traversal when the same
-  graph must be reused.
-- Graph nodes remain attached after their saved state is released so a second
-  traversal fails explicitly rather than treating a former result as a leaf.
-  A shared subgraph is released by whichever reachable root traverses it first.
-- Non-scalar tensors require an explicit gradient in `backward(gradient)`.
-- An exact shape `[1]` is a scalar and may call `backward()` with an implicit
-  gradient of one.
-- Leaf tensors accumulate `.grad` by default, including across distinct
-  forward graphs and retained repeated traversals.
-- Non-leaf tensors retain `.grad` only after `retain_grad()`.
-- `no_grad()`, `is_grad_enabled()`, and `set_grad_enabled()` control the
-  thread-local graph-building state.
-- `Any` and `Int32` tensors reject gradient APIs.
-- Backward validates saved input versions and raises if required storage was
-  modified in place after the forward pass.
+Three properties are worth carrying in your head; the rest is contract:
 
-Views are differentiable. Their backward path scatters gradients into a tensor
-with the original input layout.
+- **Saved state is released once.** `backward(gradient=None,
+  retain_graph=False)` releases the saved inputs, versions, and operation
+  context for every node it reaches, and nodes stay attached afterwards so a
+  second traversal fails explicitly rather than treating a former result as a
+  leaf. A shared subgraph is released by whichever reachable root traverses it
+  first. `retain_graph=True` on the earlier traversal is how a graph is reused.
+- **A cotangent must address its tensor exactly.** Non-scalar tensors require an
+  explicit gradient; an exact shape `[1]` is the scalar case that may call
+  `backward()` with an implicit one. Leaf tensors accumulate `.grad` by default,
+  non-leaves retain it only after `retain_grad()`, and `no_grad()`,
+  `is_grad_enabled()`, and `set_grad_enabled()` control the thread-local
+  graph-building state.
+- **Gradient buffers are always injective.** When a leaf tensor uses stride-zero
+  broadcast modes, `.grad` sums every logical contribution addressing the same
+  storage slot and represents the result in a canonical injective layout with
+  the tensor's logical shape, at any hierarchy depth. Other non-injective
+  layouts, such as overlapping non-zero strides, are refused rather than
+  producing an under-counted gradient. Views are differentiable on the same
+  terms: their backward path scatters gradients into a tensor with the original
+  input layout.
 
-Gradient buffers are always injective. When a leaf tensor uses stride-zero
-broadcast modes, `.grad` sums all logical contributions that address the same
-input storage slot and represents each resulting sum in a canonical injective
-layout with the tensor's logical shape. This supports broadcast aliasing at any
-hierarchy depth. Other non-injective layouts, such as overlapping non-zero
-strides, are refused explicitly in autograd rather than producing an
-under-counted gradient.
+Backward also validates saved input versions, so storage modified in place after
+the forward pass raises instead of silently differentiating the wrong values.
 
 ### Functional gradients
 
 `sw.grad(output, inputs, cotangents, *, batched=False, retain_graph=False)`
 computes vector-Jacobian products without reading or modifying any tensor's
-`.grad` field. It returns one gradient per requested input in positional order;
-an input unreachable from `output` produces `None`. The unbatched form accepts
-one cotangent whose layout exactly matches `output.layout`.
+`.grad` field, returning one gradient per requested input in positional order
+and `None` for an input unreachable from `output`.
 
-With `batched=True`, one tensor represents K cotangents. Its layout has a
-prepended leaf batch mode followed by modes exactly equal to `output.layout`;
-each batch slice is a zero-copy offset view. Every reachable input produces one
-stacked gradient tensor with a prepended batch mode. That mode's stride is the
-single-gradient layout's `cosize`, not its logical size, so inputs with storage
-holes keep adjacent gradient slices disjoint. The native traversal discovers
-the shared operation topology once, propagates each of the K cotangents through
-it independently, and releases saved graph state only once after the last pass
-unless `retain_graph=True`.
+With `batched=True`, one tensor represents K cotangents: its layout is a
+prepended leaf batch mode followed by modes exactly equal to `output.layout`,
+and every reachable input produces one stacked gradient whose batch stride is
+the single-gradient layout's `cosize` rather than its logical size, so inputs
+with storage holes keep adjacent slices disjoint. The native traversal discovers
+the shared topology once and propagates each cotangent through it independently.
 
-Functional gradients do not build a differentiable backward graph, so there is
-no `create_graph` parameter and double backward or Hessian construction is not
-supported. Forward-mode JVPs are also not implemented.
+[`autograd`](openspec/specs/autograd/spec.md) states graph construction,
+traversal, accumulation, saved-version validation, and the functional VJP
+contract exactly — including that reverse mode is the complete differentiation
+surface, so `create_graph`, double backward, and forward-mode JVPs are refused
+rather than approximated.
 
 ## Modules
 
@@ -1121,19 +903,45 @@ override attribute-name segments.
 
 Buffers, state dictionaries, training/evaluation modes, and hooks are not
 implemented yet. A minimal layer library and optimizer live in `strideweave.nn`
-(see Ergonomic Layers).
+(see Ergonomic Layers below).
 
 ## Ergonomic Layers
 
-The core carriers stay composable primitives; user-facing ergonomics live
-in two submodule-only packages that are built entirely from the public
-primitives and are not re-exported at the top level.
+The core carriers stay composable primitives. Two submodule-only packages sit
+above them, built entirely from the public primitives and not re-exported at the
+top level. They are different layers rather than peers:
+
+- `strideweave.friendly` is the user interface over tensor computation. It
+  removes the boilerplate of assembling a carrier, an offset, and a layout by
+  hand, and its behavior is specified.
+- `strideweave.nn` is a further layer above that, for models rather than
+  tensors. It is an unpolished backstop — enough to train the example MLP —
+  rather than a maintained model library, and is deliberately unspecified: see
+  the note on `strideweave.nn` below.
+
+### strideweave.friendly
+
+`import strideweave.friendly as F` provides compact layout builders
+(`column_major`, `row_major`), CPU tensor factories (`tensor` from nested
+lists, `zeros`, `ones`, `full`, `arange`, `rand`, `randn`), scalar reductions
+(`sum`, `mean`, both returning `Shape(1)` tensors that support implicit
+`backward()`), and value extraction (`item`, `to_list`).
+
+All thirteen exports are spec-owned:
+[`friendly-tensor-creation`](openspec/specs/friendly-tensor-creation/spec.md),
+[`friendly-layout-builders`](openspec/specs/friendly-layout-builders/spec.md),
+[`friendly-scalar-reductions`](openspec/specs/friendly-scalar-reductions/spec.md),
+and [`friendly-value-extraction`](openspec/specs/friendly-value-extraction/spec.md)
+state their value ordering, dtype selection, allocation, layout, reverse-mode
+behavior, and diagnostics.
 
 ### strideweave.nn
 
 `import strideweave.nn as nn` provides `Linear`, activation module wrappers
 (`ReLU`, `Sigmoid`, `Tanh`, `GELU`, `SiLU`, `Softplus`, `ELU`, `LeakyReLU`),
-`MSELoss`, and an `SGD` optimizer.
+`MSELoss`, and an `SGD` optimizer. There is deliberately no `strideweave.nn`
+spec: the layer is provisional, and specifying it would freeze behavior that is
+expected to change.
 
 Carrier and layout requirements differ per component and follow from what
 each one actually does, rather than a blanket `strideweave.nn` restriction:
@@ -1169,153 +977,123 @@ Gradients accumulate until `SGD.zero_grad()` resets them to `None`.
 `MSELoss` returns an exact single-mode `Shape(1)` scalar, so
 `loss.backward()` needs no explicit gradient.
 
-### strideweave.friendly
-
-`import strideweave.friendly as F` provides compact layout builders
-(`column_major`, `row_major`), CPU tensor factories (`tensor` from nested
-lists, `zeros`, `ones`, `full`, `arange`, `rand`, `randn`), scalar reductions
-(`sum`, `mean`, both returning `Shape(1)` tensors that support implicit
-`backward()`), and value extraction (`item`, `to_list`).
-
 End-to-end training examples live in `examples/train_mlp_cpu.py` (raw
 primitives) and `examples/train_mlp_cpu_friendly.py` (same model using the
 helpers).
 
 ## Interoperability And Movement
 
-CPU tensors support DLPack export through `__dlpack__` and
-`__dlpack_device__`. Hierarchical shapes and strides are flattened for the
-DLPack representation. Generic, FileBacked, and Evictable carriers do not support
-DLPack, and copy or cross-device exports are not implemented.
+CPU tensors export DLPack through `__dlpack__` and `__dlpack_device__`, with
+hierarchical shapes and strides flattened for the DLPack representation. Export
+is the interesting boundary: it is zero-copy, same-device, and opt-in per
+carrier through a `dlpack_info` hook, so Generic, FileBacked, and Evictable do
+not participate, a multi-subtensor tensor is refused rather than partially
+described, and there is no import, copy, or cross-device path.
 
-`move(tensor, destination)` dispatches on the exact source and destination carrier
-classes. CPU-to-FileBacked and FileBacked-to-CPU moves use native bulk copies;
-unregistered pairs use an elementwise fallback. A successful move releases the
-source carrier, and autograd moves gradients back into fresh source-class
-storage. Moving a broadcast tensor preserves its exact stride-zero layout and
-copies its `cosize` physical span rather than materializing `size` logical
-elements. Its backward consumes an injective same-shape gradient before the
-broadcast node performs the required summation.
+`move(tensor, destination)` dispatches on the exact source and destination
+carrier class *pair* against an explicit process-global registry: CPU-to-
+FileBacked and FileBacked-to-CPU use native bulk copies, and every other pair —
+including a subclass of a registered class, and `(CPU, CPU)` — falls back to
+elementwise copying until registered on its own. A new pair is a public
+`MoveOperation` subclass implementing the protected `_copy` hook, registered for
+its exact pair. A successful move releases the source carrier only after that
+hook returns, and autograd moves gradients back into fresh source-class storage.
+Moving a broadcast tensor preserves its exact stride-zero layout and copies its
+`cosize` physical span rather than materializing `size` logical elements, so its
+backward consumes an injective same-shape gradient before the broadcast node
+performs the required summation.
 
-Evictable resolves the move registry for each transition and routes move
-operations through the framework-owned sealed lowered-execution path, so
-residency changes receive shared result validation without adding autograd
-nodes. Element access, forward operations, and scatter are unavailable while
-values are evicted. Backward may still run while an operation result is evicted because
-the result storage is not read; saved inputs and the supplied gradient must be
-promoted.
+Evictable is the framework's own consumer of that registry: it resolves a move
+per residency transition and routes it through the sealed lowered-execution
+path, so a transition receives shared result validation without adding an
+autograd node. Element access, forward operations, and scatter are unavailable
+while values are evicted, while backward may still run against an evicted
+result because the result storage is not read. Replacement tiers publish only
+after a move succeeds, so a failed transition leaves the prior residency and
+ownership valid and retryable.
 
-Residency transitions publish replacement tiers only after a move succeeds. If
-a move implementation raises, the prior residency state and ownership remain
-valid and the transition may be retried.
-
-Ownership guards apply to carrier interfaces. Explicit external-memory
-escape hatches such as `CPU.pointer()` and direct writes to a `FileBacked` path
+Ownership guards apply to carrier interfaces, not to memory. Explicit
+external-memory escape hatches — `CPU.pointer()`, direct writes to a
+`FileBacked` path, mutation of the container originally handed to `Generic` —
 remain the caller's responsibility and cannot participate in version tracking.
-The same applies to direct mutation of a mutable container originally supplied
-to `Generic`, because the container remains an alias of Generic storage.
+
+[`interop-movement`](openspec/specs/interop-movement/spec.md) states the export
+structure, versioning, mutability advisory, capsule lifetime, dtype eligibility,
+carrier hook, and the move dispatch, registration, and autograd contract;
+[`carrier-composition`](openspec/specs/carrier-composition/spec.md) states the
+residency transitions themselves.
 
 ## Current Boundaries
 
-- No CUDA, Metal, or other accelerator carriers.
-- No carrier stores `Float64`; it is currently an accumulator-only descriptor
-  whose execution remains gated by each backend's exact capabilities.
+What is deliberately not built yet, and why it is safe to leave undone:
+
+- No CUDA, Metal, or other accelerator carriers. The carrier interface is the
+  extension point for one; nothing in the core assumes a device abstraction.
+- No carrier stores `Float64`. It names widened accumulator arithmetic only, and
+  a request for it is gated by each backend's exact capabilities rather than
+  silently downgraded.
 - High-level tensor creation lives only in `strideweave.friendly` and is
-  CPU-backed; other carriers are constructed from primitives.
-- Explicit structural views are available through `as_strided`, `reshape`,
-  `permute`, `broadcast_to`, `broadcast_in_dim`, `squeeze`, and `unsqueeze`;
-  slice indexing supplies the corresponding positive-step view. They preserve
-  hierarchy, expand only extent-one leaves where applicable, and never infer
-  rank alignment. Binary pointwise operations additionally perform implicit
-  singleton alignment using differentiable views. Reductions, scans,
-  contractions, convolution, indexing, selection, and movement remain
-  separate capabilities.
-- `as_strided(tensor, shape, stride)` uses `Layout(shape, stride)` as an
-  origin-based logical mapping `B` from output coordinates to flattened input
-  `c_0` ordinals; unlike PyTorch, its stride is not a direct physical-storage
-  reinterpretation. The output placement is the representable composition
-  `Layout.compose(L_0, B)`, and multi-subtensor views compose `S_0` with the
-  same mapping while preserving deeper layouts. The mapping and composed
-  placement must be injective, and `B.cosize` must fit the input logical size.
-- DLPack support is export-only and currently CPU-only.
-- `FileBacked` supports storage and movement, not direct computation.
+  CPU-backed; tensors over other carriers are assembled from primitives.
+- Structural views, implicit singleton alignment in binary pointwise operations,
+  and the separate reduction, scan, contraction, convolution, indexing,
+  selection, and movement capabilities are the whole shape-manipulation surface.
+  There is no flat-layout rank inference anywhere, by design — see
+  [`core-tensor-views`](openspec/specs/core-tensor-views/spec.md) for what each
+  view guarantees, including `as_strided`'s origin-based logical mapping, which
+  is not PyTorch's physical-storage reinterpretation.
+- Public compound tensor construction, and multi-subtensor coordinate indexing,
+  mutation, non-view operations, movement, release orchestration, and DLPack
+  export, remain deferred; the pure c0 layout views are the narrow validated
+  exception. The internal representation and the optional-rule contract exist
+  precisely so those paths can be added later without a parallel public tensor
+  type, which is why the restriction is a refusal rather than a missing class.
+  [`core-tensor-representation`](openspec/specs/core-tensor-representation/spec.md)
+  bounds it exactly.
+- Block-scaled descriptors are structural only: no tensors, tilers,
+  quantization, requantization, or dispatch eligibility.
+- `FileBacked` supports storage and movement, not computation, and declares that
+  as an empty capability set rather than leaving it unstated.
 - Evictable tensors must be promoted before access or computation, and binary
   Evictable operations require matching primary and secondary carrier classes.
-- Public compound tensor construction and multi-subtensor coordinate indexing, mutation,
-  non-view operations, movement, release orchestration, and DLPack export
-  remain deferred. The pure c0 layout views (`permute`, `broadcast_to`,
-  `slice`, `reshape`, `as_strided`, `squeeze`, and `unsqueeze`) are the narrow
-  validated multi-subtensor
-  exception; the internal representation and optional-rule contracts exist so
-  the remaining paths can be added without a parallel public tensor type.
 - `strideweave.nn` covers only `Linear`, elementwise activations, `MSELoss`, and
   `SGD`; there are no buffers, state dictionaries, training/evaluation modes,
-  or hooks.
+  or hooks. It is a backstop for the examples, not a model library.
 
 ## Local Kernel Verification
 
 `test_backend(output=None)` verifies the installed CPU backend without CI,
-network, or database access. It reruns Stage One over the active native kernel
-capability plans, including mixed and exact-integer plans and the public CPU
-Float64 accumulator capabilities for `reduce_sum` and `matmul`. Coverage is
-enumerated from the native kernel manifest, so every registered kernel is either
-actively certified or explicitly deferred with a stated reason; a kernel added
-in C++ without a classification fails the manifest check rather than passing
-silently. A kernel certificate requires every class assigned to every active
-plan to pass. Stage Two then runs
-ordinary CPU Float32 target execution only where an exact kernel-ID/variant
-certificate is reconstructed from Stage One evidence and covers the active
-Float64 oracle plan/classes required for that target. Its contraction catalog includes multi-output flat and
-hierarchical layouts, recording each operand's effective matrix shape and
-contraction length.
-Movement verification emits separate bit-exact cases for move, view, permute,
-rearrange, and broadcast-to views, each using an adversarial Float32 payload.
-The correctly rounded and exact-integer kernels are compared bit for bit against
-`Generic` on seeded arbitrary finite encoded inputs, while the operations whose
-accumulation order is normative — `cumsum`, `conv_general`, `scatter_add`, and
-`reduce_prod` — use payloads whose every legal partial result is exactly
-representable. Exactly representable structural cases are likewise bit-exact; numerical Stage
-One cases use the analytic, order-independent
-`stage-one-two-path-gamma-v1` envelope, while Stage Two uses the versioned,
-case-specific `stage-two-float32-gamma-k-v1` envelope. Every evidence case also
-records its explicit operation name with its kernel ID and variant. Target and
-oracle decode one payload encoded once at its declared
-Float32 or Int32 storage dtype, so source quantization error is outside the
-comparison.
-Floating `pow`, vendor-transcendental kernels, and autograd certification remain
-visible v0 deferrals rather than being reported as passes.
+network, or database access.
 
 ```python
 report = sw.test_backend()
 sw.test_backend("kernel-evidence.jsonl")
 ```
 
-The returned immutable report contains passed, failed, errored, blocked, and
-deferred attempts. Stage Two currently covers movement, reduce, and matmul. A
-missing, forged, or incomplete Stage One certificate blocks its dependent Stage Two cases
-without executing them. JSONL output is deterministic and versioned; it
-contains one strict provenance header followed by immutable evidence records.
-The header binds the native compilation manifest, target and toolchain,
-per-kernel receipts and source closures, complete verification requirements,
-tolerance policies, Generic reference identity, and Stage One certificates.
-Every C++ case names its exact receipt; every executed Stage Two reduction or
-matmul case names the exact Stage One certificate it consumed. It intentionally
-contains no wall-clock timestamp, CI status, database state, source commit,
-autotune cache, or status-aggregation record.
-Use `report.write(path)` to save it and `VerificationReport.load(path)` to
-strictly reload it. The provenance-complete v2 format replaces the prototype
-evidence-only v1 format directly; old files are rejected rather than migrated.
-Loading is the model-owned inverse: it validates the header and all nested
-content identities without consulting the currently installed build, accepts
-only canonical current schemas, rejects missing, duplicate, unexpected,
-mismatched, or forged provenance, and reconstructs every complete embedded
-Stage One certificate from the report's own kernel/variant evidence, required
-classes, and capability-plan coverage. This is a fail-closed consistency check
-for implementation drift and stale certificate wiring, not an authenticity or
-producer-trust protocol. A filtered view that contains only part of a previously
-validated certificate's Stage One evidence preserves that certificate as an
-embedded dependency but cannot recompute its full evidence digest. Loading also
-reconstructs the immutable evidence model and identifies malformed JSONL lines.
+Its organizing idea is that coverage is *enumerated from the build rather than
+asserted by the test*. Cases are derived from the native kernel manifest and the
+backend's active capability plans, so every registered kernel is either actively
+certified or explicitly deferred with a stated reason, and a kernel added in C++
+without a classification fails the manifest check rather than passing silently.
+Stage One compares the correctly rounded and exact-integer kernels bit for bit
+against `Generic` on seeded arbitrary finite encoded inputs; operations whose
+accumulation order is normative use payloads whose every legal partial result is
+exactly representable, so a comparison never encodes an association order the
+contract does not fix. Stage Two runs ordinary target execution only where an
+exact kernel-ID/variant certificate reconstructed from Stage One evidence covers
+the plan it depends on — a missing, forged, or incomplete certificate blocks its
+dependent cases without executing them. Floating `pow`,
+vendor-transcendental kernels, and autograd certification remain visible v0
+deferrals rather than being reported as passes.
+[`kernel-verification`](openspec/specs/kernel-verification/spec.md) states the
+classification, staging, payload, envelope, and gate contract exactly.
+
+The returned report is immutable and provenance-complete: alongside passed,
+failed, errored, blocked, and deferred attempts, it binds the native compilation
+manifest, target and toolchain, per-kernel receipts and source closures,
+verification requirements, tolerance policies, Generic reference identity, and
+Stage One certificates. It deliberately contains no wall-clock timestamp, CI
+status, database state, source commit, or status aggregation — those are facts
+about a run's environment, not about the build's behavior.
 
 ```python
 summary = report.summary()
@@ -1325,433 +1103,96 @@ failed_or_blocked = report.problems
 stage_one_records = report.select(stage=sw.verification.VerificationStage.ORACLE)
 ```
 
-Reports keep their complete immutable `records` tuple for detailed inspection,
-while their REPL representation and `describe()` output remain bounded. The
-summary counts every outcome, pipeline stage, and verification class; its
-`passed`, `failed`, `errors`, `blocked`, and `deferred` accessors expose the
-common immutable totals without replacing the ordered aggregates. `errors` is
-plural because it is a count, while the serialized and CLI outcome spelling
-remains `error`. Deferred coverage is counted separately and does not by itself
-fail the gate.
-`VerificationReport.__doc__` documents the Stage One/Stage Two record model and
-its navigation APIs. In a REPL, use `repr(report)` for compact outcome counts,
-`report.summary()` for immutable structured counts, `report.describe()` for
-plain text, `report.select(...)` for composable filters, and the `passed`,
-`deferred`, and `problems` views for common selections.
-
-The inspection-only `strideweave-verify-report` CLI loads the same strict model
-parser used by Python; it does not run tests, contact a network, or write status
-data. It exits 0 when the selected evidence has no failed, errored, or blocked
-record; 1 when the selected correctness gate fails; and 2 for malformed reports
-or command usage.
+`report.write(path)` saves the deterministic versioned JSONL and
+`VerificationReport.load(path)` strictly reloads it. Loading is the model-owned
+inverse: it validates the header and every nested content identity without
+consulting the currently installed build, and reconstructs each embedded Stage
+One certificate from the report's own evidence. This is a fail-closed
+consistency check for implementation drift and stale certificate wiring, not an
+authenticity or producer-trust protocol. The inspection-only
+`strideweave-verify-report` CLI loads through that same strict parser and
+neither runs tests, contacts a network, nor writes status data:
 
 ```bash
-strideweave-verify-report kernel-evidence.jsonl
 strideweave-verify-report kernel-evidence.jsonl --problems --verbose
 strideweave-verify-report kernel-evidence.jsonl --stage stage_two --operation matmul
-strideweave-verify-report kernel-evidence.jsonl --json --outcome failed
 ```
 
-`--kernel`, `--variant`, `--class`, and repeatable `--outcome` apply the same
-exact filters as `report.select()`. `--verbose` adds flat per-case metadata;
-with `--json`, it adds a stable `records` array instead.
-Recoverable public `RuntimeError` and `ValueError` execution failures are
-recorded case by case, so independent witnesses continue. Their records retain
-the prepared operation, kernel, plan, payload hashes, logical shapes,
-contraction length, seed, and tolerance; deviation and mismatch measurements
-are `null` because no comparison completed.
+[`verification-report`](openspec/specs/verification-report/spec.md) states the
+format, loading rules, filters, summaries, and CLI exit behavior.
 
-### Raw evidence persistence contract
+### Raw evidence persistence
 
-The persistence layer is specified as a local-first store of raw facts, not
-confidence claims. Its checked-in contract lives in
-[`design/testing-taxonomy.md`](design/testing-taxonomy.md) and the initial
-append-oriented migration under
-`src/strideweave/verification/store/migrations`. It separates targets and
-explicit proxies, toolchains, per-kernel source closures and compilation
-receipts, verification specifications, tolerance policies, oracle references,
-deterministic runs, evidence, and producer observations. Bit-exact and
-tolerance evidence remain different unranked classes; contradictory producer
-observations coexist.
+The persistence layer is a local-first store of *raw facts, never confidence
+claims*. Its behavioral contract is
+[`kernel-evidence-tracking`](openspec/specs/kernel-evidence-tracking/spec.md).
+Three properties shape everything else about it:
 
-A stored closure keeps its complete transitive input set in the receipt, the
-closure descriptor, and therefore the content-addressed closure identity.
-Normalized member rows are narrower on purpose: they exist to name which input
-changed, so recording, publication, and staleness share one rule that keeps
-project-owned sources and headers, generated headers, and build inputs, and
-omits external headers, which are unactionable individually and are the large
-majority of members. The reduction is roughly 98 percent of member rows rather
-than of stored payload, because the descriptor deliberately retains the full
-auditable closure.
-
-The compilation-receipt abstraction is framework-neutral, while current
-execution scope is native C++ FP32 kernels built through CMake. Per-kernel
-identity covers the operation source, the compiler-reported complete transitive
-header set (including generated, external-user, SDK, standard-library, and
-compiler headers), generated/build inputs, definitions, flags, target,
-toolchain, and per-source compiled object. Project and build inputs use stable
-relative provider URIs; external inputs use path-free content-addressed provider
-URIs, so reports do not retain local installation paths. The Generic oracle
-identity is derived from reviewed Python roots and their local static-import
-closure, including shared helpers, operation policy, and capability enforcement.
-Incremental native builds consume each compiler action's depfile when it remains
-available, so the closure follows the dependencies selected by that exact
-compilation, including a new header shadowing an unchanged cached path. When a
-build system has consumed or removed the depfile, a build-local per-source cache
-may be reused only while the compiled object's content, size, modification stamp,
-and every previously reported dependency remain unchanged; any recompilation or
-changed dependency reruns compiler discovery only for affected sources. Clean and
-packaging builds still derive the full closure automatically. Cache paths,
-receipts, and entries are build state and never enter reports.
-The digest of the shared extension remains artifact provenance rather than its
-invalidation key. The same schema can later hold JIT receipts with framework and
-specialization metadata, but CuTe DSL, Triton, and TileLang adapters are
-explicitly deferred.
-
-Native provenance generation currently supports GNU-compatible compiler-driver
-mode for CMake compiler IDs `GNU`, `Clang`, and `AppleClang`. The driver must
-accept the dependency and identity probes used by the provider (`-M`,
-`--version`, and `-dumpmachine`). The CMake generator must be from the Makefile
-or Ninja families and must actually emit `compile_commands.json`; generators
-that ignore `CMAKE_EXPORT_COMPILE_COMMANDS` are outside the supported
-source-build matrix. In particular, the MSVC driver and Visual Studio generators
-are not supported for source or editable builds in this version. A supported
-prebuilt wheel already contains its generated provenance manifest and does not
-run this build-time provider, so its normal APIs, `test_backend`, and local
-status-store commands remain available on the wheel's supported platforms.
-Future MSVC/Visual Studio provenance support requires a separate provider and
-is explicitly deferred.
-
-The local verification store is separate from Beads, source Git history, and
-the working tree. Its lifecycle uses the platform application-data directory
-with `STRIDEWEAVE_STATUS_HOME` as an explicit override, checked automatic
-migrations, and atomic transactions. The internal backend-neutral store boundary
-and local Dolt adapter implement that lifecycle. Explicit report ingestion is
-available through `record_report(...)` and the local-only command:
-
-- macOS: `~/Library/Application Support/strideweave/kernel-evidence`
-- Linux: `${XDG_DATA_HOME:-~/.local/share}/strideweave/kernel-evidence`
-- Windows: `%LOCALAPPDATA%\strideweave\kernel-evidence`
-
-When set, `STRIDEWEAVE_STATUS_HOME` replaces only the platform base; the stable
-`strideweave/kernel-evidence` suffix is retained. `--store PATH` overrides the
-complete location for one command. First use initializes the directory and
-requires Dolt 1.40 or newer; imports and help do not initialize it.
-
-StrideWeave owns the Dolt process model, and users neither configure nor operate
-it. The installed runtime is resolved and version-checked once per executable
-identity for the life of the process. SQL transport is an internally managed
-`dolt sql-server`: at most one server per resolved data directory inside one
-Python process, serving every Dolt database under that directory, listening on a
-loopback port reserved for this process, keeping its configuration, privilege,
-branch-control, and log state in a private temporary directory, and terminated —
-gracefully, then forcibly — before the interpreter exits. The managed server
-also does not flush Dolt usage events, because that flush is a detached child
-that would outlive the lifecycle this process guarantees and recreate the
-private directory teardown had already removed. A startup or readiness
-failure raises with the server's own output attached rather than a bare timeout.
-Being registered and being running are the same condition: a shutdown or a
-failed startup retires the server it releases, so an acquisition racing either
-one starts a fresh server instead of returning a running server that no
-registry entry, and therefore no interpreter-exit cleanup, still covers.
-Stopping is a registry state of its own rather than the absence of one. A
-directory whose shutdown has begun stays reserved until that server's process
-has exited and released its database locks, so an acquisition racing a shutdown
-waits for the old process rather than starting a replacement the old one would
-refuse; the wait is bounded and reports the directory it was waiting for. A
-directory therefore has exactly one owner at every moment.
-Ownership is per process rather than per object. A forked child inherits server
-objects and open sessions but owns none of them: it starts with an empty
-registry, treats an inherited server as neither running nor connectable, never
-signals a parent's server or deletes its private state, and releases an
-inherited session's own descriptor rather than writing client protocol traffic
-onto a socket its parent is still using. A child that uses a store therefore
-acquires its own server, and each process's exit stops only what it started.
-No lifecycle API is exported, and no environment variable or command-line option
-selects a host, port, or server. PyMySQL is the parameterized client for that
-protocol and is imported lazily, on first store transport use, so importing
-StrideWeave or running a kernel never loads it.
-
-Each store path names one served database inside the data directory that holds
-it, so several stores under one directory share one server and stay isolated
-from one another. Creation, checked migrations, queries, and atomic transactions
-all run over one persistent session for that database: no operation launches a
-`dolt sql` process. Values always travel as bound driver parameters rather than
-statement text, and the ordinary session is single-statement, so no value can
-extend the statement it belongs to; only the repository's own migration scripts
-run on a separate multi-statement session. A transaction sends its statements in
-order and combines consecutive repetitions of one template into bounded
-multi-row batches, so ingesting a full report is a few bounded statements rather
-than thousands of individually parsed ones. Stores created by earlier
-StrideWeave versions with `dolt init` are served and migrated unchanged.
-
-A running server serves the databases that existed in its data directory when it
-started, plus the ones it creates itself. A store another process creates in
-that same directory while this process's server runs is therefore not visible
-until the next process starts. Ordinary use is unaffected: a command creates its
-own store through the server, and an existing store is already on disk before
-anything starts.
+- Identity is content-addressed and complete. A kernel's compilation identity
+  covers its source, the compiler-reported complete transitive input closure,
+  definitions, flags, target, toolchain, and compiled object, so what
+  invalidates evidence is a changed input rather than a new commit. Project and
+  build inputs use stable relative URIs while external inputs are path-free and
+  content-addressed, so a report retains no local installation paths.
+- Facts are additive. Contradictory producer observations coexist rather than
+  being resolved by timestamp; `status` is a factual inventory, `stale` explains
+  identity differences axis by axis, and `todo` is an unranked deterministic set
+  difference.
+- Access is explicit. `test_backend`, imports, and every `--help` path are
+  offline and mutation-free; a store is touched only by an explicit
+  record/query command, and a network endpoint only under `--publish` or
+  `--refresh`.
 
 ```bash
 strideweave-kernel-status record --report kernel-evidence.jsonl \
   --producer local-dev --source-commit "$REVISION"
+strideweave-kernel-status status --arch arm64 --kernel cpu.matmul --json
+strideweave-kernel-status stale --arch arm64
 ```
 
 Recording first rebinds the complete report against the installed build's
-compilation, specification, tolerance, oracle, and certificate facts. A stale,
-incomplete, mismatched, or forged report fails before the store is created; a
-valid report writes its run, every raw outcome, and producer observations in one
-transaction. Exact repetition is idempotent, while observations with different
-producer, source-commit, or artifact identities coexist. Recording does not
-publish or contact a network. Ordinary APIs describe a verification store;
-the storage backend, contributor branches, and optional remotes remain internal.
-`status` is a factual inventory, `stale` explains exact identity differences,
-and `todo` is a stable unranked set difference. Optional sharing uses configured
-read/publish endpoints and explicit producer namespaces; no central service or
-DoltHub account is required.
+compilation, specification, tolerance, oracle, and certificate facts, so a
+stale, incomplete, mismatched, or forged report fails before the store is
+created. The store lives in the platform application-data directory —
+`STRIDEWEAVE_STATUS_HOME` replaces only its base, `--store PATH` overrides one
+command — and is separate from Beads, source Git, and the working tree.
 
-```bash
-strideweave-kernel-status status --arch arm64
-strideweave-kernel-status status --arch arm64 --kernel cpu.matmul \
-  --class numerical --producer local-dev --json
-strideweave-kernel-status stale --arch arm64
-strideweave-kernel-status todo --arch arm64 --json
-```
+StrideWeave owns the Dolt process model rather than exposing it: the runtime is
+resolved and version-checked once per executable identity, and SQL transport is
+an internally managed `dolt sql-server`, at most one per resolved data directory
+per process, on a loopback port, terminated before interpreter exit. No
+lifecycle API, environment variable, or command-line option selects a host,
+port, or server. Registration and running are one condition, so a shutdown or
+failed startup retires the server it releases and a racing acquisition waits for
+that process to exit rather than starting a replacement it would refuse; a
+forked child inherits an empty registry and never signals or tears down a
+parent's server. Every store operation runs over one persistent session with
+bound parameters and bounded multi-row batches — no `dolt sql` subprocess, and
+no statement that grows with the size of a report.
 
-`status` lists each matching observation separately and supports exact
-kernel, variant, class, and producer filters; timestamps never resolve
-contradictions. `stale` compares compilation manifests and receipts, individual
-project- and build-owned closure members where available, targets, toolchains,
-verification specifications, tolerance policies, and oracle identities
-independently. A changed external header still moves the content-addressed
-closure identity and is reported on the closure axis; it simply has no
-individual member row to name, and a store an earlier version wrote is compared
-by the same rule, so its retained external members never report a difference.
-`todo` sorts missing requirements by kernel, variant, class, and case without a
-risk score. The latter two commands construct the current installed verification
-baseline locally; all three commands are offline, read-only queries.
+Optional contributor exchange is opt-in per command: each producer receives an
+opaque namespace holding one atomically replaced content-addressed snapshot, and
+refresh validates the envelope, identities, relationship graph, and embedded
+evidence before it initializes or mutates anything, merging atomically. Local
+paths and `file:` endpoints are the initial transport; no central service or
+account is required.
 
-Contributor exchange is opt-in on the commands that perform it:
-
-```bash
-strideweave-kernel-status record --report kernel-evidence.jsonl \
-  --producer local-dev --publish --publish-destination /shared/evidence
-strideweave-kernel-status status --arch arm64 --refresh \
-  --read-source /shared/evidence
-```
-
-`publish_destination` and `read_source` may instead come from
-`STRIDEWEAVE_STATUS_PUBLISH_DESTINATION` and
-`STRIDEWEAVE_STATUS_READ_SOURCE`. The initial transport accepts local paths and
-`file:` endpoints, which also provide the test-remote contract without requiring
-an account or service. Internally, each producer receives an opaque namespace
-containing one atomically replaced current content-addressed snapshot; prior
-cumulative files are not retained or reparsed. Before it initializes or mutates
-the destination store, refresh validates the snapshot envelope and
-namespace, canonical JSON and content-derived identities, the complete
-foreign-key graph, every embedded report and its evidence rows, and observation
-provenance. Publication selects the producer relationship graph and refresh
-looks up incoming primary keys through deterministic rendered-byte-budgeted
-query batches, so neither operation loads unrelated tables or grows an unbounded
-statement as evidence accumulates. New rows use strict inserts
-after explicit idempotency and immutable-conflict checks, and the complete merge
-is atomic. Independent producer
-observations therefore coexist, exact synchronization repeats do nothing, and
-conflicts are reported.
-Neither endpoint is inspected without `--publish` or `--refresh`; future network
-transports must remain behind those same explicit switches.
-
-The root command and every subcommand provide side-effect-free `--help` with
-arguments, defaults, examples, and exit behavior. Successful commands and help
-exit 0. Invalid arguments, reports, configuration, store state, or exchange data
-exit 2. Text and JSON formats are deterministic for the same stored facts; JSON
-object keys and observation arrays use stable ordering.
-
-`test_backend` remains offline and mutation-free: it never creates or reads the
-store, inspects Git, or accesses a network. Imports and every CLI `--help` path
-are likewise side-effect-free. Database access begins only with an explicit
-persistence/query operation, and network access only with explicit publish or
-refresh behavior. Confidence policies, ranked verification levels, autotuning,
-real JIT adapters, manual assembly/sanitizer levels, and CI integration remain
-future work.
+Confidence policies, ranked verification levels, autotuning, real JIT adapters,
+MSVC/Visual Studio provenance, manual assembly/sanitizer levels, and CI
+integration remain future work.
 
 ## Development
 
 The package requires Python 3.12 or newer and builds its native modules with
 scikit-build-core and pybind11.
 
-Before designing a change, read the cross-cutting contracts in
+Development workflow lives in [`CONTRIBUTING.md`](CONTRIBUTING.md): environment
+setup, the native rebuild step, the local verification suite, the test markers
+and the native boundary they enforce, and what each CI job does and why. Before
+designing a change, read the cross-cutting contracts in
 [`INVARIANTS.md`](INVARIANTS.md). It records the canonical implementation choices and
 whether each invariant is enforced by AST lint, Ruff, behavioral tests, native builds,
 or code review.
-
-```bash
-uv sync --group dev
-uv run pytest tests -m "not dolt_integration and not dolt_lifecycle"
-uv run pytest tests -m "dolt_integration or dolt_lifecycle"
-uv run ruff format --check .
-uv run ruff check .
-uv run python tools/lint_invariants.py
-uv run pyright
-uv build
-npm ci
-npm run duplication
-find src/strideweave -type f \( -name '*.cpp' -o -name '*.hpp' \) -exec uv run clang-format --dry-run --Werror {} +
-CMAKE_ARGS="-DSTRIDEWEAVE_STRICT_WARNINGS=ON" uv build
-```
-
-After changing native C++ sources, rebuild and reinstall StrideWeave in the
-active development environment before running the test suite or
-`sw.test_backend()`:
-
-```bash
-uv sync --reinstall-package strideweave --group dev
-```
-
-`uv build` creates a distribution artifact, but it does not reinstall the
-editable native extension imported by the active environment. If that extension
-is older than the Python verification sources, `sw.test_backend()` fails closed
-with the rebuild command instead of skipping native verification.
-
-The repository invariant checker uses Python's built-in AST and reports
-StrideWeave-specific source contracts without importing the package.
-
-CI runs five separately visible code checks: `test` (the non-Dolt suite plus
-formatting, lint, invariants, native formatting, type checking, and the
-distribution build), `dolt-integration`, `native-strict-warnings`,
-`native-sanitizers`, and `duplication`. A sixth job, `changes`, gates them. It
-classifies the paths a change touches and the five code checks run only when
-that classification is anything other than a purely non-code change, so a pull
-request that only adds an OpenSpec spec, an agent skill, or repository prose
-does not build the extension three times to prove nothing. The non-code set is
-`openspec/`, `.agents/`, `.codex/`, `.claude/`, `.beads/`, `docs/`, `assets/`,
-`index.html`, `CNAME`, `.nojekyll`, `properdocs.yml`, `skills-lock.json`, and
-the root prose files other than `README.md` and `LICENSE`, which the
-distribution build consumes. Nothing in that set is read by any of the five;
-the one script that reads `openspec/specs/` is `scripts/gen_spec_pages.py`,
-which belongs to the specs site workflow and filters its own triggers. Ruff's
-own discovery is kept aligned with that set through `extend-exclude` in
-`pyproject.toml`, so a Python helper added under a non-code directory cannot
-land unformatted and then fail `test` for the next unrelated change.
-
-The gate is structured around two hazards. The first is that `test`,
-`duplication`, `native-strict-warnings`, and `native-sanitizers` are required
-status checks, and a required check that never reports blocks a pull request
-permanently rather than failing it, so the triggers deliberately carry no
-`paths` filter: the workflow always starts and the jobs skip individually,
-because a job skipped by `if:` reports `skipped` and satisfies the requirement.
-The second is that a wrong classification must be wrong in the safe direction.
-Classification is therefore a deny list rather than an allow list — an
-unrecognised path runs the full CI — `README.md`, `LICENSE`, and `.github/**`
-are held out of the non-code set because the distribution build fails without
-the first two and a workflow edit has to exercise the third, and a missing base
-commit, a failed or unreadable compare response, or a change set large enough
-for the compare endpoint to truncate its file list all resolve to running
-everything. A rename is classified by both of its endpoints, because the
-compare endpoint reports one entry whose `filename` is the new path, so reading
-that alone would let a source file move into a documentation directory
-unexamined. The dependent jobs compare against `false` rather than `true` and
-carry `!cancelled()`, so a gate that crashes or writes no verdict runs the full
-CI instead of silently skipping it.
-
-`dolt-integration` is the only job that installs a Dolt runtime — a pinned,
-checksum-verified release — and it runs both real-Dolt suites. The
-`dolt_integration` suite shares one session server and
-asserts that exactly one `dolt sql-server` runs and that no `dolt sql`
-subprocess is launched; the `dolt_lifecycle` suite is the manager's own test and
-deliberately starts, and may concurrently run, several independently owned
-servers. Native sanitizer coverage runs in Linux CI with
-`STRIDEWEAVE_SANITIZERS=ON`, instrumenting the extension modules with
-AddressSanitizer and UndefinedBehaviorSanitizer. It deselects those same two
-markers, because their work happens inside an uninstrumented external Dolt
-process. The promise that makes this exact is that the deselected selection
-contains no native work at all: for the whole of a marked item — fixture setup,
-call, and teardown — `tests/conftest.py` replaces every imported binding of
-`sw.test_backend`, native kernel metadata, the installed compilation manifest,
-and report binding with one that refuses, including module-level aliases that
-tests or fixtures captured before the marked protocol began. This is a
-pragmatic accidental-use guard over imported module attributes, not an
-adversarial sandbox over references hidden in locals, closures, or object state.
-Marked tests therefore persist the deterministic pure-Python facts in
-`tests/synthetic_evidence.py`, while report construction, binding, provenance
-reconciliation, and their rejection paths are covered by unmarked tests and
-stay instrumented. The markers are narrow rather than per file, so the store's
-pure helper, in-memory-double, stand-in-runtime, and path-default tests run in
-both the regular and sanitizer jobs.
-
-That sanitizer job is the only one that runs pytest in parallel, with `-n auto`
-over pytest-xdist; every other job runs serially. Sanitizers cost roughly 6.8x,
-and the cost is a long flat tail across the whole suite rather than a few slow
-tests, so worker parallelism is what shortens it. Parallelism changes how a
-sanitizer diagnosis reaches a human, and the job is arranged around that.
-`--capture=no` is unsupported under xdist, so a report can no longer surface
-through the worker's own stderr; `ASAN_OPTIONS` and `UBSAN_OPTIONS` therefore
-share one `log_path` prefix under `sanitizer-reports/`, where each process
-writes `sanitizer.<pid>`. Because `abort_on_error=1` and `halt_on_error=1` kill
-the process on the first diagnostic, that file is what survives: xdist names the
-test the crashed worker was running, and the report file explains why. Two
-`if: failure()` steps then print every report into the log and upload the
-directory as a `sanitizer-reports` artifact. The two option strings share one
-prefix deliberately — ASan and UBSan share a runtime and therefore the common
-`log_path` flag, so separate prefixes would only file an AddressSanitizer report
-under a `ubsan` name. The job also exports `STRIDEWEAVE_EXPECT_SANITIZERS=1`,
-which makes `tests/conftest.py` assert in the controller and in every worker
-that the process actually inherited the preloaded runtime, since a worker that
-escaped `LD_PRELOAD` would pass every test while silently reducing the job to an
-ordinary test run.
-
-The duplication gate uses the exact `jscpd` version locked by npm and the checked-in
-`.jscpd.json` configuration to scan production code under `src/`. The post-binary-
-operation-refactor baseline was 4.7% duplicated lines with 5-line/50-token minimum
-clones; CI blocks results above 5.0%. The scanner respects `.gitignore`, and the
-configuration explicitly excludes non-production, generated, dependency, cache,
-report, and build artifacts.
-
-The test suite covers layouts, carriers, tensor indexing and mutation,
-autograd, operations and activations, hierarchical command parsing, DLPack,
-movement, modules, and public docstrings. `tests/test_dtype_conformance.py`
-additionally enumerates the operation policy's registry and compares `Generic`
-against native `CPU` for every registered operation, so a backend that drifts
-from the shared plans fails there rather than in review.
-
-Tests that need a real local Dolt store carry the `dolt_integration` marker and
-share one managed server for the whole session, defined by the fixtures in
-`tests/conftest.py`. `evidence_store_path` hands each test a unique database in
-that one data directory and drops it afterwards, so the tests keep real
-creation, migration, transaction, query, publication, refresh, and conflict
-coverage while paying for one server rather than one per test. That marker is
-derived from each test's fixture closure rather than written by hand, so a test
-leaves the sanitizer-instrumented suite exactly when it asks for the server it
-was deselected for; a test that owns server processes of its own carries
-`dolt_lifecycle` explicitly instead, and that suite is the one place where
-several servers run at once.
-
-The evidence a marked test persists is built in Python by
-`tests/synthetic_evidence.py`: a complete, internally consistent provenance
-graph — two kernels owned by two sources, closures carrying both project-owned
-and external members, a specification, tolerance policies, an oracle reference,
-deferred coverage, and a resolved plan — that depends on no installed native
-build. Those tests reach the store through the internal post-validation
-boundary in `recording.py` rather than the public `record_report(...)`, which
-still fails closed by rebinding a report against this build before any store is
-touched and is exercised, together with report construction, reconciliation,
-and the CLI's own validation, by unmarked tests against a non-Dolt store.
-`tests/test_native_boundary.py` proves the guard covers every imported binding
-of the native entry points — including the compiled `_cpu_native_kernel_metadata`
-export itself and aliases captured in test or fixture modules, not only the
-Python wrapper that calls it — that it refuses and restores them, and that the
-two selections stay disjoint, exhaustive, and derived. Everything else in the store
-files — SQL rendering and batching, publication selection and merge over
-in-memory doubles, stand-in-runtime failures, and the default store path —
-stays in the regular suite. Both markers skip when no Dolt runtime is
-installed. Select or exclude them with pytest's `-m`:
-
-```bash
-uv run pytest tests -m "not dolt_integration and not dolt_lifecycle"
-uv run pytest tests -m "dolt_integration or dolt_lifecycle"
-```
-
-`--durations=10` is on by default, so every run reports its slowest steps.
 
 ## License
 
