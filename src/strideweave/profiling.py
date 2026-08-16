@@ -72,8 +72,12 @@ class ProfilerEvent:
         succeeded: Whether execution returned a valid tensor without raising.
 
     Examples:
-        >>> with profile() as prof:
-        ...     result = relu(tensor)
+        >>> import strideweave as sw
+        >>> tensor = sw.Tensor(
+        ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ... )
+        >>> with sw.profile() as prof:
+        ...     result = sw.relu(tensor)
         >>> event = prof.events()[0]
         >>> event.name
         'relu'
@@ -125,6 +129,12 @@ class ProfilerAggregate:
         max_time_ns: Maximum inclusive host wall time in nanoseconds.
 
     Examples:
+        >>> import strideweave as sw
+        >>> tensor = sw.Tensor(
+        ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ... )
+        >>> with sw.profile() as prof:
+        ...     result = sw.relu(tensor)
         >>> averages = prof.key_averages()
         >>> averages[0].count >= 1
         True
@@ -190,9 +200,13 @@ class Profiler:
         record_shapes: Whether events snapshot hierarchical tensor input shapes.
 
     Examples:
-        >>> with Profiler(carriers={CPU}, record_shapes=True) as prof:
-        ...     result = relu(tensor)
-        >>> prof.events()[0].carrier_type is CPU
+        >>> import strideweave as sw
+        >>> tensor = sw.Tensor(
+        ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ... )
+        >>> with sw.Profiler(carriers={sw.Generic}, record_shapes=True) as prof:
+        ...     result = sw.relu(tensor)
+        >>> prof.events()[0].carrier_type is sw.Generic
         True
     """
 
@@ -277,8 +291,12 @@ class Profiler:
             Tuple of immutable operation execution events.
 
         Examples:
-            >>> with profile() as prof:
-            ...     result = relu(tensor)
+            >>> import strideweave as sw
+            >>> tensor = sw.Tensor(
+            ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+            ... )
+            >>> with sw.profile() as prof:
+            ...     result = sw.relu(tensor)
             >>> prof.events()[0].name
             'relu'
         """
@@ -300,6 +318,12 @@ class Profiler:
             Deterministically ordered immutable aggregate rows.
 
         Examples:
+            >>> import strideweave as sw
+            >>> tensor = sw.Tensor(
+            ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+            ... )
+            >>> with sw.profile(record_shapes=True) as prof:
+            ...     result = sw.relu(tensor)
             >>> rows = prof.key_averages(group_by_input_shape=True)
             >>> rows[0].count >= 1
             True
@@ -362,9 +386,14 @@ class Profiler:
             Aligned plain-text table with nanosecond timing columns.
 
         Examples:
-            >>> print(prof.table(sort_by="total_time_ns"))
-            Name  Carrier  Calls  Total (ns)  Self total (ns)  Mean (ns)  Min (ns)  Max (ns)
-            ...
+            >>> import strideweave as sw
+            >>> tensor = sw.Tensor(
+            ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+            ... )
+            >>> with sw.profile() as prof:
+            ...     result = sw.relu(tensor)
+            >>> "Total (ns)" in prof.table(sort_by="total_time_ns")
+            True
         """
 
         valid_sort_fields = {
@@ -469,7 +498,10 @@ def profile(
 
     Examples:
         >>> import strideweave as sw
-        >>> with sw.profile(carriers={sw.CPU}, record_shapes=True) as prof:
+        >>> tensor = sw.Tensor(
+        ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ... )
+        >>> with sw.profile(carriers={sw.Generic}, record_shapes=True) as prof:
         ...     result = sw.relu(tensor)
         >>> prof.events()[0].name
         'relu'

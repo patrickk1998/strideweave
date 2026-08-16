@@ -508,7 +508,7 @@ def unsqueeze(tensor: Any, dim: Any) -> Any:
         >>> x = sw.Tensor(sw.Generic([1.0, 2.0]), 0,
         ...               sw.Layout(sw.Shape(2), sw.Stride(1)))
         >>> sw.unsqueeze(x, 0).layout.shape
-        Shape<((1,), (2,))>
+        Shape<(1, 2)>
     """
 
     return _dispatch_unary("unsqueeze", tensor).forward(tensor, dim)
@@ -535,7 +535,7 @@ def squeeze(tensor: Any, dim: Any) -> Any:
         >>> x = sw.Tensor(sw.Generic([1.0, 2.0]), 0,
         ...               sw.Layout(sw.Shape([1, 2]), sw.Stride([0, 1])))
         >>> sw.squeeze(x, 0).layout.shape
-        Shape<((2,),)>
+        Shape<(2,)>
     """
 
     return _dispatch_unary("squeeze", tensor).forward(tensor, dim)

@@ -285,8 +285,8 @@ def analytic_cases() -> tuple[AnalyticCase, ...]:
         Tuple of small reduction and matmul cases with independent results.
 
     Examples:
-        >>> {case.operation for case in analytic_cases()}
-        {'matmul', 'reduce_sum'}
+        >>> sorted({case.operation for case in analytic_cases()})
+        ['matmul', 'reduce_sum']
     """
     return (
         AnalyticCase(

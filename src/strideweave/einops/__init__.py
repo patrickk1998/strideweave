@@ -127,7 +127,7 @@ def lex(command: str) -> list[Token]:
         A list of tokens in source order.
 
     Examples:
-        >>> from sw.einops import lex
+        >>> from strideweave.einops import lex
         >>> [token.kind for token in lex("a (b c) -> c a")]
         ['symbol', 'left_paren', 'symbol', 'symbol', 'right_paren', 'arrow', 'symbol', 'symbol']
     """
@@ -160,7 +160,7 @@ def parse_layout_ref(tokens: Sequence[Token]) -> LayoutReference:
         Parsed layout reference containing the tree and named symbol ids.
 
     Examples:
-        >>> from sw.einops import lex, parse_layout_ref
+        >>> from strideweave.einops import lex, parse_layout_ref
         >>> ref = parse_layout_ref(lex("a (b c)"))
         >>> ref.symbol_ids
         (('a', 0), ('b', 1), ('c', 2))
@@ -195,7 +195,7 @@ def parse_rearrange(command: str) -> RearrangeSpec:
 
     Examples:
         >>> from strideweave import Node, Tree
-        >>> from sw.einops import parse_rearrange
+        >>> from strideweave.einops import parse_rearrange
         >>> spec = parse_rearrange("a b -> b a")
         >>> spec.output == Tree(Node.id(1), Node.id(0))
         True
@@ -235,7 +235,7 @@ def parse_reduce(command: str) -> ReduceSpec:
         Cached reduce spec with selection, output, and intermediate layout trees.
 
     Examples:
-        >>> from sw.einops import parse_reduce
+        >>> from strideweave.einops import parse_reduce
         >>> spec = parse_reduce("a b -> a")
         >>> spec.symbol_ids
         (('a', 0), ('b', 1))
@@ -277,7 +277,7 @@ def parse_einsum(command: str) -> EinsumSpec:
         Cached contraction spec describing both fast and general lowering.
 
     Examples:
-        >>> from sw.einops import parse_einsum
+        >>> from strideweave.einops import parse_einsum
         >>> spec = parse_einsum("a b, c b -> a c")
         >>> spec.contraction_symbols
         ('b',)
@@ -322,7 +322,7 @@ def rearrange(tensor: Any, description: str) -> Any:
 
     Examples:
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> from sw.einops import rearrange
+        >>> from strideweave.einops import rearrange
         >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> rearrange(x, "a b -> b a")[2, 1]
         6
@@ -375,7 +375,7 @@ def reduce(
 
     Examples:
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> from sw.einops import reduce
+        >>> from strideweave.einops import reduce
         >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> reduce(x, "a b -> a")[1]
         12
@@ -429,7 +429,7 @@ def einsum(lhs: Any, rhs: Any, description: str) -> Any:
 
     Examples:
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> from sw.einops import einsum
+        >>> from strideweave.einops import einsum
         >>> lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> rhs = Tensor(Generic([1, 1, 1, 2, 2, 2]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> einsum(lhs, rhs, "a b, c b -> a c")[1, 1]

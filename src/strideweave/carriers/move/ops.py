@@ -184,7 +184,15 @@ def register_move_operation(
         ``None``.
 
     Examples:
-        >>> register_move_operation(CPU, FileBacked, CpuToFileBackedMoveOperation)
+        >>> from strideweave import Generic
+        >>> from strideweave.carriers.move import (
+        ...     ElementwiseMoveOperation,
+        ...     dispatch_move,
+        ...     register_move_operation,
+        ... )
+        >>> register_move_operation(Generic, Generic, ElementwiseMoveOperation)
+        >>> dispatch_move(Generic, Generic) is ElementwiseMoveOperation
+        True
     """
 
     if not (isinstance(source_class, type) and issubclass(source_class, Carrier)):
@@ -219,8 +227,15 @@ def unregister_move_operation(
         The ``MoveOperation`` subclass that was registered for the pair.
 
     Examples:
-        >>> unregister_move_operation(Generic, Generic)
-        <class '...GenericMoveOperation'>
+        >>> from strideweave import Generic
+        >>> from strideweave.carriers.move import (
+        ...     ElementwiseMoveOperation,
+        ...     register_move_operation,
+        ...     unregister_move_operation,
+        ... )
+        >>> register_move_operation(Generic, Generic, ElementwiseMoveOperation)
+        >>> unregister_move_operation(Generic, Generic) is ElementwiseMoveOperation
+        True
     """
 
     try:
@@ -252,8 +267,18 @@ def registered_move_operation(
         Context manager yielding ``operation_class``.
 
     Examples:
-        >>> with registered_move_operation(Generic, Generic, SpyMoveOperation):
-        ...     sw.move(tensor, Generic([0.0, 0.0]))
+        >>> from strideweave import Generic
+        >>> from strideweave.carriers.move import (
+        ...     ElementwiseMoveOperation,
+        ...     dispatch_move,
+        ...     registered_move_operation,
+        ... )
+        >>> with registered_move_operation(
+        ...     Generic, Generic, ElementwiseMoveOperation
+        ... ):
+        ...     selected = dispatch_move(Generic, Generic)
+        >>> selected is ElementwiseMoveOperation
+        True
     """
 
     register_move_operation(source_class, destination_class, operation_class)
@@ -279,7 +304,9 @@ def dispatch_move(source_class: type, destination_class: type) -> type[MoveOpera
         ``ElementwiseMoveOperation`` when no operation is registered.
 
     Examples:
-        >>> dispatch_move(CPU, FileBacked)
+        >>> from strideweave import CPU, FileBacked
+        >>> from strideweave.carriers.move import dispatch_move
+        >>> dispatch_move(CPU, FileBacked)  # doctest: +ELLIPSIS
         <class '...CpuToFileBackedMoveOperation'>
     """
 

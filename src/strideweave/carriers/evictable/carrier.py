@@ -163,6 +163,9 @@ class Evictable(DependentCarrier):
             hierarchy is evicted and may be replaced during promotion.
 
         Examples:
+            >>> import strideweave as sw
+            >>> primary = sw.Generic([1.0])
+            >>> hierarchy = sw.Evictable(primary, sw.Generic([0.0]))
             >>> hierarchy.primary is primary
             True
         """
@@ -179,6 +182,9 @@ class Evictable(DependentCarrier):
             results keep this tier empty until their first eviction.
 
         Examples:
+            >>> import strideweave as sw
+            >>> secondary = sw.Generic([0.0])
+            >>> hierarchy = sw.Evictable(sw.Generic([1.0]), secondary)
             >>> hierarchy.secondary is secondary
             True
         """
@@ -236,6 +242,8 @@ class Evictable(DependentCarrier):
             ``True`` after eviction and before promotion.
 
         Examples:
+            >>> import strideweave as sw
+            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
             >>> carrier.evict()
             >>> carrier.is_evicted()
             True
@@ -359,6 +367,8 @@ class Evictable(DependentCarrier):
             ``None``.
 
         Examples:
+            >>> import strideweave as sw
+            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
             >>> carrier.evict()
             >>> carrier.is_evicted()
             True
@@ -406,6 +416,8 @@ class Evictable(DependentCarrier):
             ``None``.
 
         Examples:
+            >>> import strideweave as sw
+            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
             >>> carrier.evict()
             >>> carrier.promote()
             >>> carrier.is_evicted()
@@ -496,6 +508,8 @@ class Evictable(DependentCarrier):
             Fresh EvictableOperation owning a fresh primary operation.
 
         Examples:
+            >>> import strideweave as sw
+            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
             >>> operation = carrier.dispatch_op("relu")
             >>> type(operation).__name__
             'EvictableOperation'

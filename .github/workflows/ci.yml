@@ -178,6 +178,12 @@ jobs:
           uv run pytest tests
           -m "not dolt_integration and not dolt_lifecycle"
 
+      # --doctest-modules collects Python modules only. The 25 examples in
+      # src/strideweave/core/native/_carrier.cpp remain an explicit native
+      # pybind-docstring coverage gap and require a future custom collector.
+      - name: Run Python docstring examples
+        run: uv run pytest --doctest-modules src/strideweave
+
       - name: Check formatting
         run: uv run ruff format --check .
 

@@ -37,7 +37,7 @@ def sum(tensor: Any) -> Any:  # noqa: A001 - mirrors the PyTorch name
         Scalar ``Shape(1)`` tensor holding the total.
 
     Examples:
-        >>> from sw.friendly import sum, tensor
+        >>> from strideweave.friendly import sum, tensor
         >>> sum(tensor([[1.0, 2.0], [3.0, 4.0]]))[0]
         10.0
     """
@@ -63,7 +63,7 @@ def mean(tensor: Any) -> Any:
         Scalar ``Shape(1)`` tensor holding the mean.
 
     Examples:
-        >>> from sw.friendly import mean, tensor
+        >>> from strideweave.friendly import mean, tensor
         >>> mean(tensor([1.0, 2.0, 3.0]))[0]
         2.0
     """
@@ -82,7 +82,7 @@ def item(tensor: Any) -> Any:
         The tensor's only element as a Python value.
 
     Examples:
-        >>> from sw.friendly import item, sum, tensor
+        >>> from strideweave.friendly import item, sum, tensor
         >>> item(sum(tensor([1.0, 2.0])))
         3.0
     """
@@ -105,7 +105,7 @@ def to_list(tensor: Any) -> list[Any]:
         List of the tensor's logical values.
 
     Examples:
-        >>> from sw.friendly import tensor, to_list
+        >>> from strideweave.friendly import tensor, to_list
         >>> to_list(tensor([[1.0, 2.0], [3.0, 4.0]]))
         [1.0, 3.0, 2.0, 4.0]
     """
