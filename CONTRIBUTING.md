@@ -43,6 +43,7 @@ Run the complete local verification suite before opening a pull request:
 ```bash
 uv run pytest tests -m "not dolt_integration and not dolt_lifecycle"
 uv run pytest tests -m "dolt_integration or dolt_lifecycle"
+uv run pytest --doctest-modules src/strideweave
 uv run ruff format --check .
 uv run ruff check .
 uv run python tools/lint_invariants.py
@@ -65,6 +66,12 @@ movement, modules, and public docstrings. `tests/test_dtype_conformance.py`
 additionally enumerates the operation policy's registry and compares `Generic`
 against native `CPU` for every registered operation, so a backend that drifts
 from the shared plans fails there rather than in review.
+
+The Python docstring gate collects modules under `src/strideweave` explicitly,
+with whitespace normalization but without global ellipsis matching. Pytest's
+module collector does not inspect docstrings compiled into pybind extensions,
+so the 25 examples in `src/strideweave/core/native/_carrier.cpp` remain a known
+native coverage gap pending a custom collector.
 
 `--durations=10` is on by default, so every run reports its slowest steps.
 
@@ -133,9 +140,10 @@ suite.
 ## Continuous Integration
 
 CI runs five separately visible code checks: `test` (the non-Dolt suite plus
-formatting, lint, invariants, native formatting, type checking, and the
-distribution build), `dolt-integration`, `native-strict-warnings`,
-`native-sanitizers`, and `duplication`. A sixth job, `changes`, gates them. It
+Python docstring examples, formatting, lint, invariants, native formatting,
+type checking, and the distribution build), `dolt-integration`,
+`native-strict-warnings`, `native-sanitizers`, and `duplication`. A sixth job,
+`changes`, gates them. It
 classifies the paths a change touches and the five code checks run only when
 that classification is anything other than a purely non-code change, so a pull
 request that only adds an OpenSpec spec, an agent skill, or repository prose

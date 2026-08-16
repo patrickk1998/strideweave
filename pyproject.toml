@@ -109,6 +109,7 @@ known-first-party = ["strideweave"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 addopts = "--durations=10"
+doctest_optionflags = "NORMALIZE_WHITESPACE"
 markers = [
     "dolt_integration: exercises a real local Dolt store on the shared session server (applied from fixture use)",
     "dolt_lifecycle: starts and stops its own managed Dolt servers",
