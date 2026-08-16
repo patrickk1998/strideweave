@@ -149,8 +149,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         exit status ``2``.
 
     Examples:
-        >>> main(["evidence.jsonl", "--problems"])
-        0
+        >>> from tempfile import TemporaryDirectory
+        >>> with TemporaryDirectory() as directory:
+        ...     status = main([f"{directory}/missing.jsonl"])
+        >>> status
+        2
     """
     parser = _parser()
     arguments = parser.parse_args(argv)

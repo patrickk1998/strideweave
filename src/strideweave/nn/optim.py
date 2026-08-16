@@ -30,7 +30,7 @@ class SGD:
 
     Examples:
         >>> import random
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> layer = nn.Linear(2, 2, rng=random.Random(0))
         >>> optimizer = nn.SGD(layer.parameters(), lr=0.1)
         >>> optimizer.zero_grad()
@@ -57,7 +57,7 @@ class SGD:
 
         Examples:
             >>> import random
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> layer = nn.Linear(2, 2, rng=random.Random(0))
             >>> nn.SGD(layer.parameters(), lr=0.1).step()  # no grads: no-op
         """
@@ -87,7 +87,7 @@ class SGD:
 
         Examples:
             >>> import random
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> layer = nn.Linear(2, 2, rng=random.Random(0))
             >>> nn.SGD(layer.parameters(), lr=0.1).zero_grad()
         """

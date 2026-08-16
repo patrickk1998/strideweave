@@ -76,7 +76,7 @@ def tensor(
         Tensor over fresh CPU storage holding the values.
 
     Examples:
-        >>> from sw.friendly import tensor
+        >>> from strideweave.friendly import tensor
         >>> t = tensor([[1.0, 2.0], [3.0, 4.0]])
         >>> t[1, 0]
         3.0
@@ -122,7 +122,7 @@ def full(*extents: int, value: float, dtype: DType = DType.Float32) -> Tensor:
         Column-major tensor over fresh CPU storage filled with ``value``.
 
     Examples:
-        >>> from sw.friendly import full
+        >>> from strideweave.friendly import full
         >>> full(2, 2, value=7.0)[1, 1]
         7.0
     """
@@ -143,7 +143,7 @@ def zeros(*extents: int, dtype: DType = DType.Float32) -> Tensor:
         Column-major tensor over fresh zero-initialized CPU storage.
 
     Examples:
-        >>> from sw.friendly import zeros
+        >>> from strideweave.friendly import zeros
         >>> zeros(2, 3)[1, 2]
         0.0
     """
@@ -162,7 +162,7 @@ def ones(*extents: int, dtype: DType = DType.Float32) -> Tensor:
         Column-major tensor over fresh CPU storage filled with ones.
 
     Examples:
-        >>> from sw.friendly import ones
+        >>> from strideweave.friendly import ones
         >>> ones(3)[2]
         1.0
     """
@@ -182,7 +182,7 @@ def arange(count: int, *, dtype: DType = DType.Float32) -> Tensor:
         One-mode tensor with ascending values.
 
     Examples:
-        >>> from sw.friendly import arange
+        >>> from strideweave.friendly import arange
         >>> arange(4)[3]
         3.0
     """
@@ -206,7 +206,7 @@ def rand(*extents: int, rng: random.Random | None = None) -> Tensor:
 
     Examples:
         >>> import random
-        >>> from sw.friendly import rand
+        >>> from strideweave.friendly import rand
         >>> 0.0 <= rand(2, 2, rng=random.Random(0))[0, 0] < 1.0
         True
     """
@@ -230,7 +230,7 @@ def randn(*extents: int, rng: random.Random | None = None) -> Tensor:
 
     Examples:
         >>> import random
-        >>> from sw.friendly import randn
+        >>> from strideweave.friendly import randn
         >>> isinstance(randn(3, rng=random.Random(0))[0], float)
         True
     """

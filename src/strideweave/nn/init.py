@@ -30,7 +30,7 @@ def fill_(parameter: Parameter, value: float) -> None:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import CPU, Layout, Parameter, Shape, Stride, Tensor
-        >>> from sw.nn.init import fill_
+        >>> from strideweave.nn.init import fill_
         >>> weight = Parameter(CPU(2), 0, Layout(Shape(2), Stride(1)))
         >>> fill_(weight, 3.0)
         >>> weight[1]
@@ -60,7 +60,7 @@ def kaiming_uniform_(parameter: Parameter, fan_in: int, *, rng: random.Random) -
         >>> import random
         >>> import strideweave as sw
         >>> from strideweave import CPU, Layout, Parameter, Shape, Stride
-        >>> from sw.nn.init import kaiming_uniform_
+        >>> from strideweave.nn.init import kaiming_uniform_
         >>> weight = Parameter(CPU(4), 0, Layout(Shape([2, 2]), Stride([1, 2])))
         >>> kaiming_uniform_(weight, 2, rng=random.Random(0))
         >>> abs(weight[0, 0]) <= 1 / 2**0.5

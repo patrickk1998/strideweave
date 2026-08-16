@@ -35,7 +35,7 @@ def column_major(*extents: int) -> Layout:
 
     Examples:
         >>> from strideweave import Layout, Shape, Stride
-        >>> from sw.friendly import column_major
+        >>> from strideweave.friendly import column_major
         >>> column_major(2, 3) == Layout(Shape([2, 3]), Stride([1, 2]))
         True
     """
@@ -64,7 +64,7 @@ def row_major(*extents: int) -> Layout:
 
     Examples:
         >>> from strideweave import Layout, Shape, Stride
-        >>> from sw.friendly import row_major
+        >>> from strideweave.friendly import row_major
         >>> row_major(2, 3) == Layout(Shape([2, 3]), Stride([3, 1]))
         True
     """

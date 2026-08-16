@@ -871,8 +871,10 @@ class VerificationReport:
 
         Examples:
             >>> from strideweave.verification import VerificationReport
-            >>> VerificationReport.from_jsonl("").records
-            ()
+            >>> VerificationReport.from_jsonl("")
+            Traceback (most recent call last):
+            ...
+            ValueError: JSONL line 1: report header is required
         """
         if type(text) is not str:
             raise TypeError("text must be a string")
@@ -919,10 +921,13 @@ class VerificationReport:
 
         Examples:
             >>> from pathlib import Path
+            >>> from tempfile import TemporaryDirectory
             >>> from strideweave.verification import VerificationReport
-            >>> path = Path("verification.jsonl")
-            >>> VerificationReport(()).write(path)
-            >>> VerificationReport.load(path).records
+            >>> with TemporaryDirectory() as directory:
+            ...     path = Path(directory) / "verification.jsonl"
+            ...     VerificationReport(()).write(path)
+            ...     records = VerificationReport.load(path).records
+            >>> records
             ()
         """
         return cls.from_jsonl(Path(path).read_text(encoding="utf-8"))
@@ -938,8 +943,14 @@ class VerificationReport:
 
         Examples:
             >>> from pathlib import Path
+            >>> from tempfile import TemporaryDirectory
             >>> from strideweave.verification import VerificationReport
-            >>> VerificationReport(()).write(Path("verification.jsonl"))
+            >>> with TemporaryDirectory() as directory:
+            ...     path = Path(directory) / "verification.jsonl"
+            ...     VerificationReport(()).write(path)
+            ...     written = path.is_file()
+            >>> written
+            True
         """
         Path(path).write_text(self.to_jsonl(), encoding="utf-8")
 

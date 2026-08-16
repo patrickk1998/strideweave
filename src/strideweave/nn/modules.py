@@ -60,7 +60,7 @@ class Linear(Module):
 
     Examples:
         >>> import random
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> layer = nn.Linear(3, 2, rng=random.Random(0))
         >>> len(layer.parameters())
         2
@@ -106,7 +106,7 @@ class Linear(Module):
 
         Examples:
             >>> import random
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import CPU, Layout, Shape, Stride, Tensor
             >>> layer = nn.Linear(2, 4, rng=random.Random(0))
             >>> x = Tensor(CPU(6), 0, Layout(Shape([3, 2]), Stride([1, 3])))
@@ -139,7 +139,7 @@ class MSELoss(Module):
         name: Optional module name override.
 
     Examples:
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> criterion = nn.MSELoss()
         >>> criterion.parameters()
         ()
@@ -158,7 +158,7 @@ class MSELoss(Module):
             Scalar ``Shape(1)`` tensor holding the mean squared error.
 
         Examples:
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import CPU, Layout, Shape, Stride, Tensor
             >>> layout = Layout(Shape([1, 2]), Stride([1, 1]))
             >>> pred = Tensor(CPU(2), 0, layout)
@@ -181,7 +181,7 @@ class ReLU(Module):
         name: Optional module name override for parameter traversal.
 
     Examples:
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> nn.ReLU().parameters()
         ()
     """
@@ -196,11 +196,11 @@ class ReLU(Module):
             Tensor with negative values replaced by zero.
 
         Examples:
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
             >>> x = Tensor(Generic([-1.0, 2.0]), 0, Layout(Shape(2), Stride(1)))
             >>> nn.ReLU()(x)[0]
-            0.0
+            0
         """
 
         return relu(tensor)
@@ -213,7 +213,7 @@ class Sigmoid(Module):
         name: Optional module name override for parameter traversal.
 
     Examples:
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> nn.Sigmoid().parameters()
         ()
     """
@@ -228,7 +228,7 @@ class Sigmoid(Module):
             Tensor of sigmoid activations.
 
         Examples:
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
             >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
             >>> nn.Sigmoid()(x)[0]
@@ -245,7 +245,7 @@ class Tanh(Module):
         name: Optional module name override for parameter traversal.
 
     Examples:
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> nn.Tanh().parameters()
         ()
     """
@@ -260,7 +260,7 @@ class Tanh(Module):
             Tensor of tanh activations.
 
         Examples:
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
             >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
             >>> nn.Tanh()(x)[0]
@@ -277,7 +277,7 @@ class GELU(Module):
         name: Optional module name override for parameter traversal.
 
     Examples:
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> nn.GELU().parameters()
         ()
     """
@@ -292,7 +292,7 @@ class GELU(Module):
             Tensor of GELU activations.
 
         Examples:
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
             >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
             >>> nn.GELU()(x)[0]
@@ -309,7 +309,7 @@ class SiLU(Module):
         name: Optional module name override for parameter traversal.
 
     Examples:
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> nn.SiLU().parameters()
         ()
     """
@@ -324,7 +324,7 @@ class SiLU(Module):
             Tensor of SiLU activations.
 
         Examples:
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
             >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
             >>> nn.SiLU()(x)[0]
@@ -341,7 +341,7 @@ class Softplus(Module):
         name: Optional module name override for parameter traversal.
 
     Examples:
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> nn.Softplus().parameters()
         ()
     """
@@ -356,7 +356,7 @@ class Softplus(Module):
             Tensor of softplus activations.
 
         Examples:
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
             >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
             >>> round(nn.Softplus()(x)[0], 4)
@@ -373,7 +373,7 @@ class ELU(Module):
         name: Optional module name override for parameter traversal.
 
     Examples:
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> nn.ELU().parameters()
         ()
     """
@@ -388,7 +388,7 @@ class ELU(Module):
             Tensor of ELU activations.
 
         Examples:
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
             >>> x = Tensor(Generic([1.0]), 0, Layout(Shape(1), Stride(1)))
             >>> nn.ELU()(x)[0]
@@ -405,7 +405,7 @@ class LeakyReLU(Module):
         name: Optional module name override for parameter traversal.
 
     Examples:
-        >>> import sw.nn as nn
+        >>> import strideweave.nn as nn
         >>> nn.LeakyReLU().parameters()
         ()
     """
@@ -420,7 +420,7 @@ class LeakyReLU(Module):
             Tensor of leaky ReLU activations.
 
         Examples:
-            >>> import sw.nn as nn
+            >>> import strideweave.nn as nn
             >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
             >>> x = Tensor(Generic([2.0]), 0, Layout(Shape(1), Stride(1)))
             >>> nn.LeakyReLU()(x)[0]

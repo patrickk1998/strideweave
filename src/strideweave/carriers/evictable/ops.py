@@ -52,8 +52,12 @@ class EvictableOperation(Operation):
             Stateful CPU, Generic, or shared operation used for computation.
 
         Examples:
-            >>> adapter.primary_operation
-            <...Operation object ...>
+            >>> import strideweave as sw
+            >>> adapter = sw.EvictableOperation(
+            ...     sw.Generic([0.0]).dispatch_op("relu")
+            ... )
+            >>> adapter.primary_operation is not None
+            True
         """
 
         return self._primary_operation
@@ -69,7 +73,14 @@ class EvictableOperation(Operation):
             Evictable-backed tensor produced by the primary operation.
 
         Examples:
+            >>> import strideweave as sw
+            >>> layout = sw.Layout(sw.Shape(1), sw.Stride(1))
+            >>> carrier = sw.Evictable(sw.Generic([-1.0]), sw.Generic([0.0]))
+            >>> tensor = sw.Tensor(carrier, 0, layout)
+            >>> adapter = carrier.dispatch_op("relu")
             >>> result = adapter.forward(tensor)
+            >>> result[0]
+            0
         """
 
         if self._forward_complete:
@@ -209,7 +220,16 @@ class EvictableOperation(Operation):
             inputs, preserving ``None`` entries from the primary operation.
 
         Examples:
+            >>> import strideweave as sw
+            >>> layout = sw.Layout(sw.Shape(1), sw.Stride(1))
+            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
+            >>> tensor = sw.Tensor(carrier, 0, layout)
+            >>> adapter = carrier.dispatch_op("relu")
+            >>> result = adapter.forward(tensor)
+            >>> output_gradient = sw.Tensor(sw.Generic([1.0]), 0, layout)
             >>> (input_gradient,) = adapter.backward(output_gradient)
+            >>> input_gradient[0]
+            1.0
         """
 
         from ...core.tensor import Tensor
