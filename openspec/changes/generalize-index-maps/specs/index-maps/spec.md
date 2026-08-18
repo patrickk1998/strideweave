@@ -249,13 +249,16 @@ Composition SHALL require both operands to be IndexMaps and SHALL require
 `TypeError`; a declared inner codomain larger than the outer domain SHALL fail
 with `ValueError` before returning a map.
 
-For a compatible pair, the result SHALL have `shape == inner.shape`,
-`codomain_size == outer.codomain_size`, and evaluation
-`outer.compose(inner)(q) == outer(inner(q))`. Compatibility SHALL depend on the
-declared bound. Instance composition SHALL require exactly one `inner`
-argument; supplying zero or more than one SHALL raise `TypeError`. Successful
-composition SHALL return the specialized or generic IndexMap established by
-the requirements below.
+For a compatible pair, evaluation SHALL satisfy
+`outer.compose(inner)(q) == outer(inner(q))` for every coordinate accepted by
+`inner`. A generic result SHALL have `shape == inner.shape` exactly and
+`codomain_size == outer.codomain_size`. A specialized result SHALL follow its
+kind-specific domain-structure and codomain rules while preserving every
+coordinate form accepted by `inner`. Compatibility SHALL depend on the declared
+bound. Instance composition SHALL require exactly one `inner` argument;
+supplying zero or more than one SHALL raise `TypeError`. Successful composition
+SHALL return the specialized or generic IndexMap established by the
+requirements below.
 
 #### Scenario: Compose through a smaller declared codomain
 
@@ -302,6 +305,11 @@ A compatible composition that is not closed under a specialized result rule
 SHALL return an immutable IndexMap whose evaluation preserves the composition
 law and whose public type contract is IndexMap.
 
+The generic result SHALL store one immutable inner-to-outer child chain. When a
+generic result participates in another generic composition, construction SHALL
+flatten the nested chain. Evaluation SHALL stream one scalar through that tuple
+iteratively and SHALL NOT enumerate or materialize the domain.
+
 The generic result SHALL report `is_injective is False` when the inner map is
 known non-injective, `True` when every composed child is known injective, and
 `None` otherwise.
@@ -327,6 +335,12 @@ the appropriate specialized or generic result.
 
 - **WHEN** a generic composition has an injective inner map and an outer map whose injectivity is unknown
 - **THEN** the composed map reports `is_injective is None`
+
+#### Scenario: Flatten nested generic composition
+
+- **WHEN** a generic composition result is composed again through another compatible map
+- **THEN** the new result stores one flat inner-to-outer child chain
+- **AND** evaluation streams through the chain without materializing any domain values
 
 ### Requirement: Index map values are immutable
 

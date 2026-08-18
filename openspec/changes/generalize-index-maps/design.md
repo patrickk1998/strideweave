@@ -85,10 +85,24 @@ Tensor storage validation and operation-result allocation will continue to use
 view of the same Layout value, not an alternative allocation extent: a gapped
 Layout with `size == 6` and `cosize == 10` still requires ten carrier elements.
 
-The existing `compose` implementation will become the Layout/Layout closure
-path. The public method will continue to accept `Shape` and `Tiler` and return
-Layout for those forms. IndexMap siblings enter through the common composition
-path and fall back structurally when Layout has no closed representation.
+The existing `compose` implementation will remain the Layout/Layout closure
+path only when a rank-bounded structural check proves that its result is exact
+and preserves the inner Layout's accepted hierarchical coordinate forms. That
+specialized result may refine an existing inner leaf into a nested Layout mode,
+because Shape's subtree-scalar rule still accepts the original leaf coordinate,
+but it may not remove or reorder an existing coordinate level. A compatible
+Layout/Layout pair that cannot meet that proof will use the same private generic
+composition representation as a cross-kind pair. The generic result preserves
+`inner.shape` exactly and evaluates the inner map before the outer map without
+enumerating either domain.
+
+The public method will continue to accept `Shape` and `Tiler` and return Layout
+for those convenience forms. IndexMap siblings enter through the common
+composition path and fall back structurally when Layout has no closed
+representation. The private generic chain is introduced with the foundation so
+Layout/Layout composition is total before sibling integration; the later
+composition phase extends that representation across all map kinds and adds the
+specified identity simplifications.
 
 Treating every IndexMap as a legal Tensor placement was rejected. RT014 depends
 on Layout-specific `cosize`, stride structure, and native caching; map
@@ -197,6 +211,11 @@ deferred.
 - **[Risk] Generic composition becomes a deep call chain**
   → Flatten private generic nodes into one immutable child tuple and evaluate
   iteratively. Defer materialization until a measured workload needs it.
+- **[Risk] Legacy Layout composition returns an inexact affine result**
+  → Specialize only after rank-bounded divisibility, compactness, and coordinate-
+  structure checks establish the existing lowering's exactness. Use the generic
+  chain for every other bound-compatible pair; do not probe by enumerating the
+  domain or hide algebra failures behind exception handling.
 - **[Risk] Swizzle terminology is confused with arbitrary permutation**
   → Keep the stage formula and bit-width validation public and exact; use
   Permutation for explicit arbitrary finite lookups.
@@ -207,7 +226,9 @@ deferred.
 ## Migration Plan
 
 1. Add shared Shape conversion and IndexMap infrastructure, mechanically freeze
-   Shape/Stride/Layout, and preserve all existing Layout behavior and caches.
+   Shape/Stride/Layout, preserve all existing Layout behavior and caches, and
+   make Layout/Layout composition total through exact specialization or the
+   private generic-chain fallback.
 2. Add the three sibling map types and their independent constructor,
    evaluation, immutability, and injectivity tests.
 3. Integrate specialized and generic composition, then add cross-kind,

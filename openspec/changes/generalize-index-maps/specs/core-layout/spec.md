@@ -36,9 +36,28 @@ Layout SHALL be interpreted as a Tiler.
 
 For an IndexMap `inner`, composition SHALL follow the common IndexMap
 compatibility and evaluation contract. When `inner` is a Layout, composition
-SHALL return the Layout representation of that affine hierarchical function.
-When a compatible sibling IndexMap has no specialized closure with Layout,
-composition SHALL return the generic IndexMap result.
+SHALL return a specialized Layout only when a rank-bounded structural decision
+proves that the existing Layout lowering represents the exact composed function
+and preserves every coordinate form accepted by `inner`. The specialized result
+MAY refine an existing inner leaf into a nested mode of equal logical size,
+because the original scalar remains accepted at that subtree, but it SHALL NOT
+remove or reorder an existing coordinate level. Every other bound-compatible
+Layout/Layout pair SHALL return the private generic IndexMap result with
+`shape == inner.shape`. When a compatible sibling IndexMap has no specialized
+closure with Layout, composition SHALL likewise return the generic IndexMap
+result.
+
+An exact specialized Layout result SHALL retain Layout's established
+`codomain_size == cosize` rule, including legacy cases where its minimum result
+span is narrower than the outer Layout's declared span. A generic fallback
+SHALL instead retain the outer map's declared codomain size as required by the
+common generic-composition contract.
+
+The specialization decision SHALL be structural and rank-bounded. It SHALL NOT
+enumerate logical coordinates, materialize a lookup table, or convert an
+unexpected lowering exception into a generic result. A pair outside the proven
+specialized cases SHALL select the generic representation before specialized
+lowering begins.
 
 For a Shape `inner`, composition SHALL return a Layout produced by applying one
 unit-stride tile to each corresponding leading mode. For a Tiler `inner`, it
@@ -61,6 +80,18 @@ return no map.
 
 - **WHEN** `Layout(Shape(20), Stride(2))` is composed with `Layout(Shape([5, 4]), Stride([4, 1]))`
 - **THEN** the result is `Layout(Shape([5, 4]), Stride([8, 2]))`
+
+#### Scenario: Retain an exact sparse Layout specialization
+
+- **WHEN** compact `Layout(Shape([2, 2]), Stride([1, 2]))` is composed with `Layout(Shape(2), Stride(3))`
+- **THEN** the result is an exact specialized Layout
+- **AND** every result value equals evaluation of the sparse inner followed by the compact outer
+
+#### Scenario: Fall back when Layout cannot preserve the inner domain
+
+- **WHEN** gapped `Layout(Shape([2, 2]), Stride([1, 3]))` is composed with flat identity `Layout(Shape(4), Stride(1))`
+- **THEN** the result is a generic IndexMap with `shape == Shape(4)`
+- **AND** every result value equals evaluation of the identity inner followed by the gapped outer
 
 #### Scenario: Compose with list and tuple tilers
 

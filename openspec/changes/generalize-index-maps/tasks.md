@@ -3,7 +3,7 @@
 - [ ] 1.1 Add immutable `Shape.encode` and `Shape.decode` behavior with recursive first-mode-fastest scalar normalization at every hierarchy node, rank-zero support, tuple/list compatibility, inverse-property tests, and exact type/value failure tests.
 - [ ] 1.2 Add the public `IndexMap` contract with read-only `shape`, `size`, `codomain_size`, tri-state `is_injective`, `index`, direct-call evaluation, abstract-construction failure, and non-variadic composition validation, covered by focused return and error contract tests.
 - [ ] 1.3 Make Shape, Stride, and Layout semantic state mechanically immutable, and test that rejected reassignment preserves every public value and Layout indexing result.
-- [ ] 1.4 Migrate Layout under IndexMap, define `codomain_size == cosize`, route coordinate semantics through the shared Shape authority, and preserve native Layout indexing plus existing static/class-qualified composition, Shape, Tiler, broadcasting, complement, and tiling regressions.
+- [ ] 1.4 Migrate Layout under IndexMap, define `codomain_size == cosize`, route coordinate semantics through the shared Shape authority, preserve native Layout indexing plus existing static/class-qualified composition, Shape, Tiler, broadcasting, complement, and tiling regressions, and make bound-compatible Layout/Layout composition total by retaining exact structurally proven Layout results and otherwise returning a private immutable flattened IndexMap chain.
 
 ## 2. Specialized Sibling Maps
 
@@ -13,9 +13,9 @@
 
 ## 3. Composition Integration
 
-- [ ] 3.1 Implement immutable generic IndexMap composition with declared codomain containment, correct result metadata and evaluation, metadata-preserving identity behavior, and conservative tri-state injectivity tests.
+- [ ] 3.1 Extend the private immutable flattened composition chain from the Layout foundation across every IndexMap kind, with declared codomain containment, correct result metadata and evaluation, metadata-preserving identity behavior, and conservative tri-state injectivity tests.
 - [ ] 3.2 Implement Permutation lookup closure, equal-size Swizzle stage closure and adjacent cancellation, and structurally aligned Product componentwise closure, with tests for specialized result types and generic fallbacks when closure conditions do not hold.
-- [ ] 3.3 Integrate Layout with sibling composition and test `outer.compose(inner)` orientation, smaller-codomain containment, incompatible bounds, arity and argument-type failures, mixed Layout/sibling generic results, Layout/Layout closure, and success and failure behavior for every Shape/Tiler convenience syntax.
+- [ ] 3.3 Integrate Layout with sibling composition and test `outer.compose(inner)` orientation, smaller-codomain containment, incompatible bounds, arity and argument-type failures, mixed Layout/sibling generic results, preservation of the foundation's exact Layout/Layout specialization and generic fallback, and success and failure behavior for every Shape/Tiler convenience syntax.
 
 ## 4. Public Surface and Architecture Documentation
 
