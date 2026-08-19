@@ -47,6 +47,14 @@ class _GenericTestIndexMap(_TestIndexMap):
         return _compose_generic(self, inner)
 
 
+class _IdentityGenericTestIndexMap(_GenericTestIndexMap):
+    def __init__(self, shape: Shape) -> None:
+        super().__init__(shape, shape.size, True)
+
+    def _composition_is_identity(self) -> bool:
+        return True
+
+
 class _CountingGenericTestIndexMap(_GenericTestIndexMap):
     _calls: list[tuple[str, int]]
     _label: str
@@ -234,3 +242,53 @@ def test_generic_composition_does_not_evaluate_children_during_construction():
     assert calls == []
     assert result(0) == 1
     assert calls == [("inner", 0), ("outer", 1)]
+
+
+def test_generic_composition_removes_an_interior_identity_without_evaluation():
+    calls: list[tuple[str, int]] = []
+    inner = _CountingGenericTestIndexMap(
+        "inner",
+        calls,
+        Shape(2),
+        2,
+        True,
+        (1, 0),
+    )
+    identity = _IdentityGenericTestIndexMap(Shape(3))
+    outer = _CountingGenericTestIndexMap(
+        "outer",
+        calls,
+        Shape(3),
+        5,
+        True,
+        (4, 2, 1),
+    )
+
+    result = outer.compose(identity.compose(inner))
+
+    assert calls == []
+    assert cast(Any, result)._maps == (inner, outer)
+    assert result.shape == inner.shape
+    assert result.codomain_size == outer.codomain_size
+    assert [result(index) for index in range(result.size)] == [2, 4]
+
+
+def test_generic_composition_keeps_endpoint_identities_when_metadata_would_change():
+    inner_identity = _IdentityGenericTestIndexMap(Shape(2))
+    middle = _GenericTestIndexMap(Shape(3), 2, True, (1, 0, 1))
+    outer_identity = _IdentityGenericTestIndexMap(Shape(4))
+
+    preserve_shape = middle.compose(inner_identity)
+    preserve_codomain = outer_identity.compose(preserve_shape)
+
+    assert cast(Any, preserve_shape)._maps == (inner_identity, middle)
+    assert preserve_shape.shape == Shape(2)
+    assert preserve_shape.codomain_size == 2
+    assert cast(Any, preserve_codomain)._maps == (
+        inner_identity,
+        middle,
+        outer_identity,
+    )
+    assert preserve_codomain.shape == Shape(2)
+    assert preserve_codomain.codomain_size == 4
+    assert [preserve_codomain(index) for index in range(2)] == [1, 0]

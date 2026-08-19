@@ -165,7 +165,65 @@ def test_swizzle_reports_exact_index_map_metadata():
 
 def test_swizzle_participates_in_generic_composition_fallback():
     outer = Swizzle(Shape(4), SwizzleStage(1, 0, 1))
-    inner = Layout(Shape(4), Stride(1))
+    inner = Layout(Shape(2), Stride(2))
+
+    result = outer.compose(inner)
+
+    assert isinstance(result, IndexMap)
+    assert not isinstance(result, Swizzle)
+    assert result.shape == inner.shape
+    assert result.codomain_size == outer.codomain_size
+    assert [result(index) for index in range(result.size)] == [
+        outer(inner(index)) for index in range(inner.size)
+    ]
+
+
+def test_equal_size_swizzle_composition_keeps_inner_before_outer_stage_order():
+    lower = SwizzleStage(bits=1, base=0, shift=1)
+    upper = SwizzleStage(bits=1, base=1, shift=1)
+    inner = Swizzle(Shape(8), lower)
+    outer = Swizzle(Shape(8), upper)
+
+    result = outer.compose(inner)
+
+    assert isinstance(result, Swizzle)
+    assert result.stages == (lower, upper)
+    assert result(0b100) == 0b110
+    assert [result(index) for index in range(result.size)] == [
+        outer(inner(index)) for index in range(inner.size)
+    ]
+
+
+def test_swizzle_composition_cancels_only_adjacent_equal_stages():
+    lower = SwizzleStage(bits=1, base=0, shift=1)
+    upper = SwizzleStage(bits=1, base=1, shift=1)
+
+    cancelled = Swizzle(Shape(8), upper, lower).compose(Swizzle(Shape(8), lower, upper))
+    separated = Swizzle(Shape(8), lower).compose(Swizzle(Shape(8), lower, upper))
+
+    assert isinstance(cancelled, Swizzle)
+    assert cancelled.stages == ()
+    assert [cancelled(index) for index in range(8)] == list(range(8))
+    assert isinstance(separated, Swizzle)
+    assert separated.stages == (lower, upper, lower)
+
+
+def test_equal_size_swizzle_composition_preserves_the_inner_hierarchical_shape():
+    stage = SwizzleStage(bits=1, base=0, shift=1)
+    inner = Swizzle(Shape([2, 2]), stage)
+    outer = Swizzle(Shape(4), SwizzleStage(bits=1, base=0, shift=-1))
+
+    result = outer.compose(inner)
+
+    assert isinstance(result, Swizzle)
+    assert result.shape == inner.shape
+    for coordinate in ((1, 0), (1, 1), 2, 3):
+        assert result(coordinate) == outer(inner(coordinate))
+
+
+def test_different_size_swizzles_use_lazy_generic_composition():
+    inner = Swizzle(Shape(4), SwizzleStage(bits=1, base=0, shift=1))
+    outer = Swizzle(Shape(8), SwizzleStage(bits=1, base=1, shift=1))
 
     result = outer.compose(inner)
 

@@ -5,7 +5,21 @@ from .layout import Shape
 
 
 class Permutation(IndexMap):
-    """Immutable explicit lookup from a one-mode domain."""
+    """Map a one-mode domain through an immutable sparse lookup table.
+
+    Results are flat integer indices. The explicit codomain bound is preserved
+    even when positions above the largest lookup value are unused.
+
+    Args:
+        values: Non-empty sequence of distinct, non-negative result indices.
+        codomain_size: Positive exclusive upper bound for every result index.
+
+    Examples:
+        >>> import strideweave as sw
+        >>> permutation = sw.Permutation([4, 3], codomain_size=10)
+        >>> permutation(0), permutation(1)
+        (4, 3)
+    """
 
     _values: tuple[int, ...]
 
@@ -42,4 +56,14 @@ class Permutation(IndexMap):
         return self.values[index]
 
     def _compose(self, inner: IndexMap) -> IndexMap:
+        if isinstance(inner, Permutation):
+            return Permutation(
+                tuple(self.values[value] for value in inner.values),
+                self.codomain_size,
+            )
         return _compose_generic(self, inner)
+
+    def _composition_is_identity(self) -> bool:
+        return self.codomain_size == self.size and self.values == tuple(
+            range(self.size)
+        )

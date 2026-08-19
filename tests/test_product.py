@@ -263,6 +263,110 @@ def test_flat_product_participates_in_generic_composition():
     ]
 
 
+def test_aligned_flat_products_compose_componentwise():
+    outer = Product(
+        _LookupMap((2, 0, 1), 4),
+        _LookupMap((1, 0), 3),
+    )
+    inner = Product(
+        _LookupMap((2, 0), 3),
+        _LookupMap((1, 0), 2),
+    )
+
+    composed = outer.compose(inner)
+
+    assert isinstance(composed, Product)
+    assert len(composed.children) == 2
+    assert composed.shape == inner.shape
+    assert composed.target_shape == outer.target_shape
+    assert [composed(index) for index in range(inner.size)] == [
+        outer(inner(index)) for index in range(inner.size)
+    ]
+
+
+def test_aligned_nested_products_preserve_the_explicit_expression_tree():
+    outer = Product(
+        Product(
+            _LookupMap((1, 0), 3),
+            _LookupMap((1, 0), 3),
+        ),
+        _LookupMap((1, 0), 3),
+    )
+    inner = Product(
+        Product(
+            _LookupMap((1, 0), 2),
+            _LookupMap((1, 0), 2),
+        ),
+        _LookupMap((1, 0), 2),
+    )
+
+    composed = outer.compose(inner)
+
+    assert isinstance(composed, Product)
+    assert isinstance(composed.children[0], Product)
+    assert len(composed.children) == 2
+    assert len(composed.children[0].children) == 2
+    assert composed.shape == inner.shape
+    assert [composed(index) for index in range(inner.size)] == [
+        outer(inner(index)) for index in range(inner.size)
+    ]
+
+
+def test_unaligned_product_trees_use_generic_composition_without_flattening():
+    leaf = _LookupMap((1, 0), 2)
+    outer = Product(Product(leaf, leaf), leaf)
+    inner = Product(leaf, leaf, leaf)
+
+    composed = outer.compose(inner)
+
+    assert isinstance(composed, IndexMap)
+    assert not isinstance(composed, Product)
+    assert composed.shape == inner.shape
+    assert composed.codomain_size == outer.codomain_size
+    assert [composed(index) for index in range(inner.size)] == [
+        outer(inner(index)) for index in range(inner.size)
+    ]
+
+
+def test_smaller_aligned_product_leaf_bounds_use_generic_composition():
+    outer = Product(
+        _LookupMap((2, 0, 1), 4),
+        _LookupMap((1, 0), 3),
+    )
+    inner = Product(
+        _LookupMap((1, 0), 2),
+        _LookupMap((1, 0), 2),
+    )
+
+    composed = outer.compose(inner)
+
+    assert isinstance(composed, IndexMap)
+    assert not isinstance(composed, Product)
+    assert inner.codomain_size < outer.size
+    assert [composed(index) for index in range(inner.size)] == [
+        outer(inner(index)) for index in range(inner.size)
+    ]
+
+
+def test_aligned_products_close_over_rank_zero_and_nested_empty_modes():
+    outer = Product(
+        Product(_RankZeroMap(0, 2), _RankZeroMap(0, 3)),
+        _ShapedMap(Shape([[]]), (0,), 4),
+    )
+    inner = Product(
+        Product(_RankZeroMap(0, 1), _RankZeroMap(0, 1)),
+        _RankZeroMap(0, 1),
+    )
+
+    composed = outer.compose(inner)
+
+    assert isinstance(composed, Product)
+    assert isinstance(composed.children[0], Product)
+    assert composed.shape == inner.shape
+    assert composed.shape == Shape([[], []], [])
+    assert composed(0) == outer(inner(0))
+
+
 def test_product_preserves_explicit_domain_and_target_hierarchy():
     first = _LookupMap((1, 0), 3)
     second = _LookupMap((2, 0, 1), 4)

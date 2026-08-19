@@ -8,7 +8,25 @@ if TYPE_CHECKING:
 
 
 class IndexMap(ABC):
-    """Immutable shaped-domain map into a flat integer codomain."""
+    """Represent an immutable shaped-domain map into a flat integer codomain.
+
+    Concrete subclasses map coordinates in a hierarchical ``Shape`` to integer
+    indices below ``codomain_size``. ``IndexMap`` is the extension contract;
+    construct a concrete subclass such as ``Layout`` or ``Permutation``.
+    Only ``Layout`` values may describe Tensor placement.
+
+    Args:
+        shape: Hierarchical domain accepted by the map.
+        codomain_size: Positive exclusive upper bound for every result index.
+        is_injective: ``True`` when injectivity is proven, ``False`` when a
+            collision is known, or ``None`` when it is unknown.
+
+    Examples:
+        >>> import strideweave as sw
+        >>> layout = sw.Layout(sw.Shape(2), sw.Stride(1))
+        >>> isinstance(layout, sw.IndexMap)
+        True
+    """
 
     _codomain_size: int
     _is_injective: bool | None
@@ -80,6 +98,11 @@ class IndexMap(ABC):
 
         return self.is_injective
 
+    def _composition_is_identity(self) -> bool:
+        """Return whether structure proves this map is identity."""
+
+        return False
+
     def compose(self, inner: IndexMap) -> IndexMap:
         """Compose this outer map with one inner map after validating bounds."""
 
@@ -87,6 +110,13 @@ class IndexMap(ABC):
             raise TypeError("inner must be an IndexMap")
         if inner.codomain_size > self.size:
             raise ValueError("inner codomain exceeds the outer map domain")
+        if inner._composition_is_identity() and self.shape == inner.shape:
+            return self
+        if (
+            self._composition_is_identity()
+            and inner.codomain_size == self.codomain_size
+        ):
+            return inner
         result = self._compose(inner)
         if not isinstance(result, IndexMap):
             raise TypeError("IndexMap composition must return an IndexMap")
@@ -132,4 +162,27 @@ class _ComposedIndexMap(IndexMap):
 def _compose_generic(outer: IndexMap, inner: IndexMap) -> IndexMap:
     inner_maps = inner._maps if isinstance(inner, _ComposedIndexMap) else (inner,)
     outer_maps = outer._maps if isinstance(outer, _ComposedIndexMap) else (outer,)
-    return _ComposedIndexMap((*inner_maps, *outer_maps))
+    maps = [*inner_maps, *outer_maps]
+    result_shape = maps[0].shape
+    result_codomain_size = maps[-1].codomain_size
+
+    position = 0
+    while position < len(maps) and len(maps) > 1:
+        map_ = maps[position]
+        if not map_._composition_is_identity():
+            position += 1
+            continue
+        if position == 0 and maps[1].shape != result_shape:
+            position += 1
+            continue
+        if position == len(maps) - 1 and (
+            maps[-2].codomain_size != result_codomain_size
+        ):
+            position += 1
+            continue
+        maps.pop(position)
+        position = max(0, position - 1)
+
+    if len(maps) == 1:
+        return maps[0]
+    return _ComposedIndexMap(tuple(maps))

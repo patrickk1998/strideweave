@@ -37,7 +37,7 @@ def test_public_api_imports():
 
 def test_tiler_alias_and_layout_api_annotations():
     assert Tiler.__value__ == Sequence[Layout]
-    assert get_type_hints(Layout.compose)["B"] == Layout | Shape | Tiler
+    assert get_type_hints(Layout.compose)["B"] == IndexMap | Shape | Tiler
     assert get_type_hints(Layout.compose)["inner"] == IndexMap | Shape | Tiler
     assert get_type_hints(Layout.divide_tiler)["B"] is Tiler
     assert get_type_hints(Layout.zipped_divide)["B"] is Tiler
@@ -1031,6 +1031,28 @@ def test_layout_compose_rejects_a_non_layout_outer():
 
     with pytest.raises(TypeError, match="A must be a Layout"):
         Layout.compose(object(), inner)  # type: ignore[arg-type]
+
+
+def test_layout_compose_preserves_empty_shape_and_tiler_identity_forms():
+    outer = Layout(Shape([3, [2, 2]]), Stride([1, [3, 6]]))
+
+    for empty_operand in (Shape(), [], ()):
+        result = outer.compose(empty_operand)
+
+        assert isinstance(result, Layout)
+        assert result == outer
+
+
+def test_layout_compose_rejects_invalid_tiler_members_and_geometry():
+    outer = Layout(Shape([[2, 2], 3]), Stride([[1, 2], 4]))
+    bad_member = cast(Any, [Layout.leaf(2, 1), object()])
+
+    with pytest.raises(TypeError, match="contain only Layout"):
+        outer.compose(bad_member)
+    with pytest.raises(ValueError, match="more tiles"):
+        outer.compose([Layout.leaf(1, 1)] * 3)
+    with pytest.raises(ValueError, match="divisibility condition"):
+        outer.compose([Layout.leaf(3, 1)])
 
 
 def test_layout_flattening():

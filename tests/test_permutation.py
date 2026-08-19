@@ -30,18 +30,30 @@ def test_permutation_preserves_unused_codomain_space_above_its_image():
     assert permutation.codomain_size == 10
 
 
-def test_permutation_participates_in_generic_composition():
+def test_permutation_composition_closes_by_lookup_with_the_outer_bound():
     inner = Permutation([1, 0], 3)
     outer = Permutation([4, 2, 1], 6)
 
     result = outer.compose(inner)
 
     assert isinstance(result, IndexMap)
-    assert not isinstance(result, Permutation)
+    assert isinstance(result, Permutation)
     assert result.shape == Shape(2)
     assert result.codomain_size == 6
+    assert result.values == (2, 4)
     assert result.is_injective is True
     assert [result(index) for index in range(result.size)] == [2, 4]
+
+
+def test_permutation_composition_uses_declared_bounds_not_the_lookup_image():
+    inner = Permutation([4, 1], 5)
+    outer = Permutation([6, 4, 2, 0, 5], 9)
+
+    result = outer.compose(inner)
+
+    assert isinstance(result, Permutation)
+    assert result.values == (5, 4)
+    assert result.codomain_size == 9
 
 
 @pytest.mark.parametrize(

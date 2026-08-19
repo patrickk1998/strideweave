@@ -1371,7 +1371,7 @@ class Layout(IndexMap):
 
     def compose(  # type: ignore[reportIncompatibleMethodOverride]
         A: Layout,  # type: ignore[reportSelfClsParameterName]
-        B: Layout | Shape | Tiler = _MISSING_COMPOSE_OPERAND,
+        B: IndexMap | Shape | Tiler = _MISSING_COMPOSE_OPERAND,
         *,
         inner: IndexMap | Shape | Tiler = _MISSING_COMPOSE_OPERAND,
     ) -> IndexMap:
@@ -1457,6 +1457,10 @@ class Layout(IndexMap):
                 return None
             span += (extent - 1) * stride
         return True
+
+    def _composition_is_identity(self) -> bool:
+        scale = Layout._ordinal_scale(self)
+        return self.codomain_size == self.size and scale in (0, 1)
 
     @staticmethod
     def leaf(s: int, d: int) -> Layout:

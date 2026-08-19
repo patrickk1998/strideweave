@@ -5,7 +5,22 @@ from .layout import Shape
 
 
 class Product(IndexMap):
-    """Cartesian product of two or more ordered index maps."""
+    """Pack two or more ordered index maps as one Cartesian map.
+
+    Each child supplies one domain mode. Child results are encoded once in the
+    Product's hierarchical ``target_shape`` using first-mode-fastest order.
+
+    Args:
+        children: Two or more ``IndexMap`` values in target packing order.
+
+    Examples:
+        >>> import strideweave as sw
+        >>> first = sw.Permutation([4, 3], 10)
+        >>> second = sw.Permutation([2, 9], 15)
+        >>> product = sw.Product(first, second)
+        >>> product.target_shape == sw.Shape(10, 15), product((0, 0))
+        (True, 24)
+    """
 
     _children: tuple[IndexMap, ...]
     _target_shape: Shape
@@ -65,4 +80,38 @@ class Product(IndexMap):
         return self.target_shape.encode(child_results)
 
     def _compose(self, inner: IndexMap) -> IndexMap:
-        return _compose_generic(self, inner)
+        if not isinstance(inner, Product):
+            return _compose_generic(self, inner)
+        if not self._composition_tree_aligns(inner):
+            return _compose_generic(self, inner)
+        return Product(
+            *(
+                outer_child.compose(inner_child)
+                for outer_child, inner_child in zip(
+                    self.children,
+                    inner.children,
+                    strict=True,
+                )
+            )
+        )
+
+    def _composition_tree_aligns(self, inner: Product) -> bool:
+        if len(self.children) != len(inner.children):
+            return False
+        for outer_child, inner_child in zip(
+            self.children,
+            inner.children,
+            strict=True,
+        ):
+            if isinstance(outer_child, Product) and isinstance(inner_child, Product):
+                if not outer_child._composition_tree_aligns(inner_child):
+                    return False
+                continue
+            if isinstance(outer_child, Product) or isinstance(inner_child, Product):
+                return False
+            if inner_child.codomain_size != outer_child.size:
+                return False
+        return True
+
+    def _composition_is_identity(self) -> bool:
+        return all(child._composition_is_identity() for child in self.children)
