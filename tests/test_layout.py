@@ -6,6 +6,7 @@ import pytest
 
 import strideweave as sw
 from strideweave import Layout, Node, Shape, Stride, Tiler, Tree
+from strideweave.core.index_map import IndexMap
 from strideweave.layout import Tiler as LayoutTiler
 
 
@@ -13,6 +14,12 @@ class NativeIndexModule(Protocol):
     _LayoutCache: type[Any]
 
     def get_index(self, layout: Layout, key: Any) -> int: ...
+
+
+class _StructuralMetadataLayout(Layout):
+    @property
+    def is_injective(self) -> bool:
+        raise AssertionError("generic construction must not enumerate the domain")
 
 
 native_index = cast(NativeIndexModule, import_module("strideweave._index"))
@@ -31,6 +38,7 @@ def test_public_api_imports():
 def test_tiler_alias_and_layout_api_annotations():
     assert Tiler.__value__ == Sequence[Layout]
     assert get_type_hints(Layout.compose)["B"] == Layout | Shape | Tiler
+    assert get_type_hints(Layout.compose)["inner"] == IndexMap | Shape | Tiler
     assert get_type_hints(Layout.divide_tiler)["B"] is Tiler
     assert get_type_hints(Layout.zipped_divide)["B"] is Tiler
 
@@ -73,6 +81,198 @@ def test_shape_concat():
 
 def test_shape_append():
     assert Shape([1, [2, 3]]) == Shape.append(Shape(1), Shape([2, 3]))
+
+
+def test_shape_decode_uses_recursive_first_mode_fastest_order():
+    flat = Shape(3, 4)
+    nested = Shape(5, [20, 4])
+
+    assert [flat.decode(index) for index in range(5)] == [
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (0, 1),
+        (1, 1),
+    ]
+    assert nested.decode(0) == (0, (0, 0))
+    assert nested.decode(214) == (4, (2, 2))
+    assert nested.decode(nested.size - 1) == (4, (19, 3))
+
+
+def test_shape_encode_accepts_complete_and_subtree_scalar_coordinates():
+    shape = Shape(5, [20, 4])
+
+    assert shape.encode(214) == 214
+    assert shape.encode((4, 42)) == 214
+    assert shape.encode((4, (2, 2))) == 214
+    assert shape.encode([4, [2, 2]]) == 214
+
+
+def test_shape_encode_and_decode_are_exact_inverses_through_a_nested_domain():
+    shape = Shape(2, [3, 2])
+
+    for index in range(shape.size):
+        coordinate = shape.decode(index)
+
+        assert shape.encode(coordinate) == index
+        assert shape.decode(shape.encode(coordinate)) == coordinate
+
+
+def test_rank_zero_shape_contains_one_coordinate():
+    shape = Shape()
+
+    assert shape.size == 1
+    assert shape.decode(0) == ()
+    assert shape.encode(0) == 0
+    assert shape.encode(()) == 0
+    assert shape.encode([]) == 0
+
+
+def test_shape_decode_rejects_invalid_types_arities_and_ordinals():
+    shape = Shape(2, 3)
+    decode = cast(Any, shape.decode)
+
+    for index in (None, 1.0, "1", (1,)):
+        with pytest.raises(TypeError):
+            shape.decode(index)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        decode()
+    with pytest.raises(TypeError):
+        decode(0, 1)
+    for index in (-1, shape.size):
+        with pytest.raises(ValueError, match="Index is not in domain of shape"):
+            shape.decode(index)
+
+
+def test_shape_encode_rejects_invalid_types_arities_and_coordinates():
+    shape = Shape(5, [20, 4])
+    encode = cast(Any, shape.encode)
+
+    for coordinate in (None, 1.0, "coordinate"):
+        with pytest.raises(TypeError):
+            shape.encode(coordinate)
+    with pytest.raises(TypeError):
+        shape.encode((4, (2, object())))
+    with pytest.raises(TypeError):
+        encode()
+    with pytest.raises(TypeError):
+        encode(0, 1)
+
+    for coordinate in (
+        -1,
+        shape.size,
+        (4,),
+        (4, 2, 0),
+        (5, (0, 0)),
+        (4, 80),
+        (4, (20, 0)),
+        (4, (2, 4)),
+        (4, (2, 2, 0)),
+        ((4,), (2, 2)),
+    ):
+        with pytest.raises(
+            ValueError,
+            match=r"Coordinate (?:is not in domain of shape|does not match shape hierarchy)",
+        ):
+            shape.encode(coordinate)
+
+
+def test_rank_zero_shape_rejects_every_other_coordinate():
+    shape = Shape()
+
+    for coordinate in (-1, 1, (0,), [0]):
+        with pytest.raises(
+            ValueError,
+            match=r"Coordinate (?:is not in domain of shape|does not match shape hierarchy)",
+        ):
+            shape.encode(coordinate)
+    for index in (-1, 1):
+        with pytest.raises(ValueError, match="Index is not in domain of shape"):
+            shape.decode(index)
+
+
+def test_shape_and_stride_copy_caller_owned_nested_lists():
+    shape_items = [2, [3, 4]]
+    stride_items = [1, [2, 6]]
+    shape = Shape(shape_items)
+    stride = Stride(stride_items)
+
+    shape_items[0] = 99
+    shape_items[1][0] = 99
+    shape_items.append(99)
+    stride_items[0] = 99
+    stride_items[1][0] = 99
+    stride_items.append(99)
+
+    assert shape == Shape(2, [3, 4])
+    assert stride == Stride(1, [2, 6])
+
+
+def test_shape_stride_and_layout_reject_ordinary_assignment_without_state_changes():
+    shape = Shape(2, [3, 4])
+    stride = Stride(1, [2, 6])
+    layout = Layout(shape, stride)
+    cache = layout._cache
+    coordinate = [1, [2, 3]]
+    index = layout.index(coordinate)
+    shape_state = (shape.top_level, shape.depth, shape.logical_size)
+    stride_state = (stride.top_level, stride.depth)
+
+    assignments = (
+        (shape, "top_level", Shape(99).top_level),
+        (shape, "depth", 99),
+        (shape, "logical_size", 99),
+        (stride, "top_level", Stride(99).top_level),
+        (stride, "depth", 99),
+        (layout, "shape", Shape(99)),
+        (layout, "stride", Stride(99)),
+        (layout, "_cache", object()),
+    )
+    for target, name, value in assignments:
+        with pytest.raises(AttributeError, match="immutable"):
+            setattr(target, name, value)
+
+    assert (shape.top_level, shape.depth, shape.logical_size) == shape_state
+    assert (stride.top_level, stride.depth) == stride_state
+    assert layout.shape is shape
+    assert layout.stride is stride
+    assert layout._cache is cache
+    assert layout.index(coordinate) == index
+
+
+@pytest.mark.parametrize(
+    ("target", "field"),
+    [
+        (Shape(2, 3), "depth"),
+        (Stride(1, 2), "depth"),
+        (Layout(Shape(2, 3), Stride(1, 2)), "shape"),
+    ],
+)
+def test_shape_stride_and_layout_reject_semantic_field_deletion(target, field):
+    with pytest.raises(AttributeError, match="immutable"):
+        delattr(target, field)
+
+
+def test_shape_levels_reject_logical_size_deletion_without_breaking_layout_state():
+    shape = Shape(2, [3, 4])
+    layout = Layout(shape, Stride(7, [11, 13]))
+    cache = layout._cache
+    coordinate = (1, (2, 3))
+    ordinal = shape.encode(coordinate)
+    index = layout.index(coordinate)
+    root_level = cast(Any, shape.top_level)
+    nested_level = cast(Any, shape.top_level[1])
+
+    for level in (root_level, nested_level):
+        with pytest.raises(AttributeError, match="immutable"):
+            delattr(level, "logical_size")
+
+    assert shape.size == 24
+    assert shape.encode(coordinate) == ordinal
+    assert shape.decode(ordinal) == coordinate
+    assert layout.shape is shape
+    assert layout._cache is cache
+    assert layout.index(coordinate) == index
 
 
 def test_stride_creation_and_indexing():
@@ -211,6 +411,41 @@ def test_layout_index_and_call_match_static_get_index():
 
     assert layout.index(key) == Layout.get_index(layout, key)
     assert layout(key) == Layout.get_index(layout, key)
+
+
+def test_layout_is_an_index_map_with_layout_cosize_as_its_codomain_size():
+    layout = Layout(Shape([2, 3]), Stride([1, 4]))
+
+    assert isinstance(layout, IndexMap)
+    assert layout.shape == Shape([2, 3])
+    assert layout.size == 6
+    assert layout.codomain_size == layout.cosize == 10
+    assert layout.is_injective is True
+
+
+def test_layout_shared_shape_normalization_retains_native_cached_indexing():
+    layout = Layout(Shape(5, [20, 4]), Stride(7, [11, 13]))
+    keys = (214, (4, 42), (4, (2, 2)), [4, [2, 2]])
+
+    for key in keys:
+        ordinal = layout.shape.encode(key)
+        expected = layout._cache.get_index(ordinal)
+
+        assert layout.index(key) == expected
+        assert layout(key) == expected
+        assert Layout.get_index(layout, key) == expected
+        assert native_index.get_index(layout, key) == expected
+
+
+def test_rank_zero_layout_uses_the_shared_one_point_shape_domain():
+    layout = Layout(Shape(), Stride())
+
+    assert layout.codomain_size == layout.cosize == 1
+    for key in (0, (), []):
+        assert layout.index(key) == 0
+        assert layout(key) == 0
+        assert Layout.get_index(layout, key) == 0
+    assert layout._cache.get_index(0) == 0
 
 
 @pytest.mark.parametrize(
@@ -595,10 +830,207 @@ def test_layout_permute_composes_with_inverse_to_identity():
 
 
 def test_layout_compose_with_leaf_left_hand_side():
-    l1 = Layout(Shape([5]), Stride([2]))
+    l1 = Layout(Shape([60]), Stride([2]))
     l2 = Layout(Shape([3, [5, 2]]), Stride([2, [6, 30]]))
 
-    assert Layout.compose(l1, l2) == Layout(Shape([3, [5, 2]]), Stride([4, [12, 60]]))
+    expected = Layout(Shape([3, [5, 2]]), Stride([4, [12, 60]]))
+
+    assert Layout.compose(l1, l2) == expected
+    assert l1.compose(l2) == expected
+
+
+def test_layout_compose_validates_containment_and_preserves_the_composition_law():
+    outer = Layout(Shape(3), Stride(2))
+    inner = Layout(Shape([2, 2]), Stride([1, 1]))
+
+    result = outer.compose(inner)
+
+    for coordinate in range(inner.size):
+        assert result(coordinate) == outer(inner(coordinate))
+
+    small_outer = Layout(Shape(2), Stride(1))
+    oversized = Layout(Shape(3), Stride(1))
+    with pytest.raises(ValueError, match="inner codomain exceeds"):
+        small_outer.compose(oversized)
+
+
+def test_layout_compose_specializes_a_compact_outer_with_a_sparse_inner():
+    outer = Layout(Shape([2, 2]), Stride([1, 2]))
+    inner = Layout(Shape(2), Stride(3))
+
+    result = outer.compose(inner)
+
+    assert isinstance(result, Layout)
+    assert result == inner
+    for coordinate in range(inner.size):
+        assert result(coordinate) == outer(inner(coordinate))
+
+
+def test_layout_compose_falls_back_for_a_noninjective_mixed_radix_pair():
+    outer = Layout(Shape([2, 2]), Stride([1, 3]))
+    inner = Layout(Shape([2, 2]), Stride([1, 1]))
+
+    result = outer.compose(inner)
+
+    assert isinstance(result, IndexMap)
+    assert not isinstance(result, Layout)
+    assert result.shape == inner.shape
+    assert result.codomain_size == outer.codomain_size
+    assert result.is_injective is False
+    for coordinate in range(inner.size):
+        assert result(coordinate) == outer(inner(coordinate))
+
+
+def test_layout_generic_composition_preserves_a_bounded_stride_collision():
+    inner = _StructuralMetadataLayout(Shape([4, 3]), Stride([2, 3]))
+    outer = Layout(Shape([13, 2]), Stride([1, 20]))
+
+    result = outer.compose(inner)
+
+    assert inner((3, 0)) == inner((0, 2)) == 6
+    assert isinstance(result, IndexMap)
+    assert not isinstance(result, Layout)
+    assert result.is_injective is False
+    for coordinate in range(inner.size):
+        assert result(coordinate) == outer(inner(coordinate))
+
+
+def test_layout_generic_composition_preserves_a_multi_mode_stride_collision():
+    inner = _StructuralMetadataLayout(Shape([2, 2, 2]), Stride([1, 3, 4]))
+    outer = Layout(Shape([9, 2]), Stride([1, 20]))
+
+    result = outer.compose(inner)
+
+    assert inner((1, 1, 0)) == inner((0, 0, 1)) == 4
+    assert isinstance(result, IndexMap)
+    assert not isinstance(result, Layout)
+    assert result.is_injective is False
+    for coordinate in range(inner.size):
+        assert result(coordinate) == outer(inner(coordinate))
+
+
+@pytest.mark.parametrize(
+    "inner",
+    [
+        Layout(Shape([4, 2]), Stride([0, 1])),
+        Layout(Shape([4, 2]), Stride([1, 1])),
+    ],
+)
+def test_layout_generic_composition_preserves_other_proven_collisions(inner):
+    outer = Layout(Shape([13, 2]), Stride([1, 20]))
+
+    result = outer.compose(inner)
+
+    assert result.is_injective is False
+
+
+@pytest.mark.parametrize(
+    ("layout", "expected"),
+    [
+        (Layout(Shape([2, 2, 2]), Stride([1, 2, 4])), True),
+        (Layout(Shape([2, 2, 2]), Stride([1, 3, 4])), False),
+        (Layout(Shape([4, 3]), Stride([2, 3])), False),
+        (Layout(Shape([2, 2]), Stride([0, 4])), False),
+        (Layout(Shape([4, 2]), Stride([1, 1])), False),
+        (Layout(Shape([3, 2]), Stride([2, 3])), None),
+    ],
+)
+def test_layout_composition_injectivity_metadata_is_sound(layout, expected):
+    metadata = layout._composition_injectivity()
+
+    assert metadata is expected
+    if metadata is not None:
+        assert metadata is layout.is_injective
+
+
+def test_layout_compose_falls_back_when_legacy_lowering_changes_a_flat_domain():
+    outer = Layout(Shape([2, 2]), Stride([1, 3]))
+    inner = Layout(Shape(4), Stride(1))
+
+    result = outer.compose(inner)
+
+    assert isinstance(result, IndexMap)
+    assert not isinstance(result, Layout)
+    assert result.shape == inner.shape
+    assert result.codomain_size == outer.codomain_size
+    for coordinate in range(inner.size):
+        assert result(coordinate) == outer(inner(coordinate))
+
+
+def test_layout_compose_falls_back_when_mixed_radices_are_not_structurally_aligned():
+    outer = Layout(Shape([3, 2]), Stride([1, 5]))
+    inner = Layout(Shape([3, 2]), Stride([2, 1]))
+
+    result = outer.compose(inner)
+
+    assert isinstance(result, IndexMap)
+    assert not isinstance(result, Layout)
+    for coordinate in range(inner.size):
+        assert result(coordinate) == outer(inner(coordinate))
+
+
+@pytest.mark.parametrize(
+    "outer",
+    [
+        Layout(Shape([[2, 2], 2]), Stride([[1, 3], 5])),
+        Layout(Shape([2, [2, 2]]), Stride([1, [3, 5]])),
+    ],
+)
+@pytest.mark.parametrize(
+    "inner",
+    [
+        Layout(Shape(2), Stride(1)),
+        Layout(Shape([[2, 2]]), Stride([[1, 2]])),
+    ],
+)
+def test_layout_compose_falls_back_for_hierarchical_outer_modes(outer, inner):
+    result = outer.compose(inner)
+
+    assert isinstance(result, IndexMap)
+    assert not isinstance(result, Layout)
+    assert result.shape == inner.shape
+    assert result.codomain_size == outer.codomain_size
+    for coordinate in range(inner.size):
+        assert result(coordinate) == outer(inner(coordinate))
+
+
+def test_layout_compose_preserves_class_instance_and_keyword_call_forms():
+    outer = Layout(Shape(3), Stride(2))
+    inner = Layout(Shape(3), Stride(1))
+    expected = Layout(Shape(3), Stride(2))
+    polymorphic_outer: IndexMap = outer
+
+    assert Layout.compose(A=outer, B=inner) == expected
+    assert Layout.compose(outer, inner) == expected
+    assert outer.compose(inner) == expected
+    assert polymorphic_outer.compose(inner=inner) == expected
+
+
+def test_layout_compose_rejects_ambiguous_operands_and_invalid_arity():
+    outer = Layout(Shape(3), Stride(2))
+    inner = Layout(Shape(3), Stride(1))
+    bound_compose = cast(Any, outer.compose)
+    class_compose = cast(Any, Layout.compose)
+
+    with pytest.raises(TypeError, match="both B and inner"):
+        bound_compose(B=inner, inner=inner)
+    with pytest.raises(TypeError):
+        bound_compose()
+    with pytest.raises(TypeError):
+        bound_compose(inner, inner)
+    with pytest.raises(TypeError):
+        class_compose()
+    with pytest.raises(TypeError):
+        class_compose(outer)
+    with pytest.raises(TypeError):
+        class_compose(outer, inner, inner)
+
+
+def test_layout_compose_rejects_a_non_layout_outer():
+    inner = Layout(Shape(2), Stride(1))
+
+    with pytest.raises(TypeError, match="A must be a Layout"):
+        Layout.compose(object(), inner)  # type: ignore[arg-type]
 
 
 def test_layout_flattening():

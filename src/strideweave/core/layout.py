@@ -5,9 +5,14 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
-from typing import Any, Self
+from math import gcd
+from typing import Any, Self, cast
+
+from .index_map import IndexMap, _compose_generic
 
 type Tiler = Sequence[Layout]
+
+_MISSING_COMPOSE_OPERAND: Any = object()
 
 
 @dataclass(frozen=True)
@@ -152,6 +157,9 @@ class _ShapeLevel(tuple):
     def __setattr__(self, _name: str, _value: Any) -> None:
         raise AttributeError("object is immutable")
 
+    def __delattr__(self, _name: str) -> None:
+        raise AttributeError("object is immutable")
+
 
 class Shape:
     """Hierarchical positive-integer tensor shape."""
@@ -200,6 +208,93 @@ class Shape:
     @property
     def size(self) -> int:
         return self.logical_size
+
+    @staticmethod
+    def _decode_level(level: _ShapeLevel, index: int) -> tuple[Any, ...]:
+        coordinate = []
+        for element in level:
+            element_size = element if isinstance(element, int) else element.logical_size
+            element_index = index % element_size
+            index //= element_size
+            coordinate.append(
+                element_index
+                if isinstance(element, int)
+                else Shape._decode_level(element, element_index)
+            )
+        return tuple(coordinate)
+
+    def decode(self, index: int) -> tuple[Any, ...]:
+        """Decode a flat ordinal into this shape's hierarchical coordinate.
+
+        Args:
+            index: Non-negative first-mode-fastest ordinal in this shape.
+
+        Returns:
+            Nested tuple coordinate congruent with this shape's hierarchy.
+
+        Examples:
+            >>> Shape(5, [20, 4]).decode(214)
+            (4, (2, 2))
+        """
+
+        if not isinstance(index, int):
+            raise TypeError("Shape index must be an integer")
+        if index < 0 or index >= self.size:
+            raise ValueError("Index is not in domain of shape")
+        return Shape._decode_level(self.top_level, index)
+
+    @staticmethod
+    def _encode_level(level: _ShapeLevel, coordinate: Any) -> int:
+        if isinstance(coordinate, int):
+            if coordinate < 0 or coordinate >= level.logical_size:
+                raise ValueError("Coordinate is not in domain of shape")
+            return coordinate
+        if not isinstance(coordinate, tuple | list):
+            raise TypeError("Coordinate must be an integer, tuple, or list")
+        if len(coordinate) != len(level):
+            raise ValueError("Coordinate does not match shape hierarchy")
+
+        index = 0
+        multiplier = 1
+        for element, component in zip(level, coordinate, strict=True):
+            if isinstance(element, int):
+                if not isinstance(component, int):
+                    if isinstance(component, tuple | list):
+                        raise ValueError("Coordinate does not match shape hierarchy")
+                    raise TypeError(
+                        "Coordinate must contain only integers, tuples, or lists"
+                    )
+                if component < 0 or component >= element:
+                    raise ValueError("Coordinate is not in domain of shape")
+                component_index = component
+                element_size = element
+            else:
+                component_index = Shape._encode_level(element, component)
+                element_size = element.logical_size
+            index += multiplier * component_index
+            multiplier *= element_size
+        return index
+
+    def encode(self, coordinate: Any) -> int:
+        """Encode a hierarchical coordinate as a flat ordinal.
+
+        An integer may replace the complete coordinate or any nested subtree.
+
+        Args:
+            coordinate: Integer, tuple, or list coordinate in this shape.
+
+        Returns:
+            First-mode-fastest ordinal corresponding to ``coordinate``.
+
+        Examples:
+            >>> shape = Shape(5, [20, 4])
+            >>> shape.encode((4, (2, 2)))
+            214
+            >>> shape.encode((4, 42))
+            214
+        """
+
+        return Shape._encode_level(self.top_level, coordinate)
 
     @staticmethod
     def normalize_input(input_: Any, depth: int) -> tuple[_ShapeLevel, int]:
@@ -259,10 +354,11 @@ class Shape:
         except TypeError:
             return False
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name == "top_level":
-            raise AttributeError("top_level field is immutable")
-        object.__setattr__(self, name, value)
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise AttributeError("Shape is immutable")
+
+    def __delattr__(self, _name: str) -> None:
+        raise AttributeError("Shape is immutable")
 
     def __repr__(self) -> str:
         return f"Shape<{self.top_level!r}>"
@@ -365,10 +461,11 @@ class Stride:
         except TypeError:
             return False
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name == "top_level":
-            raise AttributeError("top_level field is immutable")
-        object.__setattr__(self, name, value)
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise AttributeError("Stride is immutable")
+
+    def __delattr__(self, _name: str) -> None:
+        raise AttributeError("Stride is immutable")
 
     def __repr__(self) -> str:
         return f"Stride<{self.top_level!r}>"
@@ -413,10 +510,11 @@ class LayoutIterable:
         return value
 
 
-class Layout:
+class Layout(IndexMap):
     """Hierarchical shape and stride pair for logical-to-physical indexing."""
 
     _cache: Any
+    stride: Stride
 
     def __init__(self, shape: Shape, stride: Stride):
         if not isinstance(shape, Shape):
@@ -425,9 +523,18 @@ class Layout:
             raise ValueError("stride input must be a Stride object")
         if not Layout.check_tree(shape.top_level, stride.top_level):
             raise ValueError("Shape and Stride do not match in Structure")
-        self.shape = shape
-        self.stride = stride
-        self._cache = import_module("strideweave._index")._LayoutCache(self)
+        object.__setattr__(self, "_shape", shape)
+        object.__setattr__(self, "stride", stride)
+        object.__setattr__(
+            self, "_cache", import_module("strideweave._index")._LayoutCache(self)
+        )
+        super().__init__(shape, self._cache.cosize, None)
+
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise AttributeError("Layout is immutable")
+
+    def __delattr__(self, _name: str) -> None:
+        raise AttributeError("Layout is immutable")
 
     @staticmethod
     def check_tree(shape: _ShapeLevel, stride: _StrideLevel) -> bool:
@@ -462,7 +569,16 @@ class Layout:
     def get_index(layout: Layout, key: Any) -> int:
         if not isinstance(layout, Layout):
             raise ValueError("layout input must be a Layout object")
-        return layout._cache.get_index(key)
+        return layout.index(key)
+
+    def _encode_key(self, key: Any) -> int:
+        try:
+            return super()._encode_key(key)
+        except ValueError as error:
+            raise ValueError("Key is not in domain of shape") from error
+
+    def _index_ordinal(self, index: int) -> int:
+        return self._cache.get_index(index)
 
     @staticmethod
     def _get_index_levels(shape: _ShapeLevel, stride: _StrideLevel, key: Any) -> int:
@@ -485,9 +601,6 @@ class Layout:
 
         return idx
 
-    def index(self, key: Any) -> int:
-        return Layout.get_index(self, key)
-
     def __eq__(self, other: object):
         if not isinstance(other, Layout):
             return NotImplemented
@@ -495,9 +608,6 @@ class Layout:
 
     def __len__(self) -> int:
         return len(self.shape.top_level)
-
-    def __call__(self, key: int | Any) -> int:
-        return Layout.get_index(self, key)
 
     def __copy__(self) -> Layout:
         return Layout(self.shape, self.stride)
@@ -1127,7 +1237,9 @@ class Layout:
         layout = Layout(Shape([]), Stride([]))
         for b in B:
             if b.is_leaf:
-                if A.is_leaf:
+                if int(b.shape) == 1:
+                    layout = Layout.append(layout, Layout(b.shape, Stride(0)))
+                elif A.is_leaf:
                     layout = Layout.append(
                         layout, Layout(b.shape, Stride(int(b.stride) * int(A.stride)))
                     )
@@ -1139,29 +1251,212 @@ class Layout:
                         ),
                     )
             else:
-                layout = Layout.append(layout, Layout.compose(A, b))
+                layout = Layout.append(layout, Layout.compose_layouts(A, b))
         if len(layout) == 1:
             return layout[0]
         return layout
 
     @staticmethod
-    def compose(A: Layout, B: Layout | Shape | Tiler) -> Layout:
-        if isinstance(B, Layout):
-            return Layout.compose_layouts(A, B)
-        tiler = []
-        if isinstance(B, Shape):
-            for el in B:
-                tiler.append(Layout(el, Stride(1)))
+    def _ordinal_scale(layout: Layout) -> int | None:
+        radix = 1
+        scale: int | None = None
+        for extent, stride in layout.infix():
+            if extent > 1:
+                if scale is None:
+                    scale = stride
+                elif stride != scale * radix:
+                    return None
+            radix *= extent
+        return 0 if scale is None else scale
+
+    @staticmethod
+    def _scale_stride_level(level: _StrideLevel, scale: int) -> list[Any]:
+        return [
+            element * scale
+            if isinstance(element, int)
+            else Layout._scale_stride_level(element, scale)
+            for element in level
+        ]
+
+    @staticmethod
+    def _is_structurally_compact(layout: Layout) -> bool:
+        covered = 1
+        for extent, stride in sorted(layout.infix(), key=lambda mode: mode[1]):
+            if extent == 1:
+                continue
+            if stride != covered:
+                return False
+            covered *= extent
+        return covered == layout.size
+
+    @staticmethod
+    def _legacy_choose_shapes(A: Layout, stride: int) -> list[int] | None:
+        if stride <= 0 or A.size % stride != 0:
+            return None
+
+        chosen_shapes: list[int] = []
+        remaining = stride
+        for element in A:
+            extent = int(element.shape)
+            if remaining == 1:
+                chosen_shapes.append(extent)
+            elif extent > remaining:
+                if extent % remaining != 0:
+                    return None
+                chosen_shapes.append(extent // remaining)
+                remaining = 1
+            else:
+                if remaining % extent != 0:
+                    return None
+                chosen_shapes.append(1)
+                remaining //= extent
+        return chosen_shapes if remaining == 1 else None
+
+    @staticmethod
+    def _legacy_leaf_is_representable(A: Layout, leaf: Layout) -> bool:
+        extent = int(leaf.shape)
+        if extent == 1 or A.is_leaf:
+            return True
+
+        chosen_shapes = Layout._legacy_choose_shapes(A, int(leaf.stride))
+        if chosen_shapes is None:
+            return False
+
+        covered = 1
+        for chosen_extent in chosen_shapes:
+            if covered == extent:
+                continue
+            if chosen_extent * covered <= extent:
+                covered *= chosen_extent
+            else:
+                if extent % covered != 0:
+                    return False
+                covered = extent
+        return covered == extent
+
+    @staticmethod
+    def _legacy_lowering_is_representable(A: Layout, B: Layout) -> bool:
+        if any(not element.is_leaf for element in A):
+            return False
+
+        return all(
+            Layout._legacy_leaf_is_representable(A, leaf)
+            for leaf in Layout._prefix_layout_leaves(B)
+        )
+
+    @staticmethod
+    def _shape_refines_inner_coordinates(
+        inner: _ShapeLevel,
+        candidate: _ShapeLevel,
+    ) -> bool:
+        if len(inner) != len(candidate):
+            return False
+        for inner_element, candidate_element in zip(inner, candidate, strict=True):
+            if isinstance(inner_element, int):
+                candidate_size = (
+                    candidate_element
+                    if isinstance(candidate_element, int)
+                    else candidate_element.logical_size
+                )
+                if candidate_size != inner_element:
+                    return False
+            elif isinstance(candidate_element, int) or not (
+                Layout._shape_refines_inner_coordinates(
+                    inner_element,
+                    candidate_element,
+                )
+            ):
+                return False
+        return True
+
+    def compose(  # type: ignore[reportIncompatibleMethodOverride]
+        A: Layout,  # type: ignore[reportSelfClsParameterName]
+        B: Layout | Shape | Tiler = _MISSING_COMPOSE_OPERAND,
+        *,
+        inner: IndexMap | Shape | Tiler = _MISSING_COMPOSE_OPERAND,
+    ) -> IndexMap:
+        if not isinstance(A, Layout):
+            raise TypeError("A must be a Layout")
+        if B is _MISSING_COMPOSE_OPERAND:
+            if inner is _MISSING_COMPOSE_OPERAND:
+                raise TypeError("compose() missing required inner operand")
+            operand = inner
+        elif inner is not _MISSING_COMPOSE_OPERAND:
+            raise TypeError("compose() received both B and inner")
         else:
-            tiler = B
+            operand = B
+
+        if isinstance(operand, IndexMap):
+            return IndexMap.compose(A, operand)
+
+        tiler: Sequence[Layout]
+        if isinstance(operand, Shape):
+            tiler = tuple(Layout(element, Stride(1)) for element in operand)
+        elif isinstance(operand, Sequence):
+            if any(not isinstance(tile, Layout) for tile in operand):
+                raise TypeError("B must contain only Layout values")
+            tiler = operand
+        else:
+            raise TypeError("B must be an IndexMap, Shape, or Tiler")
+        if len(tiler) > len(A):
+            raise ValueError("B has more tiles than A has top-level modes")
 
         result = Layout(Shape(), Stride())
         for A_el, tile in zip(A[0 : len(tiler)], tiler, strict=True):
-            to_append = Layout.compose(A_el, tile)
+            to_append = Layout.compose_layouts(A_el, tile)
             result = Layout.append(result, to_append)
         for A_el in A[len(tiler) :]:
             result = Layout.append(result, A_el)
         return result
+
+    def _compose(self, inner: IndexMap) -> IndexMap:
+        if not isinstance(inner, Layout):
+            return _compose_generic(self, inner)
+
+        scale = Layout._ordinal_scale(self)
+        if scale is not None:
+            return Layout(
+                inner.shape,
+                Stride(Layout._scale_stride_level(inner.stride.top_level, scale)),
+            )
+
+        if Layout._is_structurally_compact(
+            inner
+        ) and Layout._legacy_lowering_is_representable(self, inner):
+            candidate = Layout.compose_layouts(self, inner)
+            if Layout._shape_refines_inner_coordinates(
+                inner.shape.top_level,
+                candidate.shape.top_level,
+            ):
+                return candidate
+
+        return _compose_generic(self, inner)
+
+    def _composition_injectivity(self) -> bool | None:
+        if self.size > self.cosize:
+            return False
+
+        modes = [mode for mode in self.infix() if mode[0] > 1]
+        if any(stride == 0 for _, stride in modes):
+            return False
+
+        for position, (left_extent, left_stride) in enumerate(modes):
+            for right_extent, right_stride in modes[position + 1 :]:
+                stride_gcd = gcd(left_stride, right_stride)
+                if (
+                    right_stride // stride_gcd < left_extent
+                    and left_stride // stride_gcd < right_extent
+                ):
+                    return False
+
+        span = 1
+        for extent, stride in sorted(modes, key=lambda mode: mode[1]):
+            if stride == span - 1:
+                return False
+            if stride < span:
+                return None
+            span += (extent - 1) * stride
+        return True
 
     @staticmethod
     def leaf(s: int, d: int) -> Layout:
@@ -1217,21 +1512,22 @@ class Layout:
 
     @staticmethod
     def divide(A: Layout, B: Layout) -> Layout:
-        return Layout.compose(A, Layout.make_layout(B, Layout.complement(B, A.size)))
+        inner = Layout.make_layout(B, Layout.complement(B, A.size))
+        return Layout.compose_layouts(A, inner)
 
     @staticmethod
     def divide_tiler(A: Layout, B: Tiler) -> Layout:
         tiler = []
         for a, b in zip(A[0 : len(B)], B, strict=True):
             tiler.append(Layout.make_layout(b, Layout.complement(b, a.size)))
-        return Layout.compose(A, tiler)
+        return cast(Layout, Layout.compose(A, tiler))
 
     @staticmethod
     def zipped_divide(A: Layout, B: Tiler) -> Layout:
         tiler = []
         for a, b in zip(A[0 : len(B)], B, strict=True):
             tiler.append(Layout.make_layout(b, Layout.complement(b, a.size)))
-        unzipped = Layout.compose(A, tiler)
+        unzipped = cast(Layout, Layout.compose(A, tiler))
         zipped = Layout.empty()
         tiles = []
         rest = []
