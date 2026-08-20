@@ -1986,8 +1986,9 @@ def move(tensor: Any, destination: Any) -> Any:
     source carrier is released (further access raises), and a tensor backed by
     the destination is returned. Move is not owned by any carrier: the
     concrete move operation is dispatched on the (source, destination) carrier
-    class pair, with native bulk-copy operations registered for
-    CPU/FileBacked pairs and an elementwise fallback for every other pair.
+    class pair, with bulk-copy operations registered for CPU/FileBacked and
+    CPU/Metal pairs, plus Metal-to-Metal, and an elementwise fallback for every
+    other pair.
     The destination dtype must match the tensor dtype (for example
     ``DType.Float32`` to ``DType.Float32``). Move participates in
     autograd: gradients flowing into the result are moved back into the

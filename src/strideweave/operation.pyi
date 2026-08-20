@@ -10,6 +10,7 @@ from .tensor import Tensor
 __all__ = [
     "BroadcastOperation",
     "CpuToFileBackedMoveOperation",
+    "CpuToMetalMoveOperation",
     "ElementwiseMoveOperation",
     "EvictableOperation",
     "FileBackedToCpuMoveOperation",
@@ -71,6 +72,8 @@ __all__ = [
     "GenericTopKIndicesOperation",
     "GenericTopKValuesOperation",
     "GenericViewOperation",
+    "MetalToCpuMoveOperation",
+    "MetalToMetalMoveOperation",
     "MoveOperation",
     "Operation",
     "PermuteOperation",
@@ -324,7 +327,10 @@ class MoveOperation(Operation):
 
 class ElementwiseMoveOperation(MoveOperation): ...
 class CpuToFileBackedMoveOperation(MoveOperation): ...
+class CpuToMetalMoveOperation(MoveOperation): ...
 class FileBackedToCpuMoveOperation(MoveOperation): ...
+class MetalToCpuMoveOperation(MoveOperation): ...
+class MetalToMetalMoveOperation(MoveOperation): ...
 
 class EvictableOperation(Operation):
     def __init__(self, primary_operation: Operation) -> None: ...
