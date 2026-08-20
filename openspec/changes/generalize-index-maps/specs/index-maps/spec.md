@@ -284,9 +284,13 @@ by the Swizzle requirement.
 
 Compatible Product composition SHALL return a Product of component
 compositions only when the two explicit Product trees have equal arity at each
-aligned Product node and every aligned child composition is compatible. The
-result SHALL preserve that explicit tree. A Product pair that is compatible as
-flat maps but lacks that structural alignment SHALL use generic composition.
+aligned Product node and, at every pair of corresponding non-Product children,
+`inner_child.codomain_size == outer_child.size`. These exact leaf radices make
+every corresponding child composition compatible and make the inner target
+encoding congruent with the outer domain decoding. The result SHALL preserve
+that explicit tree. A Product pair that is compatible by the total flat bound
+but lacks either recursive structural alignment or exact leaf-radix congruence
+SHALL use generic composition.
 
 #### Scenario: Compose two permutations by lookup
 
@@ -296,8 +300,13 @@ flat maps but lacks that structural alignment SHALL use generic composition.
 
 #### Scenario: Lower an aligned Product composition componentwise
 
-- **WHEN** outer and inner Products have matching explicit Product trees and compatible corresponding children
+- **WHEN** outer and inner Products have recursively matching explicit Product trees and every corresponding non-Product inner codomain equals the outer child domain size
 - **THEN** their composition is a Product containing each corresponding child composition
+
+#### Scenario: Preserve a smaller-radix Product composition generically
+
+- **WHEN** outer and inner Products satisfy the total flat composition bound but a corresponding non-Product inner codomain is smaller than the outer child domain size
+- **THEN** their composition is a generic IndexMap whose evaluation equals `outer(inner(q))`
 
 ### Requirement: Other compatible compositions return a generic IndexMap
 

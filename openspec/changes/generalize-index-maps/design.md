@@ -149,11 +149,15 @@ as one nested mode. Evaluation splits the Product coordinate by that tree,
 evaluates children, and calls `target_shape.encode` exactly once.
 
 Product/Product composition lowers componentwise only when both explicit trees
-align. Otherwise the maps are still composable by flat codomain containment and
-use the private generic expression. Automatic Product flattening was rejected
-because it would erase a user's intended hierarchy; binary-only construction
-was rejected because ordinary multi-mode products would become unnecessarily
-clumsy.
+align recursively: corresponding Product nodes have equal arity, and each
+corresponding non-Product inner child has `codomain_size` exactly equal to the
+outer child's `size`. Those equal leaf radices make the inner Product's target
+encoding congruent with the outer Product's domain decoding. A pair that
+satisfies total flat codomain containment but lacks either tree alignment or
+exact leaf-radix congruence remains composable through the private generic
+expression. Automatic Product flattening was rejected because it would erase a
+user's intended hierarchy; binary-only construction was rejected because
+ordinary multi-mode products would become unnecessarily clumsy.
 
 ### 7. Enforce immutability at every public value boundary
 
