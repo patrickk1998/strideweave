@@ -15,6 +15,7 @@ from strideweave import (
     FileBacked,
     Generic,
     Layout,
+    Metal,
     Shape,
     Stride,
 )
@@ -110,6 +111,7 @@ def test_data_public_api_imports():
     assert sw.CPU is CPU
     assert sw.DType is DType
     assert sw.Generic is Generic
+    assert sw.Metal is Metal
     assert DType.Any.name == "Any"
     assert DType.Floating.name == "Floating"
     assert DType.Integer.name == "Integer"
@@ -170,7 +172,7 @@ def test_carrier_dispatch_policy_rejects_cached_dispatched_operation():
 # exact class, so a specialization would inherit claims it cannot honor.
 
 
-CLOSED_CARRIERS = (Generic, CPU, FileBacked, Evictable)
+CLOSED_CARRIERS = (Generic, CPU, FileBacked, Metal, Evictable)
 
 
 @pytest.mark.parametrize("carrier_class", CLOSED_CARRIERS)
@@ -202,6 +204,7 @@ PUBLIC_CARRIER_MODULES = {
     Generic: "strideweave.carriers.generic",
     CPU: "strideweave.carriers.cpu",
     FileBacked: "strideweave.carriers.file_backed",
+    Metal: "strideweave.carriers.metal",
     Evictable: "strideweave.carriers.evictable",
 }
 

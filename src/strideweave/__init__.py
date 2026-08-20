@@ -38,6 +38,9 @@ from .carriers import (
     LevelExtent as LevelExtent,
 )
 from .carriers import (
+    Metal as Metal,
+)
+from .carriers import (
     OperandCapability as OperandCapability,
 )
 from .carriers import (
@@ -104,6 +107,7 @@ _CORE_EXPORTS = [
     "Layout",
     "Level",
     "LevelExtent",
+    "Metal",
     "Module",
     "Node",
     "OperandCapability",
