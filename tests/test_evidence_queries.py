@@ -1,380 +1,384 @@
 from __future__ import annotations
 
-import json
-from collections.abc import Callable, Mapping
-from pathlib import Path
+from collections.abc import Mapping
 
 import pytest
 import synthetic_evidence
+from evidence_doubles import RecordingEvidenceStore
 
-import strideweave.verification.store.recording as recording_module
-from strideweave.verification import VerificationReport
-from strideweave.verification.status_cli import main as status_main
+import strideweave.verification.stage_two as stage_two_module
+from strideweave.verification import (
+    VerificationOutcome,
+    VerificationReport,
+    verification_profiles,
+)
 from strideweave.verification.store import (
     DoltEvidenceStore,
     SQLStatement,
+    VerificationStoreError,
     query_stale,
     query_status,
     query_todo,
 )
-
-StorePathFactory = Callable[..., Path]
-ARCHITECTURE = synthetic_evidence.ARCHITECTURE
-
-
-def _text(row: Mapping[str, object], field: str) -> str:
-    value = row[field]
-    assert isinstance(value, str)
-    return value
+from strideweave.verification.store._identity import _todo_provenance_digest
+from strideweave.verification.store.querying import _differences
+from strideweave.verification.store.recording import _record_validated_report
 
 
-def _count(store: DoltEvidenceStore, table: str) -> int:
-    value = store.query(SQLStatement(f"SELECT COUNT(*) AS count FROM {table}"))[0][
-        "count"
-    ]
-    assert isinstance(value, int)
-    return value
+class _QueryStore(RecordingEvidenceStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.queries: list[SQLStatement] = []
+
+    def query(self, statement: SQLStatement) -> tuple[Mapping[str, object], ...]:
+        self.queries.append(statement)
+        return ()
 
 
-def _record(
-    report: VerificationReport, store: DoltEvidenceStore, producer: str
-) -> recording_module.RecordResult:
-    return recording_module._record_validated_report(
-        report, store, producer_id=producer
+class _TodoStore(RecordingEvidenceStore):
+    def __init__(self, report, observed_requirement_ids) -> None:
+        super().__init__()
+        self.report = report
+        self.observed_requirement_ids = tuple(observed_requirement_ids)
+        self.queries: list[SQLStatement] = []
+
+    def query(self, statement: SQLStatement) -> tuple[Mapping[str, object], ...]:
+        self.queries.append(statement)
+        if statement.parameters != (_todo_provenance_digest(self.report),):
+            return ()
+        return tuple(
+            {"requirement_id": requirement_id}
+            for requirement_id in self.observed_requirement_ids
+        )
+
+
+def test_staleness_explains_jit_axes_without_dataclass_encoding_failure() -> None:
+    current = synthetic_evidence.synthetic_report(specialization=256)
+    stored = synthetic_evidence.synthetic_report(specialization=128)
+    axes = {item.axis for item in _differences(stored, current)}
+    assert {"specialization", "generated_source", "executable_artifact"} <= axes
+
+
+def test_staleness_reports_current_report_as_current() -> None:
+    report = synthetic_evidence.synthetic_report()
+    assert not _differences(report, report)
+
+
+def test_todo_provenance_digest_uses_only_stable_matching_axes() -> None:
+    report = synthetic_evidence.synthetic_report()
+    digest = _todo_provenance_digest(report)
+    assert digest == _todo_provenance_digest(
+        synthetic_evidence.contradicting_report(report)
+    )
+    for outcome in (
+        VerificationOutcome.FAILED,
+        VerificationOutcome.ERROR,
+        VerificationOutcome.BLOCKED,
+    ):
+        assert digest == _todo_provenance_digest(
+            synthetic_evidence.target_outcome_report(report, outcome)
+        )
+    deferred = synthetic_evidence.target_outcome_report(
+        report, VerificationOutcome.DEFERRED
+    )
+    assert _todo_provenance_digest(deferred) == _todo_provenance_digest(
+        synthetic_evidence.target_outcome_report(
+            report, VerificationOutcome.DEFERRED, alternate=True
+        )
+    )
+    assert {
+        _todo_provenance_digest(synthetic_evidence.provenance_variant(axis))
+        for axis in ("verification", "tolerance", "oracle")
+    }.isdisjoint({digest})
+    assert digest != _todo_provenance_digest(
+        synthetic_evidence.synthetic_report(specialization=256)
+    )
+    assert digest != _todo_provenance_digest(synthetic_evidence.cpu_report())
+
+
+@pytest.mark.parametrize("profile", ["", None])
+def test_query_selectors_require_target_profile(profile) -> None:
+    with pytest.raises(VerificationStoreError):
+        query_status(RecordingEvidenceStore(), selected_target_profile=profile)  # type: ignore[arg-type]
+
+
+def test_status_rejects_an_unknown_profile_before_store_query() -> None:
+    store = _QueryStore()
+
+    with pytest.raises(VerificationStoreError, match="unknown verification profile"):
+        query_status(store, selected_target_profile="missing-profile")
+
+    assert store.queries == []
+
+
+@pytest.mark.parametrize(
+    "profile_id", tuple(profile.profile_id for profile in verification_profiles())
+)
+def test_status_accepts_every_registered_profile_without_resolving_a_runtime(
+    monkeypatch: pytest.MonkeyPatch, profile_id: str
+) -> None:
+    store = _QueryStore()
+
+    def fail_if_resolved(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("status query resolved a provider runtime")
+
+    monkeypatch.setattr(stage_two_module, "_target_runtime", fail_if_resolved)
+
+    assert not query_status(store, selected_target_profile=profile_id)
+    assert len(store.queries) == 1
+
+
+def test_status_preserves_every_valid_selector_in_deterministic_order() -> None:
+    store = _QueryStore()
+
+    query_status(
+        store,
+        selected_target_profile="synthetic-jit",
+        kernel_id="jit.add",
+        variant="default",
+        test_class="exact_arithmetic",
+        case_id="jit.add/target",
+        producer_id="producer",
+    )
+
+    assert len(store.queries) == 1
+    assert store.queries[0].parameters == (
+        "synthetic-jit",
+        "jit.add",
+        "default",
+        "exact_arithmetic",
+        "jit.add/target",
+        "producer",
     )
 
 
-def test_status_filters_stably_and_preserves_contradictory_observations(
-    evidence_store_path: StorePathFactory, synthetic_report: VerificationReport
+def test_todo_matches_equivalent_requirements_without_loading_stored_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = synthetic_evidence.synthetic_report()
+    stored = synthetic_evidence.contradicting_report(current)
+    assert current.to_jsonl() != stored.to_jsonl()
+    assert current.header is not None
+    assert stored.header is not None
+    assert (
+        current.header.verification_spec["verification_spec_id"]
+        == stored.header.verification_spec["verification_spec_id"]
+    )
+    requirement_ids = tuple(
+        value["requirement_id"]
+        for value in current.header.verification_spec["requirements"]
+    )
+    store = _TodoStore(stored, requirement_ids)
+    monkeypatch.setattr(VerificationReport, "from_jsonl", None)
+
+    assert not query_todo(
+        store,
+        selected_target_profile="synthetic-jit",
+        current_report=current,
+    )
+    assert len(store.queries) == 1
+    assert store.queries[0].parameters == (_todo_provenance_digest(current),)
+    assert "report_json" not in store.queries[0].template
+    assert "r.todo_provenance_digest=?" in store.queries[0].template
+
+
+def test_todo_keeps_a_truly_unobserved_requirement_in_stable_order() -> None:
+    current = synthetic_evidence.synthetic_report()
+    assert current.header is not None
+    requirements = tuple(current.header.verification_spec["requirements"])
+    store = _TodoStore(
+        synthetic_evidence.contradicting_report(current),
+        (requirements[0]["requirement_id"],),
+    )
+
+    missing = query_todo(
+        store,
+        selected_target_profile="synthetic-jit",
+        current_report=current,
+    )
+
+    assert [item.requirement_id for item in missing] == [
+        requirements[1]["requirement_id"]
+    ]
+
+
+@pytest.mark.parametrize("axis", ("verification", "tolerance", "oracle"))
+def test_todo_rejects_observations_from_a_changed_provenance_axis(axis) -> None:
+    current = synthetic_evidence.synthetic_report()
+    stale = synthetic_evidence.provenance_variant(axis)
+    assert current.header is not None
+    requirement_ids = tuple(
+        value["requirement_id"]
+        for value in current.header.verification_spec["requirements"]
+    )
+    store = _TodoStore(stale, requirement_ids)
+
+    missing = query_todo(
+        store,
+        selected_target_profile="synthetic-jit",
+        current_report=current,
+    )
+
+    assert {item.requirement_id for item in missing} == set(requirement_ids)
+
+
+def test_status_filters_and_includes_oracle_dependencies(
+    evidence_store_path, synthetic_report
 ) -> None:
     store = DoltEvidenceStore(evidence_store_path())
-    original = synthetic_report.records[0]
-    changed_report = synthetic_evidence.contradicting_report(synthetic_report)
-    _record(synthetic_report, store, "producer-a")
-    _record(changed_report, store, "producer-b")
-
-    observations = query_status(store, architecture=ARCHITECTURE)
-    order = tuple(
-        (
-            item.kernel_id,
-            item.variant,
-            item.test_class,
-            item.case_id,
-            item.producer_id,
-            item.observation_id,
-        )
-        for item in observations
-    )
-    assert order == tuple(sorted(order))
-    contradictory = tuple(
-        item for item in observations if item.case_id == original.case.case_id
-    )
-    assert {item.producer_id for item in contradictory} == {
-        "producer-a",
-        "producer-b",
-    }
-    assert {item.outcome for item in contradictory} == {"passed", "failed"}
-
+    _record_validated_report(synthetic_report, store, producer_id="producer-a")
+    _record_validated_report(synthetic_report, store, producer_id="producer-b")
+    observations = query_status(store, selected_target_profile="synthetic-jit")
+    assert {item.stage for item in observations} == {"stage_one", "stage_two"}
+    assert {item.producer_id for item in observations} == {"producer-a", "producer-b"}
     filtered = query_status(
         store,
-        architecture=ARCHITECTURE,
-        kernel_id=original.case.kernel_id,
-        variant=original.case.variant,
-        test_class=original.test_class.value,
+        selected_target_profile="synthetic-jit",
+        kernel_id="jit.add",
         producer_id="producer-b",
     )
-    assert filtered
-    assert all(item.producer_id == "producer-b" for item in filtered)
-    assert all(item.kernel_id == original.case.kernel_id for item in filtered)
+    assert len(filtered) == 1
+    assert filtered[0].receipt_kind == "jit-specialization"
 
 
-def test_stale_reports_each_changed_identity_axis_and_closure_member(
-    evidence_store_path: StorePathFactory, synthetic_current_facts: VerificationReport
+def test_stale_and_todo_are_scoped_to_exact_current_graph(
+    evidence_store_path, synthetic_report
 ) -> None:
-    report = synthetic_current_facts
     store = DoltEvidenceStore(evidence_store_path())
-    result = _record(report, store, "producer")
-    manifest = recording_module._report_manifest(report)
-    assert report.header is not None
-    fake_target = "1" * 64
-    fake_toolchain = "2" * 64
-    fake_specification = "3" * 64
-    fake_policy = "4" * 64
-    fake_oracle = "5" * 64
-    closure_input = store.query(
-        SQLStatement(
-            "SELECT i.closure_id, i.input_ordinal FROM run_kernel_builds rb "
-            "JOIN kernel_builds k ON k.kernel_build_id = rb.kernel_build_id "
-            "JOIN source_closure_inputs i ON i.closure_id = k.closure_id "
-            "WHERE rb.run_id = ? ORDER BY k.kernel_id, i.input_ordinal LIMIT 1",
-            (result.run_id,),
-        )
-    )[0]
-    closure_id = closure_input["closure_id"]
-    input_ordinal = closure_input["input_ordinal"]
-    assert isinstance(closure_id, str)
-    assert isinstance(input_ordinal, int)
-    store.execute_transaction(
-        (
-            SQLStatement(
-                "INSERT INTO verification_targets SELECT ?, architecture, vendor, "
-                "operating_system, abi, endianness, pointer_bits, descriptor_json "
-                "FROM verification_targets WHERE target_id = ?",
-                (fake_target, manifest.target.target_id),
-            ),
-            SQLStatement(
-                "INSERT INTO build_toolchains SELECT ?, provider_kind, compiler_id, "
-                "compiler_version, target_triple, build_system, descriptor_json "
-                "FROM build_toolchains WHERE toolchain_id = ?",
-                (fake_toolchain, manifest.toolchain.toolchain_id),
-            ),
-            SQLStatement(
-                "INSERT INTO verification_specs SELECT ?, spec_schema, manifest_digest, "
-                "definition_json FROM verification_specs WHERE verification_spec_id = ?",
-                (
-                    fake_specification,
-                    report.header.verification_spec["verification_spec_id"],
-                ),
-            ),
-            SQLStatement(
-                "INSERT INTO tolerance_policies SELECT ?, policy_schema, comparison_kind, "
-                "definition_json FROM tolerance_policies LIMIT 1",
-                (fake_policy,),
-            ),
-            SQLStatement(
-                "INSERT INTO oracle_references SELECT ?, oracle_kind, "
-                "implementation_digest, source_closure_id, kernel_build_id, "
-                "descriptor_json FROM oracle_references LIMIT 1",
-                (fake_oracle,),
-            ),
-            SQLStatement(
-                "UPDATE verification_runs SET native_manifest_digest = ?, "
-                "verification_spec_id = ?, execution_target_id = ?, "
-                "represented_target_id = ? WHERE run_id = ?",
-                ("0" * 64, fake_specification, fake_target, fake_target, result.run_id),
-            ),
-            SQLStatement(
-                "UPDATE kernel_builds SET toolchain_id = ? WHERE toolchain_id = ? LIMIT 1",
-                (fake_toolchain, manifest.toolchain.toolchain_id),
-            ),
-            SQLStatement(
-                "UPDATE evidence SET tolerance_policy_id = ?, oracle_reference_id = ? "
-                "WHERE run_id = ? LIMIT 1",
-                (fake_policy, fake_oracle, result.run_id),
-            ),
-            SQLStatement(
-                "UPDATE source_closure_inputs SET content_digest = ? "
-                "WHERE closure_id = ? AND input_ordinal = ?",
-                (
-                    "f" * 64,
-                    closure_id,
-                    input_ordinal,
-                ),
-            ),
-        )
+    _record_validated_report(synthetic_report, store, producer_id="producer")
+    current = synthetic_evidence.synthetic_report(specialization=256)
+    stale = query_stale(
+        store, selected_target_profile="synthetic-jit", current_report=current
     )
-
-    stale = query_stale(store, architecture=ARCHITECTURE)
-
     assert len(stale) == 1
-    axes = {item.axis for item in stale[0].differences}
-    assert {
-        "compilation_manifest",
-        "source_closure",
-        "target",
-        "toolchain",
-        "verification_specification",
-        "tolerance_policy",
-        "oracle",
-    } <= axes
-    closure = next(
-        item for item in stale[0].differences if item.axis == "source_closure"
-    )
-    assert any(detail.endswith(":changed") for detail in closure.details)
-
-
-def test_stored_closure_members_are_project_owned_while_identity_stays_complete(
-    evidence_store_path: StorePathFactory, synthetic_report: VerificationReport
-) -> None:
-    store = DoltEvidenceStore(evidence_store_path())
-    _record(synthetic_report, store, "producer")
-
-    stored_kinds = {
-        row["input_kind"]
-        for row in store.query(
-            SQLStatement("SELECT DISTINCT input_kind FROM source_closure_inputs")
-        )
+    assert {item.axis for item in stale[0].differences} >= {
+        "specialization",
+        "generated_source",
+        "executable_artifact",
     }
-    closure = store.query(
-        SQLStatement(
-            "SELECT closure_id, descriptor_json FROM source_closures "
-            "WHERE root_kind = ? ORDER BY closure_id LIMIT 1",
-            ("repository-source",),
-        )
-    )[0]
-    described = json.loads(_text(closure, "descriptor_json"))["inputs"]
-    members = store.query(
-        SQLStatement(
-            "SELECT input_ordinal, input_uri FROM source_closure_inputs "
-            "WHERE closure_id = ? ORDER BY input_ordinal",
-            (_text(closure, "closure_id"),),
-        )
+    missing = query_todo(
+        store, selected_target_profile="synthetic-jit", current_report=current
     )
-
-    # The closure descriptor, and therefore the content-addressed closure_id,
-    # still binds every transitive input; only project- and build-owned members
-    # become rows, at the ordinals they hold in the complete input sequence.
-    assert "external_header" in {item["input_kind"] for item in described}
-    assert "external_header" not in stored_kinds
-    assert stored_kinds <= {"build_input", "generated_header", "header", "source"}
-    assert tuple((row["input_ordinal"], row["input_uri"]) for row in members) == tuple(
-        (ordinal, item["uri"])
-        for ordinal, item in enumerate(described)
-        if item["input_kind"] != "external_header"
+    assert {item.case_id for item in missing} == {"cpu.add/oracle", "jit.add/target"}
+    assert not query_todo(
+        store,
+        selected_target_profile="synthetic-jit",
+        current_report=synthetic_report,
     )
 
 
-def test_an_external_only_closure_change_is_stale_without_a_member_difference(
-    evidence_store_path: StorePathFactory, synthetic_current_facts: VerificationReport
+def test_todo_does_not_match_observations_for_another_target(
+    evidence_store_path, synthetic_report
 ) -> None:
-    store = DoltEvidenceStore(evidence_store_path())
-    result = _record(synthetic_current_facts, store, "producer")
-    build = store.query(
-        SQLStatement(
-            "SELECT k.kernel_build_id, k.closure_id FROM run_kernel_builds rb "
-            "JOIN kernel_builds k ON k.kernel_build_id = rb.kernel_build_id "
-            "WHERE rb.run_id = ? ORDER BY k.kernel_build_id LIMIT 1",
-            (result.run_id,),
-        )
-    )[0]
-    rebound = "e" * 64
-    # A changed external header moves nothing this store keeps a member row for:
-    # the project-owned members and their digests are identical, and only the
-    # content-addressed closure identity differs.
-    store.execute_transaction(
-        (
-            SQLStatement(
-                "INSERT INTO source_closures SELECT ?, hash_algorithm, root_kind, "
-                "root_uri, descriptor_json FROM source_closures WHERE closure_id = ?",
-                (rebound, _text(build, "closure_id")),
-            ),
-            SQLStatement(
-                "INSERT INTO source_closure_inputs SELECT ?, input_ordinal, "
-                "input_kind, input_uri, content_digest, descriptor_json "
-                "FROM source_closure_inputs WHERE closure_id = ?",
-                (rebound, _text(build, "closure_id")),
-            ),
-            SQLStatement(
-                "UPDATE kernel_builds SET closure_id = ? WHERE kernel_build_id = ?",
-                (rebound, _text(build, "kernel_build_id")),
-            ),
-        )
+    store = DoltEvidenceStore(evidence_store_path("wrong-target"))
+    _record_validated_report(
+        synthetic_evidence.cpu_report(), store, producer_id="cpu-producer"
     )
 
-    stale = query_stale(store, architecture=ARCHITECTURE)
-
-    closure = next(
-        item for item in stale[0].differences if item.axis == "source_closure"
+    missing = query_todo(
+        store,
+        selected_target_profile="synthetic-jit",
+        current_report=synthetic_report,
     )
-    assert rebound in closure.stored
-    assert rebound not in closure.current
-    assert closure.details == ()
+
+    assert {item.case_id for item in missing} == {
+        "cpu.add/oracle",
+        "jit.add/target",
+    }
 
 
-def test_closure_members_an_earlier_version_stored_report_no_difference(
-    evidence_store_path: StorePathFactory, synthetic_current_facts: VerificationReport
+def test_todo_matches_many_equivalent_distinct_runs(
+    evidence_store_path, synthetic_report
 ) -> None:
-    store = DoltEvidenceStore(evidence_store_path())
-    _record(synthetic_current_facts, store, "producer")
-    closure = store.query(
-        SQLStatement(
-            "SELECT closure_id FROM source_closures WHERE root_kind = ? "
-            "ORDER BY closure_id LIMIT 1",
-            ("repository-source",),
-        )
-    )[0]
-    external_digest = "b" * 64
-    store.execute_transaction(
-        (
-            SQLStatement(
-                "INSERT INTO source_closure_inputs (closure_id, input_ordinal, "
-                "input_kind, input_uri, content_digest, descriptor_json) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    _text(closure, "closure_id"),
-                    100000,
-                    "external_header",
-                    f"cpp-external://sha256/{external_digest}/legacy.hpp",
-                    external_digest,
-                    "{}",
-                ),
-            ),
-        )
+    store = DoltEvidenceStore(evidence_store_path("many-runs"))
+    reports = (
+        synthetic_report,
+        synthetic_evidence.contradicting_report(synthetic_report),
+        synthetic_evidence.target_outcome_report(
+            synthetic_report, VerificationOutcome.ERROR
+        ),
+        synthetic_evidence.target_outcome_report(
+            synthetic_report, VerificationOutcome.BLOCKED
+        ),
+    )
+    for index, report in enumerate(reports):
+        _record_validated_report(report, store, producer_id=f"producer-{index}")
+    current = synthetic_evidence.target_outcome_report(
+        synthetic_report, VerificationOutcome.FAILED, alternate=True
     )
 
-    stale = query_stale(store, architecture=ARCHITECTURE)
+    assert not query_todo(
+        store,
+        selected_target_profile="synthetic-jit",
+        current_report=current,
+    )
+    assert store.query(SQLStatement("SELECT COUNT(*) AS count FROM verification_runs"))[
+        0
+    ]["count"] == len(reports)
 
-    # A store an earlier version wrote still holds external members. The
-    # current manifest no longer offers them individually, so comparing them
-    # would report an unchanged report as stale.
-    assert stale[0].differences == ()
 
-
-def test_todo_is_a_read_only_deterministic_unranked_set_difference(
-    evidence_store_path: StorePathFactory, synthetic_current_facts: VerificationReport
+@pytest.mark.parametrize("axis", ("verification", "tolerance", "oracle"))
+def test_todo_keeps_real_stale_axis_observations_missing(
+    evidence_store_path, synthetic_report, axis
 ) -> None:
-    report = synthetic_current_facts
-    store = DoltEvidenceStore(evidence_store_path())
-    store.initialize()
-    before = tuple(_count(store, table) for table in ("verification_runs", "evidence"))
-
-    missing = query_todo(store, architecture=ARCHITECTURE)
-
-    assert len(missing) == len(report.records)
-    keys = tuple(
-        (item.kernel_id, item.variant, item.test_class, item.case_id)
-        for item in missing
+    store = DoltEvidenceStore(evidence_store_path(f"stale-{axis}"))
+    _record_validated_report(
+        synthetic_evidence.provenance_variant(axis),
+        store,
+        producer_id="stale-producer",
     )
-    assert keys == tuple(sorted(keys))
+
+    missing = query_todo(
+        store,
+        selected_target_profile="synthetic-jit",
+        current_report=synthetic_report,
+    )
+
+    assert len(missing) == len(synthetic_report.records)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (
+        VerificationOutcome.FAILED,
+        VerificationOutcome.ERROR,
+        VerificationOutcome.BLOCKED,
+        VerificationOutcome.DEFERRED,
+    ),
+)
+def test_todo_subtracts_every_matching_factual_observation(
+    evidence_store_path, synthetic_report, outcome
+) -> None:
+    report = synthetic_evidence.target_outcome_report(synthetic_report, outcome)
+    current = (
+        synthetic_evidence.target_outcome_report(
+            synthetic_report, outcome, alternate=True
+        )
+        if outcome is VerificationOutcome.DEFERRED
+        else synthetic_report
+    )
+    assert report.to_jsonl() != current.to_jsonl()
+    assert report.header is not None
+    assert current.header is not None
     assert (
-        tuple(_count(store, table) for table in ("verification_runs", "evidence"))
-        == before
+        report.header.verification_spec["verification_spec_id"]
+        == current.header.verification_spec["verification_spec_id"]
     )
+    store = DoltEvidenceStore(evidence_store_path(outcome.value))
+    _record_validated_report(report, store, producer_id="producer-a")
+    _record_validated_report(report, store, producer_id="producer-b")
 
-    _record(report, store, "producer")
-    counts = tuple(_count(store, table) for table in ("verification_runs", "evidence"))
-    assert query_todo(store, architecture=ARCHITECTURE) == ()
-    assert query_stale(store, architecture=ARCHITECTURE)[0].differences == ()
-    assert (
-        tuple(_count(store, table) for table in ("verification_runs", "evidence"))
-        == counts
+    assert not query_todo(
+        store,
+        selected_target_profile="synthetic-jit",
+        current_report=current,
     )
-
-
-def test_query_cli_emits_stable_json(
-    evidence_store_path: StorePathFactory,
-    synthetic_report: VerificationReport,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store_path = evidence_store_path()
-    _record(synthetic_report, DoltEvidenceStore(store_path), "cli-producer")
-
-    status = status_main(
-        [
-            "status",
-            "--arch",
-            ARCHITECTURE,
-            "--producer",
-            "cli-producer",
-            "--store",
-            str(store_path),
-            "--json",
-        ]
+    target = query_status(
+        store,
+        selected_target_profile="synthetic-jit",
+        kernel_id="jit.add",
     )
-
-    assert status == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["total"] == len(synthetic_report.records)
-    assert all(
-        item["producer_id"] == "cli-producer" for item in payload["observations"]
-    )
+    assert len(target) == 2
+    assert {item.producer_id for item in target} == {"producer-a", "producer-b"}
+    assert {item.outcome for item in target} == {outcome.value}
