@@ -24,7 +24,9 @@ def _parser() -> argparse.ArgumentParser:
         prog="strideweave-verify-report",
         description="Inspect deterministic StrideWeave verification JSONL evidence.",
     )
-    parser.add_argument("report", help="JSONL evidence written by sw.test_backend().")
+    parser.add_argument(
+        "report", help="JSONL evidence written by sw.verify_backend(target)."
+    )
     parser.add_argument(
         "--problems",
         action="store_true",

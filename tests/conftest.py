@@ -14,7 +14,7 @@ without also asking for the external Dolt server it was deselected for.
 Because the marked selection is the one CI does not instrument, it must also
 contain no native work. ``native_work_forbidden`` enforces that at runtime: for
 the whole of a marked item — its fixture setup, call, and teardown — every
-module binding that reaches ``sw.test_backend``, the compiled kernel metadata
+module binding that reaches ``sw.verify_backend``, the compiled kernel metadata
 export, the installed compilation manifest, or report binding refuses to run.
 That includes module-level aliases captured by tests and fixtures before the
 context opens. References held only in local variables, closures, or object
@@ -68,11 +68,11 @@ COLLECTED_ITEMS: list[pytest.Item] = []
 # provenance does so through one of these.
 NATIVE_ENTRY_POINTS = (
     ("strideweave._carrier", "_cpu_native_kernel_metadata"),
-    ("strideweave.verification.api", "test_backend"),
-    ("strideweave.verification.classification", "native_cpu_kernel_manifest"),
-    ("strideweave.verification.provenance", "load_compilation_manifest"),
-    ("strideweave.verification.reporting", "_raw_compilation_manifest"),
+    ("strideweave.verification.api", "verify_backend"),
+    ("strideweave.verification.classification", "kernel_manifest"),
+    ("strideweave.verification.provenance", "installed_compilation_bundle"),
     ("strideweave.verification.reporting", "bind_report"),
+    ("strideweave.verification.stage_two", "_current_profile_compilation_bundle"),
 )
 
 
@@ -212,7 +212,7 @@ def backend_report() -> VerificationReport:
     Constructing it is native work, so only unmarked tests may ask for it.
     """
 
-    return sw.test_backend()
+    return sw.verify_backend("cpu-compiled")
 
 
 @pytest.fixture(scope="session")

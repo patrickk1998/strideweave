@@ -1,22 +1,92 @@
 import math
+from dataclasses import replace
+from inspect import signature
 
 import pytest
 
+import strideweave.verification as verification
 import strideweave.verification.classification as classification
 import strideweave.verification.stage_one as stage_one_module
 from strideweave.verification import (
     ClassificationDisposition,
     VerificationClass,
     VerificationOutcome,
-    run_stage_one,
+    run_oracle_stage,
+    run_target_stage,
+    verification_profile,
 )
+
+_ORACLE_PROFILE = verification_profile("cpu-compiled")
+
+
+def _oracle_stage(result_transform=None):
+    if result_transform is None:
+        return run_oracle_stage(_ORACLE_PROFILE)
+    return stage_one_module._run_oracle_stage(
+        _ORACLE_PROFILE, result_transform=result_transform
+    )
+
+
+def _cpu_classifications():
+    return classification.classify_profile_plans(_ORACLE_PROFILE)
+
+
+def test_public_staged_oracle_api_replaces_the_stage_one_prototype():
+    assert {"run_oracle_stage", "run_target_stage", "OracleStageResult"} <= set(
+        verification.__all__
+    )
+    assert "run_stage_one" not in verification.__all__
+    assert "StageOneResult" not in verification.__all__
+    assert not hasattr(verification, "run_stage_one")
+    assert not hasattr(verification, "StageOneResult")
+    assert tuple(signature(run_oracle_stage).parameters) == ("profile",)
+    assert tuple(signature(run_target_stage).parameters) == (
+        "profile",
+        "oracle_result",
+    )
+
+
+def test_oracle_stage_rejects_a_target_only_profile_before_work(monkeypatch):
+    work_started = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal work_started
+        del args, kwargs
+        work_started = True
+        raise AssertionError("oracle work started for a target-only profile")
+
+    monkeypatch.setattr(stage_one_module, "classify_profile_plans", fail_if_called)
+    monkeypatch.setattr(stage_one_module, "_movement_records", fail_if_called)
+
+    with pytest.raises(ValueError, match="does not support oracle"):
+        run_oracle_stage(verification_profile("synthetic-jit"))
+
+    assert not work_started
+
+
+def test_oracle_stage_rejects_a_forged_profile_before_work(monkeypatch):
+    profile = replace(_ORACLE_PROFILE, provider="forged")
+    work_started = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal work_started
+        del args, kwargs
+        work_started = True
+        raise AssertionError("oracle work started for a forged profile")
+
+    monkeypatch.setattr(stage_one_module, "classify_profile_plans", fail_if_called)
+
+    with pytest.raises(ValueError, match="registered descriptor"):
+        run_oracle_stage(profile)
+
+    assert not work_started
 
 
 def test_stage_one_emits_evidence_and_certifies_every_active_kernel():
-    result = run_stage_one()
+    result = _oracle_stage()
     active = [
         descriptor
-        for descriptor in classification.classify_cpu_kernel_plans()
+        for descriptor in _cpu_classifications()
         if descriptor.disposition is ClassificationDisposition.ACTIVE
     ]
 
@@ -74,10 +144,10 @@ def test_stage_one_emits_evidence_and_certifies_every_active_kernel():
 
 
 def test_stage_one_represents_vendor_work_as_deferred_not_passed():
-    result = run_stage_one()
+    result = _oracle_stage()
     deferred_descriptors = [
         descriptor
-        for descriptor in classification.classify_cpu_kernel_plans()
+        for descriptor in _cpu_classifications()
         if descriptor.disposition is ClassificationDisposition.DEFERRED
     ]
     deferred = [
@@ -92,7 +162,7 @@ def test_stage_one_represents_vendor_work_as_deferred_not_passed():
     assert all(record.diagnostic for record in deferred)
     active_kernel_ids = {
         descriptor.kernel.kernel_id
-        for descriptor in classification.classify_cpu_kernel_plans()
+        for descriptor in _cpu_classifications()
         if descriptor.disposition is ClassificationDisposition.ACTIVE
     }
     assert not {
@@ -106,8 +176,8 @@ def test_every_active_kernel_in_the_expanded_manifest_is_certified():
     # The manifest is the whole native operation set, not a subset the runner
     # happens to know how to call: an operation reaching C++ without a Stage One
     # case leaves its kernel uncertified rather than silently passing.
-    result = run_stage_one()
-    descriptors = classification.classify_cpu_kernel_plans()
+    result = _oracle_stage()
+    descriptors = _cpu_classifications()
 
     active = {
         descriptor.kernel.kernel_id
@@ -128,7 +198,7 @@ def test_every_active_kernel_in_the_expanded_manifest_is_certified():
 def test_every_deferred_plan_states_a_concrete_reason():
     deferred = [
         descriptor
-        for descriptor in classification.classify_cpu_kernel_plans()
+        for descriptor in _cpu_classifications()
         if descriptor.disposition is ClassificationDisposition.DEFERRED
     ]
 
@@ -144,7 +214,7 @@ def test_every_deferred_plan_states_a_concrete_reason():
 
 
 def test_both_accumulator_plans_of_each_sum_reduction_are_certified():
-    result = run_stage_one()
+    result = _oracle_stage()
 
     numerical = {
         (record.case.operation, record.case.accumulator_dtype)
@@ -168,7 +238,7 @@ def test_a_wrong_addressing_mutation_removes_the_matmul_certificate():
             return tuple(value + 1 for value in values)
         return values
 
-    result = run_stage_one(corrupt)
+    result = _oracle_stage(corrupt)
 
     assert "cpu.matmul" not in {
         certificate.kernel_id for certificate in result.certificates
@@ -186,7 +256,7 @@ def test_an_excessive_numerical_residual_fails_certification():
             return tuple(value + 0.25 for value in values)
         return values
 
-    result = run_stage_one(corrupt)
+    result = _oracle_stage(corrupt)
 
     assert "cpu.reduce_sum" not in {
         certificate.kernel_id for certificate in result.certificates
@@ -201,7 +271,7 @@ def test_an_excessive_numerical_residual_fails_certification():
 
 
 def test_stage_one_numerical_cases_include_a_wide_exponent_distribution():
-    result = run_stage_one()
+    result = _oracle_stage()
     wide = [
         record
         for record in result.report.records
@@ -210,7 +280,7 @@ def test_stage_one_numerical_cases_include_a_wide_exponent_distribution():
 
     expected_plans = {
         descriptor.plan
-        for descriptor in classification.classify_cpu_kernel_plans()
+        for descriptor in _cpu_classifications()
         if descriptor.disposition is ClassificationDisposition.ACTIVE
         and descriptor.kernel.operation in {"reduce_sum", "matmul"}
         and any(dtype == "Float32" for _, dtype, _ in descriptor.plan.operands)
@@ -230,7 +300,7 @@ def test_exact_certification_distinguishes_the_sign_of_zero():
             return (-0.0, *values[1:])
         return values
 
-    result = run_stage_one(corrupt)
+    result = _oracle_stage(corrupt)
 
     assert "cpu.relu" not in {
         certificate.kernel_id for certificate in result.certificates
@@ -250,7 +320,7 @@ def test_arbitrary_finite_exact_case_detects_fractional_result_mutation():
             return tuple(value + 0.25 for value in values)
         return values
 
-    result = run_stage_one(corrupt)
+    result = _oracle_stage(corrupt)
     arbitrary_add = [
         record
         for record in result.report.records
@@ -272,7 +342,7 @@ def test_both_exact_witnesses_share_result_mutation_and_fail_closed():
             return tuple(value + 0.25 for value in values)
         return values
 
-    result = run_stage_one(corrupt)
+    result = _oracle_stage(corrupt)
     add_exact = [
         record
         for record in result.report.records
@@ -301,7 +371,7 @@ def test_both_exact_witnesses_record_the_same_recoverable_execution_error(
         return original_execute(descriptor, payloads, layout, cpu, **options)
 
     monkeypatch.setattr(stage_one_module, "_execute", fail_cpu_add)
-    result = run_stage_one()
+    result = _oracle_stage()
     add_errors = [
         record
         for record in result.report.records
@@ -310,9 +380,9 @@ def test_both_exact_witnesses_record_the_same_recoverable_execution_error(
         and record.outcome is VerificationOutcome.ERROR
     ]
 
-    assert any(record.case.case_id.endswith("-exact-error") for record in add_errors)
+    assert any(record.case.case_id.endswith("-exact") for record in add_errors)
     assert any(
-        record.case.case_id.endswith("-arbitrary-finite-error") for record in add_errors
+        record.case.case_id.endswith("-arbitrary-finite") for record in add_errors
     )
     assert all(
         record.diagnostic is not None
@@ -322,25 +392,25 @@ def test_both_exact_witnesses_record_the_same_recoverable_execution_error(
 
 
 def test_public_stage_one_fails_closed_on_a_stale_classification(monkeypatch):
-    monkeypatch.setitem(
-        classification._CLASSIFICATIONS,
-        ("cpu.removed", "default"),
-        (VerificationClass.EXACT_ARITHMETIC,),
+    monkeypatch.setattr(
+        classification,
+        "_EXACT_OPERATIONS",
+        classification._EXACT_OPERATIONS | {"removed"},
     )
 
-    with pytest.raises(ValueError, match="does not exactly match"):
-        run_stage_one()
+    with pytest.raises(ValueError, match="do not exactly match"):
+        _oracle_stage()
 
 
 def test_stage_one_fails_closed_when_a_movement_subject_has_no_case(monkeypatch):
-    monkeypatch.setitem(
-        classification.MOVEMENT_CLASSIFICATIONS,
-        "unimplemented_movement",
-        (VerificationClass.BIT_EXACT,),
+    monkeypatch.setattr(
+        classification,
+        "_MOVEMENT_OPERATIONS",
+        (*classification._MOVEMENT_OPERATIONS, "unimplemented_movement"),
     )
 
     with pytest.raises(ValueError, match="no verification case"):
-        run_stage_one()
+        _oracle_stage()
 
 
 @pytest.mark.parametrize(
@@ -399,7 +469,7 @@ def test_stage_one_records_movement_processing_errors_and_continues(
             stage_one_module, "_movement_comparison", fail_comparison_once
         )
 
-    result = run_stage_one()
+    result = _oracle_stage()
 
     errors = [
         record
@@ -441,7 +511,7 @@ def test_stage_one_records_recoverable_case_errors_and_continues(monkeypatch):
         return original_structural(descriptor, transform)
 
     monkeypatch.setattr(stage_one_module, "_structural_record", failing_reduce)
-    result = run_stage_one()
+    result = _oracle_stage()
 
     errors = [
         record
@@ -468,7 +538,7 @@ def test_stage_one_records_recoverable_case_errors_and_continues(monkeypatch):
 def test_stage_one_numerical_errors_retain_the_resolved_tolerance(
     monkeypatch, operation, error_type
 ):
-    baseline = run_stage_one()
+    baseline = _oracle_stage()
     expected = next(
         record
         for record in baseline.report.records
@@ -486,7 +556,7 @@ def test_stage_one_numerical_errors_retain_the_resolved_tolerance(
         return original_execute(descriptor, payloads, layout, cpu, **options)
 
     monkeypatch.setattr(stage_one_module, "_execute", fail_after_numerical_preparation)
-    result = run_stage_one()
+    result = _oracle_stage()
 
     error = next(
         record
@@ -522,7 +592,7 @@ def test_stage_one_numerical_errors_retain_the_resolved_tolerance(
 def test_stage_one_integer_numerical_errors_keep_exact_tolerance():
     descriptor = next(
         descriptor
-        for descriptor in classification.classify_cpu_kernel_plans()
+        for descriptor in _cpu_classifications()
         if descriptor.kernel.operation == "reduce_sum"
         and all(
             dtype == "Int32"
@@ -562,7 +632,7 @@ def test_stage_one_preserves_other_analytic_witnesses_after_one_error(monkeypatc
     monkeypatch.setattr(
         stage_one_module, "_analytic_record", fail_second_reduce_witness
     )
-    result = run_stage_one()
+    result = _oracle_stage()
 
     assert failed_plan is not None
     affected = [
