@@ -108,7 +108,7 @@ def test_index_map_evaluation_rejects_wrong_key_kinds_and_arities():
     index = cast(Any, index_map.index)
     call = cast(Any, index_map)
 
-    for key in (None, 1.0, "key"):
+    for key in (None, 1.0, "key", True, False):
         with pytest.raises(TypeError):
             index_map.index(key)
         with pytest.raises(TypeError):
@@ -130,11 +130,20 @@ def test_index_map_rejects_direct_abstract_construction():
         index_map_type(Shape(1), 1, True)
 
 
+def test_index_map_rejects_a_boolean_evaluation_result():
+    index_map = _TestIndexMap(Shape(1), 2, True, (True,))
+
+    with pytest.raises(TypeError, match="evaluation must return an integer"):
+        index_map.index(0)
+
+
 @pytest.mark.parametrize(
     ("shape", "codomain_size", "is_injective", "error"),
     [
         (object(), 1, True, TypeError),
         (Shape(1), 1.0, True, TypeError),
+        (Shape(1), True, True, TypeError),
+        (Shape(1), False, True, TypeError),
         (Shape(1), 0, True, ValueError),
         (Shape(1), 1, 1, TypeError),
     ],

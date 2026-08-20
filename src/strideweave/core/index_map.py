@@ -42,7 +42,7 @@ class IndexMap(ABC):
 
         if not isinstance(shape, Shape):
             raise TypeError("shape must be a Shape")
-        if not isinstance(codomain_size, int):
+        if not isinstance(codomain_size, int) or isinstance(codomain_size, bool):
             raise TypeError("codomain_size must be an integer")
         if codomain_size <= 0:
             raise ValueError("codomain_size must be positive")
@@ -80,7 +80,7 @@ class IndexMap(ABC):
         """Evaluate this map at one scalar or hierarchical coordinate."""
 
         result = self._index_ordinal(self._encode_key(key))
-        if not isinstance(result, int):
+        if not isinstance(result, int) or isinstance(result, bool):
             raise TypeError("IndexMap evaluation must return an integer")
         if result < 0 or result >= self.codomain_size:
             raise ValueError("IndexMap result is outside its declared codomain")

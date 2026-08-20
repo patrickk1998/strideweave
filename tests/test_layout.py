@@ -108,6 +108,29 @@ def test_shape_encode_accepts_complete_and_subtree_scalar_coordinates():
     assert shape.encode([4, [2, 2]]) == 214
 
 
+def test_shape_rejects_boolean_ordinals_at_every_coordinate_depth():
+    shape = Shape(5, [20, 4])
+
+    assert Shape(True) == Shape(1)
+    for ordinal in (True, False):
+        with pytest.raises(TypeError, match="Shape index must be an integer"):
+            shape.decode(ordinal)
+        with pytest.raises(TypeError, match="Coordinate must be an integer"):
+            shape.encode(ordinal)
+    for coordinate in (
+        (True, (2, 2)),
+        (4, True),
+        (4, (True, 2)),
+    ):
+        with pytest.raises(TypeError, match="Coordinate must"):
+            shape.encode(coordinate)
+
+    with pytest.raises(ValueError, match="Index is not in domain of shape"):
+        shape.decode(-1)
+    with pytest.raises(ValueError, match="Coordinate is not in domain of shape"):
+        shape.encode(shape.size)
+
+
 def test_shape_encode_and_decode_are_exact_inverses_through_a_nested_domain():
     shape = Shape(2, [3, 2])
 
@@ -132,7 +155,7 @@ def test_shape_decode_rejects_invalid_types_arities_and_ordinals():
     shape = Shape(2, 3)
     decode = cast(Any, shape.decode)
 
-    for index in (None, 1.0, "1", (1,)):
+    for index in (None, 1.0, "1", (1,), True, False):
         with pytest.raises(TypeError):
             shape.decode(index)  # type: ignore[arg-type]
     with pytest.raises(TypeError):

@@ -237,7 +237,7 @@ class Shape:
             (4, (2, 2))
         """
 
-        if not isinstance(index, int):
+        if not isinstance(index, int) or isinstance(index, bool):
             raise TypeError("Shape index must be an integer")
         if index < 0 or index >= self.size:
             raise ValueError("Index is not in domain of shape")
@@ -245,6 +245,8 @@ class Shape:
 
     @staticmethod
     def _encode_level(level: _ShapeLevel, coordinate: Any) -> int:
+        if isinstance(coordinate, bool):
+            raise TypeError("Coordinate must be an integer, tuple, or list")
         if isinstance(coordinate, int):
             if coordinate < 0 or coordinate >= level.logical_size:
                 raise ValueError("Coordinate is not in domain of shape")
@@ -258,7 +260,7 @@ class Shape:
         multiplier = 1
         for element, component in zip(level, coordinate, strict=True):
             if isinstance(element, int):
-                if not isinstance(component, int):
+                if not isinstance(component, int) or isinstance(component, bool):
                     if isinstance(component, tuple | list):
                         raise ValueError("Coordinate does not match shape hierarchy")
                     raise TypeError(
