@@ -33,6 +33,7 @@ owning spec; update this file only when the mental model itself changes.
 
 | Area | Owning spec |
 | --- | --- |
+| Immutable shaped-domain index maps, coordinate conversion, composition, and specialized map kinds | [`index-maps`](openspec/specs/index-maps/spec.md) |
 | Hierarchical layout values, coordinate mapping, structural transforms, broadcasting, tiling algebra | [`core-layout`](openspec/specs/core-layout/spec.md) |
 | Tensor construction, representation validation, carrier ownership, multi-subtensor boundaries | [`core-tensor-representation`](openspec/specs/core-tensor-representation/spec.md) |
 | Zero-copy views, their layout transformations, failures, and reverse-mode behavior | [`core-tensor-views`](openspec/specs/core-tensor-views/spec.md) |
@@ -66,19 +67,32 @@ takes it over.
   of carrier-backed subtensors, one placement `Layout` per level, and one
   adjacent `Layout` between each pair of levels. The carrier, offset, and layout
   properties read subtensor zero rather than parallel fields.
-- `Layout` describes hierarchical `Shape` and `Stride` trees and maps logical
-  coordinates to physical storage indices. `layout.profile` exposes the shape
-  tree's leaf-and-nesting recipe without its extents or strides, and
+- `IndexMap` is the immutable algebra for mapping a hierarchical `Shape` domain
+  into a flat integer range. Its `codomain_size` is a declared exclusive bound,
+  not the number of reached indices or an inferred image size. `Shape.encode`
+  and `Shape.decode` are the shared first-mode-fastest (colexicographic)
+  coordinate authority, including nested subtree-scalar and rank-zero forms.
+  [`index-maps`](openspec/specs/index-maps/spec.md) owns the exact contract.
+- The four concrete IndexMap siblings have distinct structural roles. `Layout`
+  uses parallel `Shape` and `Stride` trees; `Permutation` is an explicit sparse
+  lookup; `Swizzle` is a sequence of validated XOR-field stages; and `Product`
+  packs child maps while retaining their explicit expression tree. Composition
+  consumes the inner map first. Closed same-kind pairs retain their specialized
+  kind, while other compatible pairs use a private flattened result that is
+  exposed only as `IndexMap`.
+- `Layout` remains the physical specialization. `layout.profile` exposes the
+  shape tree's leaf-and-nesting recipe without its extents or strides, and
   `layout.is_injective` reports whether every logical coordinate maps to a
   distinct physical offset. `layout.broadcast_to(shape)` widens only extent-one
   leaves at the same hierarchical positions, setting their strides to zero; it
-  never flattens, rank-aligns, inserts, removes, or reorders modes. That
-  refusal to guess is the layout algebra's defining choice.
+  never flattens, rank-aligns, inserts, removes, or reorders modes. That refusal
+  to guess is the layout algebra's defining choice.
 - `Tiler` is the public type alias for a read-only sequence of `Layout` values,
   used by the composition APIs (`Layout.compose`, `Layout.divide_tiler`,
   `Layout.zipped_divide`) to describe one tile per leading hierarchical mode.
-- `layout.size` is the logical element count, while `layout.cosize` is the
-  physical storage size the layout addresses (one past its largest offset).
+- `layout.size` is the logical element count, while `layout.cosize` — also
+  exposed as its IndexMap `codomain_size` — is the physical storage size the
+  Layout addresses (one past its largest offset).
   They are equal for compact layouts but `cosize` is larger for strided or
   hierarchical ones, so back a tensor with `cosize` elements — e.g. a strided
   `Layout(Shape([2, 3]), Stride([1, 4]))` has `size` 6 but `cosize` 10, so it
@@ -1041,6 +1055,16 @@ What is deliberately not built yet, and why it is safe to leave undone:
   [`core-tensor-views`](openspec/specs/core-tensor-views/spec.md) for what each
   view guarantees, including `as_strided`'s origin-based logical mapping, which
   is not PyTorch's physical-storage reinterpretation.
+- The broader IndexMap algebra does not make every map a Tensor placement.
+  Tensor placement and adjacent grouping, tiling, broadcasting, complement,
+  `as_strided`, and native layout caches remain Layout-only because they depend
+  on stride structure and physical `cosize`. Permutation, Swizzle, Product, and
+  private generic compositions are mapping metadata, not alternate storage
+  representations.
+- IndexMaps are currently static immutable structures. Callable- or
+  Tensor-backed maps, data-dependent selection, a public explicit
+  materialization operation, inverse maps, and equality or hashing for generic
+  expression graphs remain deferred.
 - Public compound tensor construction, and multi-subtensor coordinate indexing,
   mutation, non-view operations, movement, release orchestration, and DLPack
   export, remain deferred; the pure c0 layout views are the narrow validated
