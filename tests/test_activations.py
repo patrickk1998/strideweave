@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 from collections.abc import Callable, Iterable
+from importlib import import_module
 from typing import Any
 
 import pytest
-import torch
-import torch.nn.functional as F
 
 from strideweave import (
     CPU,
@@ -37,7 +38,12 @@ ACTIVATION_OPERATION_NAMES = (
 )
 
 
-def seeded_activation_values(seed: int, size: int) -> list[float]:
+@pytest.fixture(scope="module")
+def activation_references(torch_reference: Any) -> tuple[Any, Any]:
+    return torch_reference, import_module("torch.nn.functional")
+
+
+def seeded_activation_values(torch: Any, seed: int, size: int) -> list[float]:
     generator = torch.Generator()
     generator.manual_seed(seed)
     values = torch.randn(size, generator=generator, dtype=torch.float32)
@@ -76,7 +82,8 @@ def tensor_values(tensor: Tensor) -> list[float]:
 
 def assert_tensor_close(
     strideweave_tensor: Tensor,
-    torch_tensor: torch.Tensor,
+    torch_tensor: Any,
+    torch: Any,
     *,
     rtol: float = 1e-5,
     atol: float = 1e-6,
@@ -87,13 +94,16 @@ def assert_tensor_close(
 
 def run_activation_case(
     operation_name: str,
-    torch_activation: Callable[[torch.Tensor], torch.Tensor],
+    torch_activation: Callable[[Any], Any],
     carrier_kind: str,
     layout: Layout,
+    torch: Any,
 ) -> None:
-    values = seeded_activation_values(ACTIVATION_VALUE_SEED, layout.shape.logical_size)
+    values = seeded_activation_values(
+        torch, ACTIVATION_VALUE_SEED, layout.shape.logical_size
+    )
     gradient_values = seeded_activation_values(
-        ACTIVATION_GRADIENT_SEED, layout.shape.logical_size
+        torch, ACTIVATION_GRADIENT_SEED, layout.shape.logical_size
     )
     tensor = make_activation_tensor(values, carrier_kind, layout)
     gradient = make_activation_tensor(gradient_values, carrier_kind, layout)
@@ -110,76 +120,100 @@ def run_activation_case(
 
     expected_dtype = DType.Floating if "generic" in carrier_kind else DType.Float32
     assert result.dtype() is expected_dtype
-    assert_tensor_close(result, torch_result)
+    assert_tensor_close(result, torch_result, torch)
     strideweave_grad = tensor.grad
     assert strideweave_grad is not None
     assert torch_input.grad is not None
     assert strideweave_grad.dtype() is expected_dtype
-    assert_tensor_close(strideweave_grad, torch_input.grad)
+    assert_tensor_close(strideweave_grad, torch_input.grad, torch)
 
 
 @pytest.mark.parametrize("carrier", CARRIERS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-def test_relu_activation_matches_pytorch(carrier: str, layout: Layout):
+def test_relu_activation_matches_pytorch(
+    carrier: str, layout: Layout, activation_references: tuple[Any, Any]
+):
     """ReLU: forward ``y = max(x, 0)``; backward ``dx = dy`` if ``x > 0`` else ``0``."""
 
-    run_activation_case("relu", torch.relu, carrier, layout)
+    torch, _ = activation_references
+    run_activation_case("relu", torch.relu, carrier, layout, torch)
 
 
 @pytest.mark.parametrize("carrier", CARRIERS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-def test_sigmoid_activation_matches_pytorch(carrier: str, layout: Layout):
+def test_sigmoid_activation_matches_pytorch(
+    carrier: str, layout: Layout, activation_references: tuple[Any, Any]
+):
     """Sigmoid: forward ``y = 1 / (1 + exp(-x))``; backward ``dx = dy * y * (1 - y)``."""
 
-    run_activation_case("sigmoid", torch.sigmoid, carrier, layout)
+    torch, _ = activation_references
+    run_activation_case("sigmoid", torch.sigmoid, carrier, layout, torch)
 
 
 @pytest.mark.parametrize("carrier", CARRIERS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-def test_tanh_activation_matches_pytorch(carrier: str, layout: Layout):
+def test_tanh_activation_matches_pytorch(
+    carrier: str, layout: Layout, activation_references: tuple[Any, Any]
+):
     """Tanh: forward ``y = tanh(x)``; backward ``dx = dy * (1 - y**2)``."""
 
-    run_activation_case("tanh", torch.tanh, carrier, layout)
+    torch, _ = activation_references
+    run_activation_case("tanh", torch.tanh, carrier, layout, torch)
 
 
 @pytest.mark.parametrize("carrier", CARRIERS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-def test_gelu_activation_matches_pytorch(carrier: str, layout: Layout):
+def test_gelu_activation_matches_pytorch(
+    carrier: str, layout: Layout, activation_references: tuple[Any, Any]
+):
     """GELU: forward ``y = 0.5 * x * (1 + erf(x / sqrt(2)))``; backward ``dx = dy * (0.5 * (1 + erf(x / sqrt(2))) + x * exp(-0.5 * x**2) / sqrt(2 * pi))``."""
 
-    run_activation_case("gelu", F.gelu, carrier, layout)
+    torch, functional = activation_references
+    run_activation_case("gelu", functional.gelu, carrier, layout, torch)
 
 
 @pytest.mark.parametrize("carrier", CARRIERS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-def test_silu_activation_matches_pytorch(carrier: str, layout: Layout):
+def test_silu_activation_matches_pytorch(
+    carrier: str, layout: Layout, activation_references: tuple[Any, Any]
+):
     """SiLU: forward ``y = x * sigmoid(x)``; backward ``dx = dy * (sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x)))``."""
 
-    run_activation_case("silu", F.silu, carrier, layout)
+    torch, functional = activation_references
+    run_activation_case("silu", functional.silu, carrier, layout, torch)
 
 
 @pytest.mark.parametrize("carrier", CARRIERS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-def test_softplus_activation_matches_pytorch(carrier: str, layout: Layout):
+def test_softplus_activation_matches_pytorch(
+    carrier: str, layout: Layout, activation_references: tuple[Any, Any]
+):
     """Softplus: forward ``y = log(1 + exp(x))``; backward ``dx = dy * sigmoid(x)``."""
 
-    run_activation_case("softplus", F.softplus, carrier, layout)
+    torch, functional = activation_references
+    run_activation_case("softplus", functional.softplus, carrier, layout, torch)
 
 
 @pytest.mark.parametrize("carrier", CARRIERS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-def test_elu_activation_matches_pytorch(carrier: str, layout: Layout):
+def test_elu_activation_matches_pytorch(
+    carrier: str, layout: Layout, activation_references: tuple[Any, Any]
+):
     """ELU: forward ``y = x`` if ``x > 0`` else ``exp(x) - 1``; backward ``dx = dy`` if ``x > 0`` else ``dy * exp(x)``."""
 
-    run_activation_case("elu", F.elu, carrier, layout)
+    torch, functional = activation_references
+    run_activation_case("elu", functional.elu, carrier, layout, torch)
 
 
 @pytest.mark.parametrize("carrier", CARRIERS)
 @pytest.mark.parametrize("layout", ACTIVATION_LAYOUTS)
-def test_leaky_relu_activation_matches_pytorch(carrier: str, layout: Layout):
+def test_leaky_relu_activation_matches_pytorch(
+    carrier: str, layout: Layout, activation_references: tuple[Any, Any]
+):
     """Leaky ReLU: forward ``y = x`` if ``x >= 0`` else ``0.01 * x``; backward ``dx = dy`` if ``x >= 0`` else ``0.01 * dy``."""
 
-    run_activation_case("leaky_relu", F.leaky_relu, carrier, layout)
+    torch, functional = activation_references
+    run_activation_case("leaky_relu", functional.leaky_relu, carrier, layout, torch)
 
 
 @pytest.mark.parametrize("operation_name", ACTIVATION_OPERATION_NAMES)
