@@ -131,8 +131,8 @@ class DoltEvidenceStore(EvidenceStore):
             return
         self._validate_location()
         self._validate_runtime()
-        self._create_database_if_needed()
-        self._apply_migrations()
+        created = self._create_database_if_needed()
+        self._apply_migrations(allow_bootstrap=created)
         self._initialized = True
 
     def execute_transaction(self, statements: Sequence[SQLStatement]) -> None:
@@ -251,10 +251,10 @@ class DoltEvidenceStore(EvidenceStore):
         if self._connection is not None and not self._connection.open:
             self._connection = None
 
-    def _create_database_if_needed(self) -> None:
+    def _create_database_if_needed(self) -> bool:
         if (self._path / ".dolt").is_dir():
             self._server()
-            return
+            return False
         if self._path.exists():
             if any(self._path.iterdir()):
                 raise VerificationStoreError(
@@ -276,6 +276,7 @@ class DoltEvidenceStore(EvidenceStore):
             ) from error
         finally:
             connection.close()
+        return True
 
     def _migration_files(self) -> tuple[tuple[int, str, str, str], ...]:
         root = resources.files("strideweave.verification.store.migrations")
@@ -299,7 +300,7 @@ class DoltEvidenceStore(EvidenceStore):
             )
         return tuple(migrations)
 
-    def _apply_migrations(self) -> None:
+    def _apply_migrations(self, *, allow_bootstrap: bool) -> None:
         migrations = self._migration_files()
         table_rows = self._query(
             SQLStatement("SHOW TABLES LIKE 'schema_migrations'"), "migration"
@@ -314,6 +315,31 @@ class DoltEvidenceStore(EvidenceStore):
             )
         else:
             applied_rows = ()
+        # Schema v3 is a clean replacement.  The old store also used a
+        # migration table, so detect it while the database is still read-only:
+        # applying even a bookkeeping migration would violate the replacement
+        # boundary and make recovery harder for a user preserving old facts.
+        if applied_rows and (
+            applied_rows[0].get("migration_name") != migrations[0][1]
+            or applied_rows[0].get("version") != 1
+        ):
+            raise VerificationStoreError(
+                "verification store uses the retired v2 schema; choose a new "
+                "--store path or manually recreate this path after handling its "
+                "existing data. StrideWeave does not migrate or rewrite v2 stores."
+            )
+        if not table_rows and not allow_bootstrap:
+            raise VerificationStoreError(
+                "verification store schema is unknown or corrupt; choose a new "
+                "--store path or manually recreate this path after handling its "
+                "existing data."
+            )
+        if table_rows and not applied_rows:
+            raise VerificationStoreError(
+                "verification store schema is corrupt or unsupported; choose a new "
+                "--store path or manually recreate this path after handling its "
+                "existing data."
+            )
         if len(applied_rows) > len(migrations):
             raise VerificationStoreError(
                 "verification store schema is newer than this StrideWeave installation"

@@ -1,21 +1,25 @@
-"""Explicit verification classifications for the native CPU manifest."""
+"""Provider-neutral verification profile classification.
+
+This module describes the finite, logical verification obligations of a
+provider. Compilation specializations deliberately do not appear here: they
+belong to the provenance receipt that records an individual execution.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable
+from dataclasses import dataclass
 from importlib import import_module
 
 from strideweave.carriers.cpu.capabilities import cpu_capabilities
+from strideweave.carriers.operation_capability import OperationCapability
 
 from .model import (
     ClassificationDisposition,
-    KernelDescriptor,
-    KernelPlanDescriptor,
     PlanKey,
     VerificationClass,
+    VerificationStage,
 )
-
-_carrier = import_module("strideweave._carrier")
 
 _NATIVE_KERNEL_METADATA_BINDING = "_cpu_native_kernel_metadata"
 _NATIVE_EXTENSION_REBUILD_COMMAND = (
@@ -32,227 +36,468 @@ _CERTIFIED_SUM = (
 )
 
 # The reason attached to every plan deferred because its result is produced by
-# the platform math library rather than by an arithmetic StrideWeave pins.
+# the platform math library rather than by arithmetic StrideWeave pins.
 VENDOR_TRANSCENDENTAL_REASON = "vendor transcendental implementation"
 
 # Kernels whose result is a correctly rounded composition of pinned binary32 or
-# exact-integer operations, so `Generic` and native CPU must agree bit for bit
-# on arbitrary finite encoded inputs.
-_EXACT_KERNELS = (
-    "abs",
-    "add",
-    "argmax",
-    "argmin",
-    "ceil",
-    "clamp",
-    "div",
-    "elementwise_mul",
-    "eq",
-    "floor",
-    "gather",
-    "le",
-    "leaky_relu",
-    "logical_not",
-    "lt",
-    "maximum",
-    "minimum",
-    "ne",
-    "neg",
-    "recip",
-    "reduce_max",
-    "reduce_min",
-    "relu",
-    "rem",
-    "round",
-    "rsqrt",
-    "scalar_mul",
-    "scatter",
-    "select",
-    "sign",
-    "sort_indices",
-    "sort_values",
-    "sqrt",
-    "sub",
-    "topk_indices",
-    "topk_values",
+# exact-integer operations, so Generic and a provider implementation must agree
+# bit for bit on arbitrary finite encoded inputs.
+_EXACT_OPERATIONS = frozenset(
+    {
+        "abs",
+        "add",
+        "argmax",
+        "argmin",
+        "ceil",
+        "clamp",
+        "div",
+        "_sort_indices",
+        "_sort_values",
+        "_topk_indices",
+        "_topk_values",
+        "elementwise_mul",
+        "eq",
+        "floor",
+        "gather",
+        "le",
+        "leaky_relu",
+        "logical_not",
+        "lt",
+        "mul",
+        "maximum",
+        "minimum",
+        "ne",
+        "neg",
+        "recip",
+        "reduce_max",
+        "reduce_min",
+        "relu",
+        "rem",
+        "round",
+        "rsqrt",
+        "scatter",
+        "select",
+        "sign",
+        "sqrt",
+        "sub",
+    }
+)
+_STRUCTURAL_OPERATIONS = frozenset(
+    {"conv_general", "cumsum", "reduce_prod", "scatter_add"}
+)
+_TRANSCENDENTAL_OPERATIONS = frozenset(
+    {
+        "cos",
+        "elu",
+        "erf",
+        "exp",
+        "exp2",
+        "gelu",
+        "log",
+        "log2",
+        "sigmoid",
+        "silu",
+        "sin",
+        "softplus",
+        "tanh",
+    }
 )
 
-# Kernels that combine many floating terms under a normative order. Their
-# payloads are chosen so every partial result is exactly representable, which
-# checks traversal and addressing without pinning a particular association.
-_STRUCTURAL_KERNELS = ("conv_general", "cumsum", "reduce_prod", "scatter_add")
 
-# Kernels whose value comes from the platform math library. StrideWeave pins no
-# accuracy contract for them yet, so they are deferred with a concrete reason
-# rather than compared against a second implementation of the same library.
-_TRANSCENDENTAL_KERNELS = (
-    "cos",
-    "elu",
-    "erf",
-    "exp",
-    "exp2",
-    "gelu",
-    "log",
-    "log2",
-    "sigmoid",
-    "silu",
-    "sin",
-    "softplus",
-    "tanh",
+@dataclass(frozen=True, slots=True)
+class VerificationProfile:
+    """One registered provider/carrier verification profile."""
+
+    profile_id: str
+    carrier: str
+    provider: str
+    stages: tuple[VerificationStage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalKernel:
+    """Stable provider-neutral identity of one finite verification kernel."""
+
+    profile_id: str
+    operation: str
+    kernel_id: str
+    variant: str
+
+
+@dataclass(frozen=True, slots=True)
+class PlanClassification:
+    """One logical kernel's exact plan and verification disposition."""
+
+    kernel: LogicalKernel
+    plan: PlanKey
+    classes: tuple[VerificationClass, ...]
+    disposition: ClassificationDisposition
+    deferred_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationSubject:
+    """One non-numerical provider obligation classified before execution."""
+
+    profile_id: str
+    subject_kind: str
+    operation: str
+    classes: tuple[VerificationClass, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProfileDefinition:
+    profile: VerificationProfile
+    kernel_prefix: str
+    capabilities: Callable[[], tuple[OperationCapability, ...]]
+
+
+_CPU_COMPILED = VerificationProfile(
+    "cpu-compiled",
+    "CPU",
+    "compiled-executable",
+    (VerificationStage.ORACLE, VerificationStage.TARGET),
 )
-
-_CLASSIFICATIONS: dict[tuple[str, str], tuple[VerificationClass, ...]] = {
-    **{(f"cpu.{name}", "default"): _EXACT for name in _EXACT_KERNELS},
-    **{(f"cpu.{name}", "default"): _STRUCTURAL for name in _STRUCTURAL_KERNELS},
-    **{(f"cpu.{name}", "default"): _DEFERRED for name in _TRANSCENDENTAL_KERNELS},
-    ("cpu.matmul", "default"): _CERTIFIED_SUM,
-    ("cpu.reduce_sum", "default"): _CERTIFIED_SUM,
-    # `pow` is one kernel with two dispositions: the checked-integer plan is
-    # exact, while the floating plan calls the vendor `pow`.
-    ("cpu.pow", "default"): (
-        VerificationClass.EXACT_ARITHMETIC,
-        VerificationClass.DEFERRED,
-    ),
+_SYNTHETIC_JIT = VerificationProfile(
+    "synthetic-jit",
+    "SyntheticJIT",
+    "jit-specialization",
+    (VerificationStage.TARGET,),
+)
+_PROFILE_DEFINITIONS = tuple(
+    sorted(
+        (
+            _ProfileDefinition(_CPU_COMPILED, "cpu", cpu_capabilities),
+            _ProfileDefinition(_SYNTHETIC_JIT, "synthetic-jit", cpu_capabilities),
+        ),
+        key=lambda definition: definition.profile.profile_id,
+    )
+)
+_PROFILES_BY_ID = {
+    definition.profile.profile_id: definition for definition in _PROFILE_DEFINITIONS
 }
+_MOVEMENT_OPERATIONS = (
+    "move",
+    "view",
+    "permute",
+    "rearrange",
+    "broadcast_to",
+)
 
 
-def require_native_verification_api() -> None:
-    """Require the native introspection used by backend verification."""
+def verification_profiles() -> tuple[VerificationProfile, ...]:
+    """Return registered verification profiles in canonical profile-ID order.
+
+    Args:
+        None.
+
+    Returns:
+        Immutable registered provider/carrier profile records.
+
+    Examples:
+        >>> [profile.profile_id for profile in verification_profiles()]
+        ['cpu-compiled', 'synthetic-jit']
+    """
+    return tuple(definition.profile for definition in _PROFILE_DEFINITIONS)
+
+
+def verification_profile(profile_id: str) -> VerificationProfile:
+    """Resolve one registered profile without initializing a provider runtime.
+
+    Args:
+        profile_id: Exact registered profile identifier.
+
+    Returns:
+        Immutable registered profile record.
+
+    Examples:
+        >>> verification_profile('cpu-compiled').provider
+        'compiled-executable'
+    """
+    if type(profile_id) is not str:
+        raise TypeError("verification profile ID must be a string")
     try:
-        getattr(_carrier, _NATIVE_KERNEL_METADATA_BINDING)
+        return _PROFILES_BY_ID[profile_id].profile
+    except KeyError as error:
+        raise ValueError(f"unknown verification profile {profile_id!r}") from error
+
+
+def _definition(profile: VerificationProfile) -> _ProfileDefinition:
+    if not isinstance(profile, VerificationProfile):
+        raise TypeError("profile must be a VerificationProfile")
+    try:
+        definition = _PROFILES_BY_ID[profile.profile_id]
+    except KeyError as error:
+        raise ValueError(
+            f"unregistered verification profile {profile.profile_id!r}"
+        ) from error
+    if profile != definition.profile:
+        raise ValueError("verification profile facts do not match its registration")
+    return definition
+
+
+def _native_metadata() -> tuple[tuple[str, str, str, str, str], ...]:
+    carrier = import_module("strideweave._carrier")
+    try:
+        binding = getattr(carrier, _NATIVE_KERNEL_METADATA_BINDING)
     except AttributeError as error:
         raise RuntimeError(
             "StrideWeave's native extension is stale or incompatible with its "
             "Python verification sources: required binding "
             f"{_NATIVE_KERNEL_METADATA_BINDING!r} is missing. Rebuild the active "
-            "environment with "
-            f"'{_NATIVE_EXTENSION_REBUILD_COMMAND}'."
+            f"environment with '{_NATIVE_EXTENSION_REBUILD_COMMAND}'."
         ) from error
+    return tuple(binding())
 
 
-def native_cpu_kernel_manifest() -> tuple[KernelDescriptor, ...]:
-    """Return the native CPU kernel metadata exposed by the compiled carrier.
+def require_native_verification_api() -> None:
+    """Require the installed native metadata binding used by the CPU profile."""
+    _native_metadata()
+
+
+def kernel_manifest(profile: VerificationProfile) -> tuple[LogicalKernel, ...]:
+    """Return one profile's exact finite logical-kernel manifest.
 
     Args:
-        None.
+        profile: Registered provider/carrier verification profile.
 
     Returns:
-        Tuple of operation descriptors with stable kernel IDs and variants.
+        Immutable logical kernels sorted by kernel identifier and variant.
 
     Examples:
-        >>> bool(native_cpu_kernel_manifest())
+        >>> bool(kernel_manifest(verification_profile('cpu-compiled')))
         True
     """
-    return tuple(
-        KernelDescriptor(*entry) for entry in _carrier._cpu_native_kernel_metadata()
+    definition = _definition(profile)
+    kernels = tuple(
+        LogicalKernel(
+            profile.profile_id,
+            operation,
+            f"{definition.kernel_prefix}.{operation}",
+            variant,
+        )
+        for operation, _, variant, _, _ in _native_metadata()
+    )
+    ordered = tuple(
+        sorted(kernels, key=lambda kernel: (kernel.kernel_id, kernel.variant))
+    )
+    _validate_manifest(profile, ordered)
+    return ordered
+
+
+def profile_subjects(profile: VerificationProfile) -> tuple[VerificationSubject, ...]:
+    """Return every classified movement/structural subject for one profile.
+
+    Args:
+        profile: Registered provider/carrier verification profile.
+
+    Returns:
+        Immutable non-numerical verification obligations.
+
+    Examples:
+        >>> bool(profile_subjects(verification_profile('cpu-compiled')))
+        True
+    """
+    _definition(profile)
+    subjects = tuple(
+        VerificationSubject(
+            profile.profile_id,
+            "movement",
+            operation,
+            (VerificationClass.BIT_EXACT,),
+        )
+        for operation in _MOVEMENT_OPERATIONS
+    )
+    _validate_subjects(profile, subjects)
+    return subjects
+
+
+def _validate_manifest(
+    profile: VerificationProfile, kernels: tuple[LogicalKernel, ...]
+) -> None:
+    keys = tuple((kernel.kernel_id, kernel.variant) for kernel in kernels)
+    if len(set(keys)) != len(keys):
+        raise ValueError("logical kernel manifest contains a duplicate kernel/variant")
+    if any(kernel.profile_id != profile.profile_id for kernel in kernels):
+        raise ValueError("logical kernel manifest contains a mismatched profile")
+    if any(
+        not kernel.operation or not kernel.kernel_id or not kernel.variant
+        for kernel in kernels
+    ):
+        raise ValueError("logical kernel manifest contains an incomplete kernel")
+
+
+def _validate_subjects(
+    profile: VerificationProfile, subjects: tuple[VerificationSubject, ...]
+) -> None:
+    keys = tuple((subject.subject_kind, subject.operation) for subject in subjects)
+    if len(set(keys)) != len(keys):
+        raise ValueError("profile subjects contain a duplicate subject")
+    expected = {("movement", operation) for operation in _MOVEMENT_OPERATIONS}
+    if set(keys) != expected:
+        raise ValueError(
+            "profile subjects do not exactly match required movement subjects: "
+            f"missing={sorted(expected - set(keys))!r}, "
+            f"stale={sorted(set(keys) - expected)!r}"
+        )
+    if any(subject.profile_id != profile.profile_id for subject in subjects):
+        raise ValueError("profile subjects contain a mismatched profile")
+    if any(subject.classes != (VerificationClass.BIT_EXACT,) for subject in subjects):
+        raise ValueError("profile movement subjects require bit-exact classification")
+
+
+def _classes_for(
+    kernel: LogicalKernel, plan: PlanKey
+) -> tuple[tuple[VerificationClass, ...], ClassificationDisposition, str | None]:
+    if kernel.operation != plan.operation:
+        raise ValueError(
+            "classification plan operation does not match its logical kernel"
+        )
+    if kernel.operation in _EXACT_OPERATIONS:
+        return (_EXACT, ClassificationDisposition.ACTIVE, None)
+    if kernel.operation in _STRUCTURAL_OPERATIONS:
+        return (_STRUCTURAL, ClassificationDisposition.ACTIVE, None)
+    if kernel.operation in _TRANSCENDENTAL_OPERATIONS:
+        return (
+            _DEFERRED,
+            ClassificationDisposition.DEFERRED,
+            VENDOR_TRANSCENDENTAL_REASON,
+        )
+    if kernel.operation in {"matmul", "reduce_sum"}:
+        return (_CERTIFIED_SUM, ClassificationDisposition.ACTIVE, None)
+    if kernel.operation == "pow":
+        if plan.compute == "BINARY32":
+            return (
+                _DEFERRED,
+                ClassificationDisposition.DEFERRED,
+                "floating pow depends on the vendor math library",
+            )
+        return (_EXACT, ClassificationDisposition.ACTIVE, None)
+    raise ValueError(
+        f"logical kernel {kernel.kernel_id!r} has no verification classification"
     )
 
 
-def classifications_for_kernel(
-    kernel: KernelDescriptor,
-) -> tuple[VerificationClass, ...]:
-    """Return the required verification classes for one native kernel.
-
-    Args:
-        kernel: Native kernel descriptor to classify.
-
-    Returns:
-        Ordered verification classes required for certification.
-
-    Examples:
-        >>> bool(classifications_for_kernel(native_cpu_kernel_manifest()[0]))
-        True
-    """
-    try:
-        return _CLASSIFICATIONS[(kernel.kernel_id, kernel.variant)]
-    except KeyError as error:
-        raise ValueError(
-            f"native kernel {kernel.kernel_id!r} has no verification classification"
-        ) from error
-
-
-def require_complete_classification(
-    kernels: Iterable[KernelDescriptor],
-) -> tuple[tuple[KernelDescriptor, tuple[VerificationClass, ...]], ...]:
-    """Validate and return a one-to-one manifest/classification pairing.
-
-    Args:
-        kernels: Native kernel descriptors to check.
-
-    Returns:
-        Descriptors paired with their declared verification classes.
-
-    Examples:
-        >>> bool(require_complete_classification(native_cpu_kernel_manifest()))
-        True
-    """
-    materialized = tuple(kernels)
-    keys = tuple((kernel.kernel_id, kernel.variant) for kernel in materialized)
-    if len(set(keys)) != len(keys):
-        raise ValueError("native kernel manifest contains a duplicate kernel/variant")
-    missing = set(keys) - _CLASSIFICATIONS.keys()
-    stale = _CLASSIFICATIONS.keys() - set(keys)
+def _validate_classification_catalog(manifest: tuple[LogicalKernel, ...]) -> None:
+    declared_operations = (
+        _EXACT_OPERATIONS
+        | _STRUCTURAL_OPERATIONS
+        | _TRANSCENDENTAL_OPERATIONS
+        | {"matmul", "pow", "reduce_sum"}
+    )
+    declared_keys = {(operation, "default") for operation in declared_operations}
+    manifest_keys = {(kernel.operation, kernel.variant) for kernel in manifest}
+    missing = manifest_keys - declared_keys
+    stale = declared_keys - manifest_keys
     if missing or stale:
         raise ValueError(
-            "verification classification does not exactly match native manifest: "
-            f"missing={sorted(missing)!r}, stale={sorted(stale)!r}"
+            "verification classifications do not exactly match the logical "
+            f"manifest: missing={sorted(missing)!r}, stale={sorted(stale)!r}"
         )
-    return tuple(
-        (kernel, classifications_for_kernel(kernel)) for kernel in materialized
-    )
 
 
-MOVEMENT_CLASSIFICATIONS = {
-    operation: (VerificationClass.BIT_EXACT,)
-    for operation in ("move", "view", "permute", "rearrange", "broadcast_to")
-}
+def classify_profile_plans(
+    profile: VerificationProfile,
+) -> tuple[PlanClassification, ...]:
+    """Return every capability plan classified by one registered profile.
 
-
-def classify_cpu_kernel_plans() -> tuple[KernelPlanDescriptor, ...]:
-    """Resolve executable CPU capability plans and their dispositions.
+    The complete manifest, capability declaration, plan identities, and
+    non-numerical subjects are validated before returning any executable fact.
 
     Args:
-        None.
+        profile: Registered provider/carrier verification profile.
 
     Returns:
-        Tuple of active or explicitly deferred kernel plan descriptors.
+        Immutable plan classifications in deterministic logical-plan order.
 
     Examples:
-        >>> all(plan.kernel.operation for plan in classify_cpu_kernel_plans())
+        >>> bool(classify_profile_plans(verification_profile('cpu-compiled')))
         True
     """
-    manifest = native_cpu_kernel_manifest()
-    require_complete_classification(manifest)
+    definition = _definition(profile)
+    manifest = kernel_manifest(profile)
+    _validate_classification_catalog(manifest)
     by_operation = {kernel.operation: kernel for kernel in manifest}
-    descriptors: list[KernelPlanDescriptor] = []
+    if len(by_operation) != len(manifest):
+        raise ValueError("logical kernel manifest has duplicate operations")
+    capabilities = tuple(definition.capabilities())
+    classifications: list[PlanClassification] = []
+    seen_plan_keys: set[tuple[LogicalKernel, PlanKey]] = set()
     seen_operations: set[str] = set()
-    for capability in cpu_capabilities():
-        kernel = by_operation.get(capability.operation)
-        if kernel is None:
+    for capability in capabilities:
+        operation = capability.operation
+        try:
+            kernel = by_operation[operation]
+        except KeyError as error:
             raise ValueError(
-                f"CPU capability {capability.operation!r} has no native kernel metadata"
-            )
-        seen_operations.add(capability.operation)
+                f"profile capability {operation!r} has no logical kernel"
+            ) from error
         plan = PlanKey.from_plan_like(capability)
-        classes = classifications_for_kernel(kernel)
-        deferred_reason = None
-        disposition = ClassificationDisposition.ACTIVE
-        if classes == _DEFERRED:
-            disposition = ClassificationDisposition.DEFERRED
+        classes, disposition, reason = _classes_for(kernel, plan)
+        if disposition is ClassificationDisposition.DEFERRED:
             classes = ()
-            deferred_reason = VENDOR_TRANSCENDENTAL_REASON
-        elif capability.operation == "pow" and capability.compute.name == "BINARY32":
-            disposition = ClassificationDisposition.DEFERRED
-            classes = ()
-            deferred_reason = "floating pow depends on the vendor math library"
-        elif capability.operation == "pow":
-            classes = (VerificationClass.EXACT_ARITHMETIC,)
-        descriptors.append(
-            KernelPlanDescriptor(kernel, plan, classes, disposition, deferred_reason)
+        key = (kernel, plan)
+        if key in seen_plan_keys:
+            raise ValueError("profile capability declaration contains a duplicate plan")
+        seen_plan_keys.add(key)
+        seen_operations.add(operation)
+        classifications.append(
+            PlanClassification(kernel, plan, classes, disposition, reason)
         )
     missing_operations = set(by_operation) - seen_operations
     if missing_operations:
         raise ValueError(
-            f"native kernels have no executable CPU plan: {sorted(missing_operations)!r}"
+            "logical kernels have no executable profile plan: "
+            f"{sorted(missing_operations)!r}"
         )
-    return tuple(descriptors)
+    _validate_subjects(profile, profile_subjects(profile))
+    _validate_plan_classifications(profile, tuple(classifications))
+    return tuple(
+        sorted(
+            classifications,
+            key=lambda item: (
+                item.kernel.kernel_id,
+                item.kernel.variant,
+                item.plan.operands,
+                item.plan.compute,
+                item.plan.accumulation or "",
+                item.plan.accumulator_dtype or "",
+                item.plan.output,
+            ),
+        )
+    )
+
+
+def _validate_plan_classifications(
+    profile: VerificationProfile, classifications: tuple[PlanClassification, ...]
+) -> None:
+    keys = tuple(
+        (classification.kernel, classification.plan)
+        for classification in classifications
+    )
+    if len(set(keys)) != len(keys):
+        raise ValueError("profile classifications contain a duplicate logical plan")
+    for classification in classifications:
+        if classification.kernel.profile_id != profile.profile_id:
+            raise ValueError("plan classification contains a mismatched profile")
+        if classification.kernel.operation != classification.plan.operation:
+            raise ValueError("plan classification operation does not match its kernel")
+        if classification.disposition is ClassificationDisposition.ACTIVE:
+            if not classification.classes:
+                raise ValueError(
+                    "active plan classification has no verification classes"
+                )
+            if VerificationClass.DEFERRED in classification.classes:
+                raise ValueError("active plan classification cannot require deferred")
+            if len(set(classification.classes)) != len(classification.classes):
+                raise ValueError("active plan classification has duplicate classes")
+            if classification.deferred_reason is not None:
+                raise ValueError("active plan classification has a deferred reason")
+            continue
+        if classification.disposition is ClassificationDisposition.DEFERRED:
+            if classification.classes:
+                raise ValueError("deferred plan classification has active classes")
+            if not classification.deferred_reason:
+                raise ValueError("deferred plan classification has no reason")
+            continue
+        raise ValueError("plan classification has an unknown disposition")

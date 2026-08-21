@@ -1,4 +1,4 @@
-"""Internal local persistence boundary for kernel verification evidence."""
+"""Fresh schema-v3 local persistence for verification evidence."""
 
 from .base import EvidenceStore, SQLStatement, SQLValue, VerificationStoreError
 from .dolt import DoltEvidenceStore, default_store_path
