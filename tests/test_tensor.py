@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import gc
 import math
 import weakref
@@ -5,7 +7,6 @@ from collections.abc import Iterable
 from typing import Any
 
 import pytest
-import torch
 
 import strideweave as sw
 from strideweave import (
@@ -1697,7 +1698,10 @@ def test_tensor_backward_refuses_non_broadcast_aliasing(backend):
 
 
 @pytest.mark.parametrize("backend", ["generic", "cpu"])
-def test_broadcast_to_backward_matches_torch_and_restores_input_layout(backend):
+def test_broadcast_to_backward_matches_torch_and_restores_input_layout(
+    backend: str, torch_reference: Any
+):
+    torch = torch_reference
     input_layout = Layout(Shape([1, 3]), Stride([1, 1]))
     tensor = tensor_with_storage_for_backend([2.0, 5.0, 7.0], input_layout, backend)
     broadcast = sw.broadcast_to(tensor, Shape([4, 3]))
@@ -1797,7 +1801,10 @@ def test_pointwise_alignment_saves_differentiable_broadcast_view(backend):
 
 
 @pytest.mark.parametrize("backend", ["generic", "cpu"])
-def test_reduce_over_broadcast_mode_matches_torch_forward_and_backward(backend):
+def test_reduce_over_broadcast_mode_matches_torch_forward_and_backward(
+    backend: str, torch_reference: Any
+):
+    torch = torch_reference
     source_layout = Layout(Shape([2, 1]), Stride([1, 2]))
     source = tensor_with_storage_for_backend([5.0, 7.0], source_layout, backend)
     broadcast = sw.broadcast_to(source, Shape([2, 4]))
@@ -1823,7 +1830,10 @@ def test_reduce_over_broadcast_mode_matches_torch_forward_and_backward(backend):
 
 
 @pytest.mark.parametrize("backend", ["generic", "cpu"])
-def test_matmul_broadcast_operand_matches_torch_forward_and_backward(backend):
+def test_matmul_broadcast_operand_matches_torch_forward_and_backward(
+    backend: str, torch_reference: Any
+):
+    torch = torch_reference
     lhs_layout = Layout(Shape([2, 3]), Stride([1, 2]))
     lhs = tensor_with_storage_for_backend(
         [1.0, 4.0, 2.0, 5.0, 3.0, 6.0],

@@ -2,8 +2,11 @@
 
 from .ops import (
     CpuToFileBackedMoveOperation,
+    CpuToMetalMoveOperation,
     ElementwiseMoveOperation,
     FileBackedToCpuMoveOperation,
+    MetalToCpuMoveOperation,
+    MetalToMetalMoveOperation,
     MoveOperation,
     dispatch_move,
     register_move_operation,
@@ -13,8 +16,11 @@ from .ops import (
 
 __all__ = [
     "CpuToFileBackedMoveOperation",
+    "CpuToMetalMoveOperation",
     "ElementwiseMoveOperation",
     "FileBackedToCpuMoveOperation",
+    "MetalToCpuMoveOperation",
+    "MetalToMetalMoveOperation",
     "MoveOperation",
     "dispatch_move",
     "register_move_operation",

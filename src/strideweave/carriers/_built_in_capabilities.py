@@ -2,13 +2,12 @@
 
 Sealing is framework-internal: a shipped backend's advertised reach must follow
 from its implementation, never from a later call. That holds only if *every*
-shipped class is sealed, so this module names all four of them in one place and
+shipped class is sealed, so this module names all five of them in one place and
 runs once, at the end of :mod:`strideweave.carriers`' initialization, before any
 carrier can be constructed or any plan executed.
 
-``Generic`` and ``CPU`` declare the plan shapes their reference implementation
-and their kernels execute. ``FileBacked`` declares the empty set: it is a
-storage carrier that plans no operation of its own. An empty declaration is a
+``Generic``, ``CPU``, and ``Metal`` declare the plan shapes their implementations
+execute. ``FileBacked`` declares the empty set. An empty declaration is a
 statement, not an omission — it is what makes "this backend executes no planned
 operation" a declared fact rather than one inferred from silence.
 
@@ -31,6 +30,8 @@ from .cpu.capabilities import cpu_capabilities
 from .file_backed import FileBacked
 from .generic import Generic
 from .generic.capabilities import generic_capabilities
+from .metal import Metal
+from .metal.capabilities import metal_capabilities
 from .operation_capability import (
     OperationCapability,
     _declare_built_in_capabilities,
@@ -55,6 +56,7 @@ _BUILT_INS: Final[
     (Generic, generic_capabilities),
     (CPU, cpu_capabilities),
     (FileBacked, _no_capabilities),
+    (Metal, metal_capabilities),
 )
 
 

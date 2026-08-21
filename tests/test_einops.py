@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import random
 import string
 from importlib import import_module
@@ -5,7 +7,6 @@ from itertools import product
 from typing import Any, cast
 
 import pytest
-import torch
 
 import strideweave as sw
 import strideweave.functional.api as functional_api
@@ -65,7 +66,7 @@ def require_grad(tensor: Tensor) -> Tensor:
     return tensor.grad
 
 
-def require_torch_grad(tensor: torch.Tensor) -> torch.Tensor:
+def require_torch_grad(tensor: Any) -> Any:
     assert tensor.grad is not None
     return tensor.grad
 
@@ -77,7 +78,7 @@ def make_cpu_tensor(values: list[float], layout: Layout) -> Tensor:
     return Tensor(carrier, 0, layout)
 
 
-def make_backend_tensor_from_torch(tensor: torch.Tensor, backend: str) -> Tensor:
+def make_backend_tensor_from_torch(tensor: Any, backend: str) -> Tensor:
     extents = list(tensor.shape)
     strides = []
     next_stride = 1
@@ -712,8 +713,9 @@ def test_einops_einsum_batch_symbol_bypasses_matmul_fast_path(
 
 @pytest.mark.parametrize("backend", ["generic", "cpu"])
 def test_einops_einsum_batch_symbol_matches_torch_forward_and_backward(
-    backend: str,
+    backend: str, torch_reference: Any
 ):
+    torch = torch_reference
     torch_lhs = torch.arange(1.0, 25.0).reshape(2, 3, 4).requires_grad_()
     torch_rhs = ((torch.arange(1.0, 41.0).reshape(2, 5, 4) % 7) + 1).requires_grad_()
     torch_upstream = torch.arange(1.0, 31.0).reshape(2, 3, 5) / 10
@@ -737,7 +739,10 @@ def test_einops_einsum_batch_symbol_matches_torch_forward_and_backward(
     )
 
 
-def test_einops_einsum_multiple_batch_symbols_at_different_positions_matches_torch():
+def test_einops_einsum_multiple_batch_symbols_at_different_positions_matches_torch(
+    torch_reference: Any,
+):
+    torch = torch_reference
     torch_lhs = torch.arange(1.0, 25.0).reshape(2, 2, 3, 2).requires_grad_()
     torch_rhs = (
         (torch.arange(1.0, 25.0).reshape(2, 2, 2, 3) % 11) + 1
@@ -763,7 +768,10 @@ def test_einops_einsum_multiple_batch_symbols_at_different_positions_matches_tor
     )
 
 
-def test_einops_einsum_batch_only_outer_product_matches_torch():
+def test_einops_einsum_batch_only_outer_product_matches_torch(
+    torch_reference: Any,
+):
+    torch = torch_reference
     torch_lhs = torch.arange(1.0, 7.0).reshape(2, 3).requires_grad_()
     torch_rhs = torch.arange(1.0, 9.0).reshape(2, 4).requires_grad_()
     torch_upstream = torch.arange(1.0, 25.0).reshape(2, 3, 4) / 5

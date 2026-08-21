@@ -216,6 +216,26 @@ def backend_report() -> VerificationReport:
 
 
 @pytest.fixture(scope="session")
+def torch_reference() -> ModuleType:
+    """Return PyTorch when it is available as an optional test oracle.
+
+    Intel macOS has no PyTorch wheel for every Python version supported by
+    StrideWeave. Tests that do not compare against PyTorch must remain runnable
+    there, while tests that request this fixture skip with a specific remedy.
+    """
+
+    try:
+        return importlib.import_module("torch")
+    except ModuleNotFoundError as error:
+        if error.name != "torch":
+            raise
+        pytest.skip(
+            "PyTorch reference dependency is unavailable; use Intel macOS "
+            "Python 3.12 or another platform with a supported development wheel"
+        )
+
+
+@pytest.fixture(scope="session")
 def synthetic_report() -> VerificationReport:
     """Return the deterministic pure-Python report the marked suites persist."""
 

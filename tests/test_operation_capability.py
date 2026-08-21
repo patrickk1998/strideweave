@@ -25,6 +25,7 @@ import strideweave.carriers as sw_carriers
 import strideweave.carriers._built_in_capabilities as built_in_capability_module
 import strideweave.carriers.cpu.capabilities as cpu_capability_module
 import strideweave.carriers.generic.capabilities as generic_capability_module
+import strideweave.carriers.metal.capabilities as metal_capability_module
 import strideweave.carriers.operation_capability as operation_capability
 from strideweave import DType
 from strideweave.carriers._built_in_capabilities import (
@@ -32,6 +33,7 @@ from strideweave.carriers._built_in_capabilities import (
 )
 from strideweave.carriers.cpu.capabilities import cpu_capabilities
 from strideweave.carriers.generic.capabilities import generic_capabilities
+from strideweave.carriers.metal.capabilities import metal_capabilities
 from strideweave.carriers.operation_capability import (
     OperandCapability,
     OperationCapability,
@@ -49,6 +51,7 @@ from strideweave.carriers.operation_policy import (
     OperandPlan,
     OperandRole,
     OperationPlan,
+    registered_operations,
     resolve_operation_plan,
 )
 
@@ -584,7 +587,7 @@ def test_only_an_independent_carrier_implementation_may_declare(target, message)
 # Evictable is shipped too, but it is dependent: it finalizes per instance and
 # has no class declaration to seal, which
 # test_evictable_has_no_class_declaration_to_seal covers.
-SHIPPED_BACKENDS = [sw.Generic, sw.CPU, sw.FileBacked]
+SHIPPED_BACKENDS = [sw.Generic, sw.CPU, sw.FileBacked, sw.Metal]
 STORAGE_CARRIERS = [sw.FileBacked]
 
 
@@ -640,11 +643,13 @@ def test_no_exported_declaration_path_reaches_a_shipped_backend():
             sw_carriers,
             cpu_capability_module,
             generic_capability_module,
+            metal_capability_module,
         )
         for name in (
             "declare_built_in_capabilities",
             "declare_cpu_capabilities",
             "declare_generic_capabilities",
+            "declare_metal_capabilities",
         )
     )
 
@@ -694,6 +699,7 @@ def test_reinitializing_the_built_in_capabilities_changes_nothing():
         "strideweave.carriers.cpu",
         "strideweave.carriers.generic.carrier",
         "strideweave.carriers.file_backed",
+        "strideweave.carriers.metal",
         "strideweave.carriers.operation_capability",
     ],
 )
@@ -710,10 +716,15 @@ from strideweave.carriers.operation_capability import (
     capabilities_for_carrier_class,
     register_operation_capabilities,
 )
+from strideweave.carriers.operation_policy import registered_operations
 
 assert capabilities_for_carrier_class(sw.CPU)
 assert capabilities_for_carrier_class(sw.Generic)
-for built_in in (sw.Generic, sw.CPU, sw.FileBacked):
+assert capabilities_for_carrier_class(sw.Metal)
+assert {{entry.operation for entry in capabilities_for_carrier_class(sw.Metal)}} == {{
+    spec.name for spec in registered_operations()
+}}
+for built_in in (sw.Generic, sw.CPU, sw.FileBacked, sw.Metal):
     try:
         register_operation_capabilities(built_in, [])
     except TypeError as error:
@@ -738,9 +749,41 @@ def test_a_shipped_backend_declares_exactly_what_it_executes():
         generic_capabilities()
     )
     assert set(capabilities_for_carrier_class(sw.CPU)) == set(cpu_capabilities())
+    assert set(capabilities_for_carrier_class(sw.Metal)) == set(metal_capabilities())
 
 
-@pytest.mark.parametrize("backend", [sw.Generic, sw.CPU], ids=["generic", "cpu"])
+def test_metal_capabilities_are_unique_deterministic_and_cover_the_registry():
+    first = metal_capabilities()
+    second = metal_capabilities()
+
+    assert first == second
+    assert len(first) == 87
+    assert len(first) == len(set(first))
+    assert {entry.operation for entry in first} == {
+        spec.name for spec in registered_operations()
+    }
+    enumerated = capabilities_for_carrier_class(sw.Metal)
+    assert [entry.operation for entry in enumerated] == sorted(
+        entry.operation for entry in enumerated
+    )
+
+
+def test_metal_dispatches_every_registry_name_freshly_without_optional_runtime():
+    carrier = sw.Metal.__new__(sw.Metal)
+    sw.Carrier.__init__(carrier)
+
+    for spec in registered_operations():
+        first = carrier.dispatch_op(spec.name)
+        second = carrier.dispatch_op(spec.name)
+
+        assert first is not second
+        assert first._dispatch_carrier_class is sw.Metal
+        assert first._operation_name == spec.name
+
+
+@pytest.mark.parametrize(
+    "backend", [sw.Generic, sw.CPU, sw.Metal], ids=["generic", "cpu", "metal"]
+)
 def test_shipped_backends_declare_select_and_every_clamp_overload(backend):
     select_plan = resolve_operation_plan("select", BOOL, F32, F32)
     clamp_plans = (
