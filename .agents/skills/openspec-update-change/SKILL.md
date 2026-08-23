@@ -3,7 +3,6 @@ name: openspec-update-change
 description: Update an OpenSpec change by revising its existing planning artifacts and keeping them coherent with one another. Use when the user wants to revise a change's plan, fold new decisions into it, or reconcile its artifacts after an edit. Never edits code.
 allowed-tools: Bash(openspec:*)
 license: MIT
-compatibility: Requires openspec CLI.
 metadata:
   author: openspec
   version: "1.0"
@@ -11,6 +10,10 @@ metadata:
 ---
 
 Revise a change's existing planning artifacts and keep them coherent. Never edit code.
+
+**StrideWeave project override:** The project-local `spec-driven` schema exposes only
+the non-normative proposal and normative delta specs. Never create or edit
+`design.md` or `tasks.md`; implementation decisions and work belong in Beads.
 
 **Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `openspec store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `openspec status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 
@@ -52,7 +55,7 @@ Revise a change's existing planning artifacts and keep them coherent. Never edit
    The files to edit are `artifactPaths.<id>.existingOutputPaths` - the concrete files that exist on disk, already glob-expanded for glob artifacts (e.g. `specs/**/*.md`). Do NOT write to `resolvedOutputPath`: for a glob artifact it is still the glob pattern, not a real file.
 
 3. **Understand the request**
-   - If the user asked for a specific revision ("the design now uses X"), that is the starting edit.
+   - If the user asked for a specific behavioral or scope revision, that is the starting edit.
    - If they only said "update" / "make this coherent", treat it as a coherence review: read the existing artifacts and check them against each other for contradictions, gaps, and duplication.
 
 4. **Read and reconcile**
@@ -72,7 +75,7 @@ Revise a change's existing planning artifacts and keep them coherent. Never edit
 
 6. **Point to the next step (guidance only - NEVER act on it)**
    - Artifacts still missing -> suggest `/openspec-continue-change` to create them.
-   - Change already implemented (tasks checked off / already applied) -> the code may no longer match the revised plan; suggest `/openspec-apply-change` to carry the delta into code.
+   - Change already implemented -> the code may no longer match the revised contract; direct the user to `create-task` so the delta becomes Beads fix and review work.
    - Everything done and implemented -> suggest `/openspec-archive-change`.
 
 **Output**
@@ -83,7 +86,7 @@ After each invocation, show:
 - Where the change stands and the recommended next command
 
 **Guardrails**
-- Planning artifacts only - NEVER edit implementation code. If the revised plan implies code changes, stop and point to `/openspec-apply-change`.
+- Planning artifacts only - NEVER edit implementation code. If the revised contract implies code changes, stop and point to `create-task`.
 - Use the artifact ids and paths reported by `openspec status`; never branch on hardcoded artifact names.
 - Edit only the concrete files in `existingOutputPaths`; never write to a glob `resolvedOutputPath`.
 - Do not advance the build frontier: no new artifacts, no new files under glob artifacts - that is `/openspec-continue-change`'s job.

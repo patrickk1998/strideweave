@@ -1,9 +1,8 @@
 ---
 name: openspec-archive-change
 description: Archive a completed change in the experimental workflow. Use when the user wants to finalize and archive a change after implementation is complete.
-allowed-tools: Bash(openspec:*)
+allowed-tools: Bash(openspec:*) Bash(bd:*)
 license: MIT
-compatibility: Requires openspec CLI.
 metadata:
   author: openspec
   version: "1.0"
@@ -73,18 +72,47 @@ Archive a completed change in the experimental workflow.
    - Ask the user to confirm they want to proceed
    - Proceed if user confirms
 
-3. **Check task completion status**
+3. **Enforce implementation and review completion**
 
-   Read the tasks file (typically `tasks.md`) to check for incomplete tasks.
+   When `schemaName` is `spec-driven`, Beads is the implementation authority and
+   its closure gate is mandatory. This is a built-in archive check, not advisory
+   operation guidance, and user confirmation cannot waive it.
 
-   Count tasks marked with `- [ ]` (incomplete) vs `- [x]` (complete).
+   Derive the canonical specification id as
+   `openspec-change:<change-name>`, then run:
 
-   **If incomplete tasks found:**
-   - Display warning showing count of incomplete tasks
-   - Ask the user to confirm they want to proceed
-   - Proceed if user confirms
+   ```bash
+   bd list --all --spec "openspec-change:<change-name>" --json --limit 0
+   ```
 
-   **If no tasks file exists:** Proceed without task-related warning.
+   Require a zero exit status and valid JSON. Because `--spec` accepts prefix
+   matches, retain only records whose `spec_id` exactly equals the canonical id.
+   If no exact records remain, stop: the change has no verifiable implementation
+   graph. Tell the user to create or repair the Beads handoff before archiving.
+
+   Verify the complete linked graph:
+   - Every implementation task, fix task, and review task created for the change
+     must carry the exact canonical `spec_id`.
+   - For every linked epic, recursively query its children with
+     `bd list --parent "<epic-id>" --all --json --limit 0`. Stop if a descendant
+     implementation, fix, or review issue lacks the exact `spec_id`; do not let
+     an omitted link hide open work.
+   - Inspect each linked review task with `bd show "<review-id>" --json`. Verify
+     that every implementation or fix issue on which it depends carries the
+     exact `spec_id` and is included in the closure check.
+   - Require at least one linked non-epic review task assigned to `reviewer`.
+   - Require every linked non-epic implementation, fix, and review issue to have
+     status `closed`. A tracking epic itself may remain open.
+
+   If any query fails, linkage is absent or ambiguous, a required issue is not
+   linked, no reviewer gate exists, or any required issue is not closed, list the
+   exact problem and stop before spec sync or archive. Do not offer an override.
+
+   For schemas other than `spec-driven`, retain the legacy artifact behavior:
+   only when `artifactPaths` explicitly contains a task artifact should you read
+   it and count tasks marked with `- [ ]` (incomplete) versus `- [x]` (complete).
+   If incomplete tasks exist, warn with the count and ask whether to proceed. If
+   no task artifact exists, proceed without a task-file warning.
 
 4. **Assess delta spec sync state**
 
@@ -169,7 +197,10 @@ Archive a completed change in the experimental workflow.
 **Guardrails**
 - Announce the selected change; prompt for selection when it is ambiguous
 - Use artifact graph (openspec status --json) for completion checking
-- Don't block archive on warnings - just inform and confirm
+- Don't block archive on legacy artifact warnings - just inform and confirm
+- Hard-block `spec-driven` archive until the exact Beads-linked implementation,
+  fix, and reviewer graph passes step 3; this gate is not a warning and cannot be
+  overridden by confirmation
 - Preserve .openspec.yaml when moving to archive (it moves with the directory)
 - Show clear summary of what happened
 - If sync is requested, run the `openspec-sync-specs` workflow inline (agent-driven)

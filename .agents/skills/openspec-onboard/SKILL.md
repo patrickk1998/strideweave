@@ -3,7 +3,6 @@ name: openspec-onboard
 description: Guided onboarding for OpenSpec - walk through a complete workflow cycle with narration and real codebase work.
 allowed-tools: Bash(openspec:*)
 license: MIT
-compatibility: Requires openspec CLI.
 metadata:
   author: openspec
   version: "1.0"
@@ -11,6 +10,12 @@ metadata:
 ---
 
 Guide the user through their first complete OpenSpec workflow cycle. This is a teaching experience—you'll do real work in their codebase while explaining each step.
+
+**StrideWeave project override:** Teach the project-local `spec-driven` workflow:
+explore → concise non-normative proposal → normative delta specs → Beads planning and
+implementation → review → archive. Do not create `design.md` or `tasks.md`, do not use
+OpenSpec apply, and stop the OpenSpec walkthrough before implementation so a later
+`create-task`/`do-task` workflow can take over.
 
 **Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `openspec store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `openspec status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 
@@ -44,12 +49,12 @@ Display:
 I'll walk you through a complete change cycle—from idea to implementation—using a real task in your codebase. Along the way, you'll learn the workflow by doing it.
 
 **What we'll do:**
-1. Pick a small, real task in your codebase
-2. Explore the problem briefly
-3. Create a change (the container for our work)
-4. Build the artifacts: proposal → specs → design → tasks
-5. Implement the tasks
-6. Archive the completed change
+1. Pick a small, real behavioral change
+2. Explore the problem and owning specs
+3. Create a change container
+4. Write a concise non-normative proposal
+5. Write and validate the normative delta specs
+6. Hand the contract to the later Beads implementation workflow
 
 **Time:** ~15-20 minutes
 
@@ -170,7 +175,10 @@ Now let's create a change to hold our work.
 ```
 ## Creating a Change
 
-A "change" in OpenSpec is a container for all the thinking and planning around a piece of work. It lives at the `changeRoot` reported by `openspec status --change "<name>" --json` and holds your artifacts—proposal, specs, design, tasks.
+A StrideWeave OpenSpec change is a container for proposed behavioral contract
+changes. It lives at the `changeRoot` reported by
+`openspec status --change "<name>" --json` and holds a non-normative proposal
+plus normative delta specs.
 
 Let me create one for our task.
 ```
@@ -184,13 +192,12 @@ openspec new change "<derived-name>"
 ```
 Created: <changeRoot from status JSON>
 
-The folder structure:
+The artifact structure:
 ```
 <changeRoot>/
-├── proposal.md    ← Why we're doing this (empty, we'll fill it)
-├── design.md      ← How we'll build it (empty)
-├── specs/         ← Detailed requirements (empty)
-└── tasks.md       ← Implementation checklist (empty)
+├── .openspec.yaml
+├── proposal.md    ← Concise, non-normative change index
+└── specs/         ← Normative behavioral deltas
 ```
 
 Now let's fill in the first artifact—the proposal.
@@ -309,165 +316,51 @@ Save to the concrete file path chosen from `resolvedOutputPath`.
 
 ---
 
-## Phase 7: Design
+## Phase 7: Validate and Hand Off
 
-**EXPLAIN:**
-```
-## Design
+Run:
 
-The design captures **how** we'll build it—technical decisions, tradeoffs, approach.
-
-For small changes, this might be brief. That's fine—not every change needs deep design discussion.
-```
-
-**DO:** Draft design.md:
-
-```
-Here's the design:
-
----
-
-## Context
-
-[Brief context about the current state]
-
-## Goals / Non-Goals
-
-**Goals:**
-- [What we're trying to achieve]
-
-**Non-Goals:**
-- [What's explicitly out of scope]
-
-## Decisions
-
-### Decision 1: [Key decision]
-
-[Explanation of approach and rationale]
-
----
-
-For a small task, this captures the key decisions without over-engineering.
-```
-
-Save to the `resolvedOutputPath` from `openspec instructions design --change "<name>" --json`.
-
----
-
-## Phase 8: Tasks
-
-**EXPLAIN:**
-```
-## Tasks
-
-Finally, we break the work into implementation tasks—checkboxes that drive the apply phase.
-
-These should be small, clear, and in logical order.
-```
-
-**DO:** Generate tasks based on specs and design:
-
-```
-Here are the implementation tasks:
-
----
-
-## 1. [Category or file]
-
-- [ ] 1.1 [Specific task]
-- [ ] 1.2 [Specific task]
-
-## 2. Verify
-
-- [ ] 2.1 [Verification step]
-
----
-
-Each checkbox becomes a unit of work in the apply phase. Ready to implement?
-```
-
-**PAUSE** - Wait for user to confirm they're ready to implement.
-
-Save to the `resolvedOutputPath` from `openspec instructions tasks --change "<name>" --json`.
-
----
-
-## Phase 9: Apply (Implementation)
-
-**EXPLAIN:**
-```
-## Implementation
-
-Now we implement each task, checking them off as we go. I'll announce each one and occasionally note how the specs/design informed the approach.
-```
-
-**DO:** For each task:
-
-1. Announce: "Working on task N: [description]"
-2. Implement the change in the codebase
-3. Reference specs/design naturally: "The spec says X, so I'm doing Y"
-4. Mark complete in tasks.md: `- [ ]` → `- [x]`
-5. Brief status: "✓ Task N complete"
-
-Keep narration light—don't over-explain every line of code.
-
-After all tasks:
-
-```
-## Implementation Complete
-
-All tasks done:
-- [x] Task 1
-- [x] Task 2
-- [x] ...
-
-The change is implemented! One more step—let's archive it.
-```
-
----
-
-## Phase 10: Archive
-
-**EXPLAIN:**
-```
-## Archiving
-
-When a change is complete, we archive it. The archive path is derived from `planningHome.changesDir` and the date.
-
-Archived changes become your project's decision history—you can always find them later to understand why something was built a certain way.
-```
-
-**DO:** Archive the change (`--yes` answers the confirmation prompts, which you cannot answer from a tool call):
 ```bash
-openspec archive "<name>" --yes
+openspec status --change "<name>" --json
+openspec validate "<name>" --type change --strict --no-interactive
+git diff --check
 ```
 
-**SHOW:**
-```
-Archived to: `<planningHome.changesDir>/archive/<target-name>/` (the target name prepends today's date, unless the name already starts with a `YYYY-MM-DD-` prefix — then it is kept as-is, no second date)
+Confirm that the resolved artifact list contains only `proposal` and `specs`,
+and that both are complete. Explain the authority split:
 
-The change is now part of your project's history. The code is in your codebase, the decision record is preserved.
+- the proposal records intent and affected capability paths but is non-normative;
+- the effective specs decide whether observable behavior is a feature or bug;
+- Beads will later own implementation design, threat models, decomposition,
+  dependencies, validation, and review.
+
+Summarize the change and stop. Tell the user:
+
 ```
+The normative artifacts are ready for review. When you want to plan
+implementation, ask me to run create-task.
+```
+
+Do not create Beads work, implement, archive, commit, or push during this
+onboarding invocation. Those are separate, explicitly requested workflows.
 
 ---
 
-## Phase 11: Recap & Next Steps
+## Phase 8: Recap & Next Steps
 
 ```
 ## Congratulations!
 
-You just completed a full OpenSpec cycle:
+You completed StrideWeave's normative OpenSpec phase:
 
 1. **Explore** - Thought through the problem
 2. **New** - Created a change container
-3. **Proposal** - Captured WHY
-4. **Specs** - Defined WHAT in detail
-5. **Design** - Decided HOW
-6. **Tasks** - Broke it into steps
-7. **Apply** - Implemented the work
-8. **Archive** - Preserved the record
+3. **Proposal** - Indexed WHY and affected capabilities
+4. **Specs** - Defined the observable contract
+5. **Validate** - Proved the normative delta is structurally sound
+6. **Handoff** - Stopped before Beads planning and implementation
 
-This same rhythm works for any size change—a small fix or a major feature.
+The later repository lifecycle is create-task → do-task → review → archive.
 
 ---
 
@@ -475,12 +368,13 @@ This same rhythm works for any size change—a small fix or a major feature.
 
 **Core workflow:**
 
- | Command           | What it does                               |
- |-------------------|--------------------------------------------|
- | `/openspec-propose` | Create a change and generate all artifacts |
- | `/openspec-explore` | Think through problems before/during work  |
- | `/openspec-apply-change`   | Implement tasks from a change              |
- | `/openspec-archive-change` | Archive a completed change                 |
+ | Command                    | What it does                                      |
+ |----------------------------|---------------------------------------------------|
+ | `/openspec-propose`        | Create proposal and normative delta specs         |
+ | `/openspec-explore`        | Think through behavioral requirements             |
+ | `create-task`              | Prepare Beads implementation and review work      |
+ | `do-task`                  | Implement assigned ready Beads work               |
+ | `/openspec-archive-change` | Archive after implementation review is complete   |
 
 **Additional commands** (only if installed - availability depends on your profile):
 
@@ -489,7 +383,7 @@ This same rhythm works for any size change—a small fix or a major feature.
  | `/openspec-new-change`      | Start a new change, step through artifacts one at a time |
  | `/openspec-continue-change` | Continue working on an existing change                   |
  | `/openspec-ff-change`       | Fast-forward: create all artifacts at once               |
- | `/openspec-verify-change`   | Verify implementation matches artifacts                  |
+ | `/openspec-verify-change`   | Verify implementation matches the effective specs         |
 
 ---
 
@@ -510,8 +404,8 @@ If the user says they need to stop, want to pause, or seem disengaged:
 No problem! Your change is saved at the `changeRoot` reported by `openspec status --change "<name>" --json`.
 
 To pick up where we left off later:
-- `/openspec-continue-change <name>` - Resume artifact creation (if installed; otherwise `openspec status --change "<name>" --json` shows the next artifact)
-- `/openspec-apply-change <name>` - Jump to implementation (if tasks exist)
+- `/openspec-continue-change <name>` - Resume normative artifact creation (if installed; otherwise `openspec status --change "<name>" --json` shows the next artifact)
+- `create-task` - Prepare implementation only after the normative artifacts are complete and reviewed
 
 The work won't be lost. Come back whenever you're ready.
 ```
@@ -527,12 +421,13 @@ If the user says they just want to see the commands or skip the tutorial:
 
 **Core workflow:**
 
- | Command                  | What it does                               |
- |--------------------------|--------------------------------------------|
- | `/openspec-propose <name>` | Create a change and generate all artifacts |
- | `/openspec-explore`        | Think through problems (no code changes)   |
- | `/openspec-apply-change <name>`   | Implement tasks                            |
- | `/openspec-archive-change <name>` | Archive when done                          |
+ | Command                           | What it does                                      |
+ |-----------------------------------|---------------------------------------------------|
+ | `/openspec-propose <name>`        | Create proposal and normative delta specs         |
+ | `/openspec-explore`               | Explore behavior without implementation           |
+ | `create-task`                     | Prepare Beads implementation and review work      |
+ | `do-task`                         | Implement assigned ready Beads work               |
+ | `/openspec-archive-change <name>` | Archive after review closes                       |
 
 **Additional commands** (only if installed - availability depends on your profile):
 
@@ -552,10 +447,10 @@ Exit gracefully.
 
 ## Guardrails
 
-- **Follow the EXPLAIN → DO → SHOW → PAUSE pattern** at key transitions (after explore, after proposal draft, after tasks, after archive)
-- **Keep narration light** during implementation—teach without lecturing
+- **Follow the EXPLAIN → DO → SHOW → PAUSE pattern** at key transitions (after explore and the proposal draft)
+- **Stop before implementation**—this tutorial teaches the normative phase and handoff
 - **Don't skip phases** even if the change is small—the goal is teaching the workflow
 - **Pause for acknowledgment** at marked points, but don't over-pause
 - **Handle exits gracefully**—never pressure the user to continue
-- **Use real codebase tasks**—don't simulate or use fake examples
+- **Use a real bounded behavioral change**—don't simulate or use fake examples
 - **Adjust scope gently**—guide toward smaller tasks but respect user choice

@@ -3,7 +3,6 @@ name: openspec-explore
 description: Enter explore mode - a thinking partner for exploring ideas, investigating problems, and clarifying requirements. Use when the user wants to think through something before or during a change.
 allowed-tools: Bash(openspec:*)
 license: MIT
-compatibility: Requires openspec CLI.
 metadata:
   author: openspec
   version: "1.0"
@@ -12,7 +11,12 @@ metadata:
 
 Enter explore mode. Think deeply. Visualize freely. Follow the conversation wherever it goes.
 
-**IMPORTANT: Explore mode is for thinking, not implementing.** You may read files, search code, and investigate the codebase, but you must NEVER write code or implement features. If the user asks you to implement something, remind them to exit explore mode first and create a change proposal. You MAY create OpenSpec artifacts (proposals, designs, specs) if the user asks—that's capturing thinking, not implementing. For a new change, scaffold it first as described below.
+**StrideWeave project override:** OpenSpec changes use the project-local `spec-driven` schema.
+Capture behavioral and scope decisions in proposal/delta specs when requested; capture
+implementation design, threat models, validation planning, and work decomposition in
+Beads, never in `design.md` or `tasks.md`.
+
+**IMPORTANT: Explore mode is for thinking, not implementing.** You may read files, search code, and investigate the codebase, but you must NEVER write code or implement features. If the user asks you to implement something, remind them to exit explore mode first and create a change proposal. You MAY create the schema-defined OpenSpec proposal and specs if the user asks—that's capturing thinking, not implementing. For a new change, scaffold it first as described below.
 
 **This is a stance, not a workflow.** There are no fixed steps, no required sequence, no mandatory outputs. You're a thinking partner helping the user explore.
 
@@ -126,7 +130,7 @@ If the user mentions a change or you detect one is relevant:
    - Read existing files from `artifactPaths.<artifact>.existingOutputPaths`.
 
 2. **Reference them naturally in conversation**
-   - "Your design mentions using Redis, but we just realized SQLite fits better..."
+   - "Your Beads design records Redis, but we just realized SQLite fits better..."
    - "The proposal scopes this to premium users, but we're now thinking everyone..."
 
 3. **Offer to capture when decisions are made**
@@ -137,13 +141,13 @@ If the user mentions a change or you detect one is relevant:
     |----------------------------|-------------------------------------|
     | New requirement discovered | `specs/<capability-path>/spec.md` |
     | Requirement changed        | `specs/<capability-path>/spec.md` |
-    | Design decision made       | `design.md`                       |
+    | Observable behavior decided | Owning delta `spec.md`          |
     | Scope changed              | `proposal.md`                     |
-    | New work identified        | `tasks.md`                        |
+    | Implementation work identified | Beads after user authorization |
     | Assumption invalidated     | Relevant artifact                   |
 
    Example offers:
-   - "That's a design decision. Capture it in design.md?"
+   - "That affects observable behavior. Capture it in the owning delta spec?"
    - "This is a new requirement. Add it to specs?"
    - "This changes scope. Update the proposal?"
 
@@ -225,14 +229,14 @@ User: /openspec-explore add-auth-system
 
 You: [reads change artifacts]
 
-     You're on task 4: "Implement OAuth flow"
+     You're implementing the OAuth flow
 
      Let me trace what's involved...
 
      [draws diagram, explores options, suggests paths]
 
-     Want to update the design to reflect this?
-     Or add a spike task to investigate?
+     Does this change observable behavior in the owning spec?
+     Or should a Beads spike investigate the implementation choice?
 ```
 
 **User wants to compare options:**
@@ -271,7 +275,7 @@ You: That changes everything.
 There's no required ending. Discovery might:
 
 - **Flow into a proposal**: "Ready to start? I can create a change proposal."
-- **Result in artifact updates**: "Updated design.md with these decisions"
+- **Result in artifact updates**: "Updated the owning delta spec with the behavioral decision"
 - **Just provide clarity**: User has what they need, moves on
 - **Continue later**: "We can pick this up anytime"
 
