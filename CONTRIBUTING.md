@@ -48,7 +48,7 @@ closed with the rebuild command instead of skipping native verification.
 Run the complete local verification suite before opening a pull request:
 
 ```bash
-uv run pytest tests -m "not dolt_integration and not dolt_lifecycle"
+uv run pytest tests -m "not dolt_integration and not dolt_lifecycle and not metal"
 uv run pytest tests -m "dolt_integration or dolt_lifecycle"
 uv run pytest --doctest-modules src/strideweave
 uv run ruff format --check .
@@ -108,9 +108,13 @@ concurrently run, several independently owned servers. Both markers skip when no
 Dolt runtime is installed. Select or exclude them with pytest's `-m`:
 
 ```bash
-uv run pytest tests -m "not dolt_integration and not dolt_lifecycle"
+uv run pytest tests -m "not dolt_integration and not dolt_lifecycle and not metal"
 uv run pytest tests -m "dolt_integration or dolt_lifecycle"
 ```
+
+Tests marked `metal` require Apple silicon, an available Metal device, and the
+optional Metal dependencies. The platform-neutral suite and Linux CI deselect
+that marker; run it separately on supported hardware as shown above.
 
 Do not mark a whole test file. `dolt_integration` is derived from each test's
 fixture closure rather than written by hand, so a test leaves the
@@ -159,7 +163,8 @@ suite.
 
 ## Continuous Integration
 
-CI runs five separately visible code checks: `test` (the non-Dolt suite plus
+CI runs five separately visible code checks: `test` (the Linux-capable,
+non-Dolt suite plus
 Python docstring examples, formatting, lint, invariants, native formatting,
 type checking, and the distribution build), `dolt-integration`,
 `native-strict-warnings`, `native-sanitizers`, and `duplication`. A sixth job,
@@ -208,9 +213,10 @@ may concurrently run, several independently owned servers.
 Native sanitizer coverage runs in Linux CI with `STRIDEWEAVE_SANITIZERS=ON`,
 instrumenting the extension modules with AddressSanitizer and
 UndefinedBehaviorSanitizer. It deselects the two Dolt markers for the reason
-given above, so marked tests persist pure-Python evidence while report
-construction, binding, provenance reconciliation, and their rejection paths stay
-instrumented.
+given above and the Apple-silicon-only `metal` marker because that hardware is
+unavailable on the Linux runner. The Dolt-marked tests persist pure-Python
+evidence while report construction, binding, provenance reconciliation, and
+their rejection paths stay instrumented.
 
 That sanitizer job is the only one that runs pytest in parallel, with `-n auto`
 over pytest-xdist; every other job runs serially. Sanitizers cost roughly 6.8x,

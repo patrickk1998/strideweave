@@ -1,10 +1,12 @@
-"""The boundary between instrumented native work and the real-Dolt suites.
+"""The boundary between instrumented Linux native work and real-Dolt suites.
 
-CI runs the sanitizers over everything except ``dolt_integration`` and
-``dolt_lifecycle``, so those two selections must contain no native work at all.
-``conftest.native_work_forbidden`` makes that true by construction for every
-marked item; these tests prove the guard itself covers the whole boundary and
-actually refuses, and that the two selections stay disjoint and exhaustive.
+CI runs the sanitizers over every Linux-capable selection except
+``dolt_integration`` and ``dolt_lifecycle``. The separate ``metal`` selection
+requires Apple silicon and is outside that platform boundary. The two Dolt
+selections must contain no native work at all; ``conftest.native_work_forbidden``
+makes that true by construction for every marked item. These tests prove the
+guard covers the whole Dolt boundary and actually refuses, and that the two
+Dolt selections stay disjoint and exhaustive.
 """
 
 from __future__ import annotations
