@@ -31,22 +31,14 @@ def _nested_stride(shape: Shape, flat_strides: list[int]) -> Stride:
 
 def _compose_layout(A: Layout, B: Layout) -> Layout:
     """Compose layouts with work bounded by their hierarchical ranks."""
-    try:
-        candidate = Layout.compose(A, B)
-    except (TypeError, ValueError, IndexError):
-        candidate = None
-
-    if candidate is not None and candidate.shape == B.shape:
+    candidate = Layout.compose(A, B)
+    if isinstance(candidate, Layout) and candidate.shape == B.shape:
         return candidate
 
     flat_A, _A_recipe = Layout.flatten_layout(A)
     flat_B, _B_recipe = Layout.flatten_layout(B)
-    try:
-        flat_candidate = Layout.compose(flat_A, flat_B)
-    except (TypeError, ValueError, IndexError):
-        flat_candidate = None
-
-    if flat_candidate is not None and flat_candidate.shape == flat_B.shape:
+    flat_candidate = Layout.compose(flat_A, flat_B)
+    if isinstance(flat_candidate, Layout) and flat_candidate.shape == flat_B.shape:
         return Layout(
             B.shape,
             _nested_stride(

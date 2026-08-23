@@ -68,16 +68,31 @@ from .carriers import (
     WholeExtent as WholeExtent,
 )
 from .layout import (
+    IndexMap as IndexMap,
+)
+from .layout import (
     Layout as Layout,
 )
 from .layout import (
     Node as Node,
 )
 from .layout import (
+    Permutation as Permutation,
+)
+from .layout import (
+    Product as Product,
+)
+from .layout import (
     Shape as Shape,
 )
 from .layout import (
     Stride as Stride,
+)
+from .layout import (
+    Swizzle as Swizzle,
+)
+from .layout import (
+    SwizzleStage as SwizzleStage,
 )
 from .layout import (
     Tiler as Tiler,
@@ -104,6 +119,7 @@ _CORE_EXPORTS = [
     "FileBacked",
     "Generic",
     "grad",
+    "IndexMap",
     "Layout",
     "Level",
     "LevelExtent",
@@ -113,12 +129,16 @@ _CORE_EXPORTS = [
     "OperandCapability",
     "OperationCapability",
     "Parameter",
+    "Permutation",
+    "Product",
     "RepresentationRule",
     "RepresentationValidationContext",
     "Shape",
     "SimpleDType",
     "Stride",
     "SymbolicBits",
+    "Swizzle",
+    "SwizzleStage",
     "Tensor",
     "verify_backend",
     "Tiler",
