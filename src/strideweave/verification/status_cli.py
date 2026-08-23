@@ -19,7 +19,6 @@ from .store import (
     record_report,
     refresh_evidence,
 )
-from .store import recording as recording_module
 from .store.querying import _registered_profile_id
 
 _STORE_HELP = "Local fresh v3 store directory; STRIDEWEAVE_STATUS_HOME replaces the platform-data base."
@@ -77,7 +76,6 @@ def _record(args: argparse.Namespace) -> tuple[dict[str, object], str]:
     if args.publish_destination and not args.publish:
         raise ValueError("--publish-destination requires --publish")
     report = VerificationReport.load(args.report)
-    recording_module._validate_current_report(report)
     store = DoltEvidenceStore(args.store)
     result = record_report(
         report,

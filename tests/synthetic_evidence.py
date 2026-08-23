@@ -220,6 +220,7 @@ def _make_synthetic_report(
         records[0],
         replace(
             records[1],
+            compilation_receipt_id=jit_receipt.receipt_id,
             consumed_certificate_digest=certificate_value(certificate)[
                 "certificate_digest"
             ],

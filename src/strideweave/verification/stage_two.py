@@ -65,6 +65,7 @@ from .stage_one import (
     _recoverable_error_record,
     _required_case_catalog,
     _structural_record,
+    _target_carrier_factory,
     _tensor,
     _values,
 )
@@ -86,7 +87,7 @@ class _TargetExecution:
     """One provider execution's evidence and optional exact receipt."""
 
     records: tuple[EvidenceRecord, ...]
-    receipt: CompilationReceipt | None = None
+    receipts: tuple[CompilationReceipt, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -587,7 +588,11 @@ def _target_case(
             payloads[0].values(), DType.Float32, target_case.lhs_layout, True
         )
         lhs_oracle = _tensor(
-            payloads[0].values(), DType.Float32, target_case.lhs_layout, True
+            payloads[0].values(),
+            DType.Float32,
+            target_case.lhs_layout,
+            True,
+            allow_target_override=False,
         )
         if kernel.operation == "reduce_sum":
             # The production layouts are hierarchical, so the two-mode
@@ -602,7 +607,11 @@ def _target_case(
                 payloads[1].values(), DType.Float32, target_case.rhs_layout, True
             )
             rhs_oracle = _tensor(
-                payloads[1].values(), DType.Float32, target_case.rhs_layout, True
+                payloads[1].values(),
+                DType.Float32,
+                target_case.rhs_layout,
+                True,
+                allow_target_override=False,
             )
             target = sw.matmul(lhs_target, rhs_target)
             oracle = sw.matmul(lhs_oracle, rhs_oracle, accumulator_dtype=DType.Float64)
@@ -785,6 +794,7 @@ def _target_requirement_records(
         )
     factories = {
         "cpu-compiled": _cpu_target_requirement_records,
+        "metal-tilelang": _cpu_target_requirement_records,
         "synthetic-jit": _synthetic_target_requirement_records,
     }
     try:
@@ -854,12 +864,12 @@ def _generic_target_records(
 
     records: list[EvidenceRecord] = []
     case_functions = (
-        (VerificationClass.EXACT_ARITHMETIC, _exact_record),
-        (VerificationClass.EXACT_ARITHMETIC, _arbitrary_exact_record),
-        (VerificationClass.STRUCTURAL, _structural_record),
-        (VerificationClass.NUMERICAL, _numerical_record),
+        (VerificationClass.EXACT_ARITHMETIC, "exact", _exact_record),
+        (VerificationClass.EXACT_ARITHMETIC, "arbitrary", _arbitrary_exact_record),
+        (VerificationClass.STRUCTURAL, "structural", _structural_record),
+        (VerificationClass.NUMERICAL, "numerical", _numerical_record),
     )
-    for test_class, case_function in case_functions:
+    for test_class, error_label, case_function in case_functions:
         if test_class not in descriptor.classes:
             continue
         try:
@@ -871,7 +881,9 @@ def _generic_target_records(
         except (RuntimeError, ValueError) as error:
             records.append(
                 _target_record(
-                    _recoverable_error_record(descriptor, test_class, "target", error),
+                    _recoverable_error_record(
+                        descriptor, test_class, error_label, error
+                    ),
                     certificate_digest,
                 )
             )
@@ -1023,7 +1035,204 @@ def _synthetic_target_records(
         )
         for record in source
     )
-    return _TargetExecution(records, _synthetic_jit_receipt(descriptor))
+    receipt = _synthetic_jit_receipt(descriptor)
+    return _TargetExecution(
+        tuple(
+            replace(record, compilation_receipt_id=receipt.receipt_id)
+            for record in records
+        ),
+        (receipt,),
+    )
+
+
+def _metal_carrier(size: int, dtype: DType):
+    """Allocate one target tensor without importing Metal on CPU-only paths."""
+    from strideweave.carriers.metal.carrier import Metal
+
+    return Metal(size, dtype=dtype)
+
+
+def _metal_case_execution(
+    descriptor: PlanClassification,
+    execute: Callable[[], EvidenceRecord | tuple[EvidenceRecord, ...]],
+) -> _TargetExecution:
+    """Execute one target case and bind its exact observed specialization."""
+    from strideweave.carriers.metal._jit import (
+        CompiledMetalKernel,
+        MetalSpecializationKey,
+        observe_compilations,
+    )
+    from strideweave.carriers.metal._verification import (
+        MetalCompilation,
+        metal_compilation_matches,
+        metal_observed_compilation_receipt,
+        validate_metal_compilation,
+    )
+
+    observed_receipts: list[CompilationReceipt] = []
+    primary_receipt_ids: list[str] = []
+
+    def bind_before_launch(
+        key: MetalSpecializationKey, compiled: CompiledMetalKernel
+    ) -> None:
+        compilation = MetalCompilation(key, compiled)
+        validate_metal_compilation(compilation)
+        receipt = metal_observed_compilation_receipt(compilation)
+        observed_receipts.append(receipt)
+        if metal_compilation_matches(descriptor.kernel, compilation):
+            primary_receipt_ids.append(receipt.receipt_id)
+        elif receipt.logical_kernel.operation != "validate_indices":
+            raise ValueError(
+                "Metal verification case selected an unrelated supporting kernel"
+            )
+
+    with (
+        _target_carrier_factory(_metal_carrier),
+        observe_compilations(bind_before_launch),
+    ):
+        completed = execute()
+    records = completed if isinstance(completed, tuple) else (completed,)
+    receipts = tuple(dict.fromkeys(observed_receipts))
+    primary_ids = tuple(dict.fromkeys(primary_receipt_ids))
+    if not primary_ids:
+        if all(record.outcome is VerificationOutcome.ERROR for record in records):
+            supporting_ids = tuple(sorted(receipt.receipt_id for receipt in receipts))
+            return _TargetExecution(
+                tuple(
+                    replace(
+                        record,
+                        supporting_compilation_receipt_ids=supporting_ids,
+                    )
+                    for record in records
+                ),
+                receipts,
+            )
+        raise ValueError(
+            "Metal target execution produced no matching JIT specialization receipt"
+        )
+    if len(primary_ids) != 1:
+        raise ValueError(
+            "one Metal verification case selected multiple target specializations"
+        )
+    receipt_id = primary_ids[0]
+    supporting_ids = tuple(
+        sorted(
+            receipt.receipt_id
+            for receipt in receipts
+            if receipt.receipt_id != receipt_id
+        )
+    )
+    return _TargetExecution(
+        tuple(
+            replace(
+                record,
+                compilation_receipt_id=receipt_id,
+                supporting_compilation_receipt_ids=supporting_ids,
+            )
+            for record in records
+        ),
+        receipts,
+    )
+
+
+def _metal_target_records(
+    descriptor: PlanClassification,
+    certificate_digest: str,
+    oracle_result: OracleStageResult,
+    synchronize: Callable[[], None],
+) -> _TargetExecution:
+    """Execute one complete target-plan obligation on real Metal storage."""
+    del oracle_result
+    executions: list[_TargetExecution] = []
+    if descriptor.kernel.operation not in {"reduce_sum", "matmul"}:
+        case_functions = (
+            (VerificationClass.EXACT_ARITHMETIC, "exact", _exact_record),
+            (
+                VerificationClass.EXACT_ARITHMETIC,
+                "arbitrary",
+                _arbitrary_exact_record,
+            ),
+            (VerificationClass.STRUCTURAL, "structural", _structural_record),
+            (VerificationClass.NUMERICAL, "numerical", _numerical_record),
+        )
+        for test_class, error_label, case_function in case_functions:
+            if test_class not in descriptor.classes:
+                continue
+
+            def execute_case(
+                case_function=case_function,
+                error_label=error_label,
+                test_class=test_class,
+            ):
+                try:
+                    completed = case_function(descriptor, None, synchronize=synchronize)
+                    evidence = (
+                        completed if isinstance(completed, tuple) else (completed,)
+                    )
+                    return tuple(
+                        _target_record(record, certificate_digest)
+                        for record in evidence
+                    )
+                except (RuntimeError, ValueError) as error:
+                    return _target_record(
+                        _recoverable_error_record(
+                            descriptor, test_class, error_label, error
+                        ),
+                        certificate_digest,
+                    )
+
+            executions.append(_metal_case_execution(descriptor, execute_case))
+    else:
+        for target_case in _target_cases():
+            if target_case.operation != descriptor.kernel.operation:
+                continue
+
+            def execute_target_case(target_case=target_case):
+                return replace(
+                    _target_case(
+                        descriptor.kernel,
+                        descriptor.plan,
+                        target_case,
+                        synchronize,
+                    ),
+                    consumed_certificate_digest=certificate_digest,
+                )
+
+            executions.append(_metal_case_execution(descriptor, execute_target_case))
+    if VerificationClass.ANALYTIC in descriptor.classes:
+        for analytic_case in _analytic_cases_for(descriptor.kernel.operation):
+
+            def execute_analytic(analytic_case=analytic_case):
+                try:
+                    return _target_record(
+                        _analytic_record(
+                            descriptor,
+                            None,
+                            analytic_case,
+                            synchronize=synchronize,
+                        ),
+                        certificate_digest,
+                    )
+                except (RuntimeError, ValueError) as error:
+                    return _target_record(
+                        _recoverable_error_record(
+                            descriptor,
+                            VerificationClass.ANALYTIC,
+                            "analytic",
+                            error,
+                            analytic_case=analytic_case,
+                        ),
+                        certificate_digest,
+                    )
+
+            executions.append(_metal_case_execution(descriptor, execute_analytic))
+    records = tuple(record for execution in executions for record in execution.records)
+    receipts = tuple(
+        dict.fromkeys(
+            receipt for execution in executions for receipt in execution.receipts
+        )
+    )
+    return _TargetExecution(records, receipts)
 
 
 def _synthetic_movement_records(
@@ -1048,12 +1257,54 @@ def _synthetic_movement_records(
     return tuple(records)
 
 
+def _metal_movement_records(
+    profile: VerificationProfile,
+    oracle_result: OracleStageResult,
+    synchronize: Callable[[], None],
+) -> tuple[EvidenceRecord, ...]:
+    """Execute Metal movement and shared structural subjects on real storage."""
+    del oracle_result
+    with _target_carrier_factory(_metal_carrier):
+        return tuple(
+            replace(
+                record,
+                stage=VerificationStage.TARGET,
+                case=replace(record.case, case_id=f"stage-two-{record.case.case_id}"),
+            )
+            for record in _movement_records(profile, synchronize=synchronize)
+        )
+
+
 def _cpu_current_compilation(
     profile: VerificationProfile, receipts: tuple[CompilationReceipt, ...]
 ) -> CompilationBundle:
     """Resolve the current installed CPU bundle through the neutral adapter."""
     del receipts
     return installed_compilation_bundle(profile)
+
+
+def _metal_current_compilation(
+    profile: VerificationProfile, receipts: tuple[CompilationReceipt, ...]
+) -> CompilationBundle:
+    from strideweave.carriers.metal._verification import (
+        current_metal_compilation_bundle,
+    )
+
+    return current_metal_compilation_bundle(profile, receipts)
+
+
+def _metal_preflight() -> None:
+    from strideweave.carriers.metal._verification import (
+        require_metal_verification_runtime,
+    )
+
+    require_metal_verification_runtime()
+
+
+def _metal_synchronize() -> None:
+    from strideweave.carriers.metal._verification import synchronize_metal_verification
+
+    synchronize_metal_verification()
 
 
 def _target_runtime(profile: VerificationProfile) -> _TargetRuntime:
@@ -1066,6 +1317,13 @@ def _target_runtime(profile: VerificationProfile) -> _TargetRuntime:
             _synchronize_target,
             lambda: None,
             _cpu_current_compilation,
+        ),
+        "metal-tilelang": _TargetRuntime(
+            _metal_target_records,
+            _metal_movement_records,
+            _metal_synchronize,
+            _metal_preflight,
+            _metal_current_compilation,
         ),
         "synthetic-jit": _TargetRuntime(
             _synthetic_target_records,
@@ -1092,7 +1350,7 @@ def _require_target_runtime(profile: VerificationProfile) -> None:
 def _current_profile_compilation_bundle(
     profile: VerificationProfile, receipts: tuple[CompilationReceipt, ...]
 ) -> CompilationBundle:
-    """Resolve current exact receipt facts behind one neutral runtime adapter."""
+    """Resolve current exact receipt facts behind one neutral provider adapter."""
     if not isinstance(profile, VerificationProfile):
         raise TypeError("profile must be a VerificationProfile")
     registered = verification_profile(profile.profile_id)
@@ -1103,7 +1361,6 @@ def _current_profile_compilation_bundle(
     ):
         raise ValueError("selected receipts do not match their verification profile")
     runtime = _target_runtime(profile)
-    runtime.preflight()
     bundle = runtime.current_compilation(profile, receipts)
     if not isinstance(bundle, CompilationBundle):
         raise TypeError("provider compilation resolver must return a CompilationBundle")
@@ -1274,13 +1531,13 @@ def run_target_stage(
                 )
             )
             continue
-        produced = execution.records
-        receipt = execution.receipt
-        if receipt is not None:
-            receipts.append(receipt)
-            produced = tuple(
-                replace(record, compilation_receipt_id=receipt.receipt_id)
-                for record in produced
+        receipts.extend(execution.receipts)
+        records.extend(execution.records)
+    receipts_by_id: dict[str, CompilationReceipt] = {}
+    for receipt in receipts:
+        previous = receipts_by_id.setdefault(receipt.receipt_id, receipt)
+        if previous != receipt:
+            raise ValueError(
+                "target runtime produced conflicting facts for one receipt identity"
             )
-        records.extend(produced)
-    return TargetStageResult(tuple(records), tuple(receipts))
+    return TargetStageResult(tuple(records), tuple(receipts_by_id.values()))

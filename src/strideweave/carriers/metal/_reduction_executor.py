@@ -35,6 +35,13 @@ from ._kernel_support import (
 from ._kernel_support import (
     prepare_tensor as _shared_prepare_tensor,
 )
+from ._recipe import (
+    ReductionBackwardRecipe,
+    ReductionForwardRecipe,
+    ReductionRecipe,
+    ScanRecipe,
+    reduction_recipe,
+)
 
 _THREADS = 64
 _TEMPLATE_REVISION = "strideweave.metal.reduction.v1"
@@ -512,6 +519,89 @@ def _compile_kernel(
         expected_buffers,
         family="reduction",
         pass_configs=_PASS_CONFIGS,
+    )
+
+
+def _recompile_from_key(
+    runtime: Any, key: MetalSpecializationKey
+) -> CompiledMetalKernel:
+    """Compile reduction or scan facts from immutable specialization axes."""
+    if key.logical_kernel not in _LOGICAL_KERNELS:
+        raise RuntimeError("unknown Metal reduction reconstruction recipe")
+    recipe = _recipe_from_key(key)
+    return _recompile_recipe(runtime, key, recipe)
+
+
+def _recipe_from_key(key: MetalSpecializationKey) -> ReductionRecipe:
+    if key.logical_kernel not in _LOGICAL_KERNELS:
+        raise RuntimeError("unknown Metal reduction reconstruction recipe")
+    return reduction_recipe(
+        key,
+        template_revision=_TEMPLATE_REVISION,
+        pass_configs=_PASS_CONFIGS,
+        forward_variants=frozenset(_FORWARD_REDUCTIONS),
+        backward_variants=frozenset(_BACKWARD_REDUCTIONS),
+    )
+
+
+def _recompile_recipe(
+    runtime: Any, _key: MetalSpecializationKey, recipe: ReductionRecipe
+) -> CompiledMetalKernel:
+    if isinstance(recipe, ReductionForwardRecipe):
+        prim_func, output_index = _build_reduction_forward(
+            runtime,
+            recipe.operation,
+            recipe.source,
+            recipe.output_dtype,
+            recipe.row_count,
+            recipe.fiber_size,
+        )
+        return _compile_kernel(
+            runtime,
+            prim_func,
+            output_index,
+            ("input0", "addresses0", "output"),
+        )
+
+    if isinstance(recipe, ReductionBackwardRecipe):
+        prim_func, output_index = _build_reduction_backward(
+            runtime,
+            recipe.operation,
+            recipe.source,
+            recipe.gradient,
+            recipe.row_count,
+            recipe.fiber_size,
+            recipe.output.storage_size,
+        )
+        expected = (
+            ("input0", "addresses0", "output_addresses", "output")
+            if recipe.operation == "grad_reduce_sum"
+            else (
+                "input0",
+                "addresses0",
+                "input1",
+                "addresses1",
+                "output_addresses",
+                "output",
+            )
+        )
+        return _compile_kernel(runtime, prim_func, output_index, expected)
+
+    assert isinstance(recipe, ScanRecipe)
+    prim_func, output_index = _build_cumsum(
+        runtime,
+        recipe.source,
+        recipe.logical_size,
+        recipe.axis_stride,
+        recipe.axis_extent,
+        recipe.output.storage_size,
+        reverse=recipe.operation == "grad_cumsum",
+    )
+    return _compile_kernel(
+        runtime,
+        prim_func,
+        output_index,
+        ("input0", "addresses0", "output_addresses", "output"),
     )
 
 

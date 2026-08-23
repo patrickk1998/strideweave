@@ -87,11 +87,11 @@ def test_cpu_only_paths_and_test_collection_do_not_import_optional_runtime() -> 
 
         def assert_help(main):
             try:
-                main(["--help"])
+                status = main(["--help"])
             except SystemExit as exc:
                 assert exc.code == 0
             else:
-                raise AssertionError("help did not exit")
+                assert status == 0
 
         sys.meta_path.insert(0, OptionalRuntimeBlocker())
         import strideweave as sw
@@ -114,7 +114,7 @@ def test_cpu_only_paths_and_test_collection_do_not_import_optional_runtime() -> 
 
         assert_help(report_main)
         assert_help(status_main)
-        assert sw.test_backend().records
+        assert sw.verify_backend("cpu-compiled").records
 
         os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         import pytest

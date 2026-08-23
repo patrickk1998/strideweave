@@ -10,7 +10,7 @@ from ...layout import Layout
 from ...tensor import Tensor
 from ..dtype import DType
 from ..operation_policy import OperationPlan
-from ._address_plan import address_plan
+from ._address_plan import address_plan, address_plan_from_key
 from ._jit import CompiledMetalKernel, GeneratedMetalFacts
 
 _BUFFER_PATTERN = re.compile(
@@ -28,6 +28,44 @@ class PreparedTensor:
     storage_size: int
     addresses: tuple[int, ...]
     address_key: object
+    is_injective: bool
+
+
+def dtype_from_name(value: object) -> DType:
+    """Resolve one canonical Metal dtype recipe axis."""
+    if type(value) is not str:
+        raise RuntimeError("Metal specialization dtype axis must be a string")
+    dtype = getattr(DType, value, None)
+    if dtype not in {DType.Float32, DType.Int32, DType.Bool}:
+        raise RuntimeError(f"Metal specialization names unsupported dtype {value!r}")
+    return dtype
+
+
+def prepared_tensor_from_recipe(
+    address_key: object,
+    storage_size: object,
+    *,
+    storage_dtype: DType,
+    cache_address_plan: bool = True,
+) -> PreparedTensor:
+    """Rebuild operand-free tensor code-generation metadata from recipe axes."""
+    if type(storage_size) is not int or storage_size < 0:
+        raise RuntimeError(
+            "Metal specialization storage-size axis must be a non-negative integer"
+        )
+    plan = address_plan_from_key(address_key, cache=cache_address_plan)
+    if any(address < 0 or address >= storage_size for address in plan.addresses):
+        raise RuntimeError(
+            "Metal specialization address plan exceeds its declared storage size"
+        )
+    return PreparedTensor(
+        source=None,
+        storage_dtype=storage_dtype,
+        storage_size=storage_size,
+        addresses=plan.addresses,
+        address_key=plan.key,
+        is_injective=plan.is_injective,
+    )
 
 
 def dtype_name(dtype: DType) -> str:
@@ -59,6 +97,7 @@ def prepare_tensor(tensor: Tensor, *, family: str) -> PreparedTensor:
         storage_size=carrier.size(),
         addresses=plan.addresses,
         address_key=plan.key,
+        is_injective=plan.is_injective,
     )
 
 

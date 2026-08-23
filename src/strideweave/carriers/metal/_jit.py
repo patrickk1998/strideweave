@@ -5,10 +5,13 @@ from __future__ import annotations
 import math
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from hashlib import sha256
+from importlib import import_module
 from threading import RLock
-from typing import Literal
+from typing import Any, Literal, cast
 
 type CanonicalValue = (
     tuple[Literal["none"]]
@@ -18,6 +21,10 @@ type CanonicalValue = (
     | tuple[Literal["str"], str]
     | tuple[Literal["tuple"], tuple[CanonicalValue, ...]]
 )
+
+
+class MetalRecipeError(ValueError):
+    """A provider-owned Metal reconstruction recipe is malformed."""
 
 
 def _canonical_value(value: object) -> CanonicalValue:
@@ -39,6 +46,48 @@ def _canonical_value(value: object) -> CanonicalValue:
         "specialization axes must contain only None, bool, int, finite float, "
         "str, or tuples of those values"
     )
+
+
+def _decoded_value(value: CanonicalValue) -> object:
+    raw = cast(object, value)
+    if type(raw) is not tuple or not raw:
+        raise ValueError("canonical specialization value must be a tagged tuple")
+    kind = raw[0]
+    if type(kind) is not str:
+        raise ValueError("canonical specialization value tag must be a string")
+    if kind == "none":
+        if len(raw) != 1:
+            raise ValueError("canonical none specialization value has invalid arity")
+        return None
+    if kind == "bool":
+        if len(raw) != 2 or type(raw[1]) is not bool:
+            raise ValueError("canonical bool specialization value is invalid")
+        return raw[1]
+    if kind == "int":
+        if len(raw) != 2 or type(raw[1]) is not int:
+            raise ValueError("canonical int specialization value is invalid")
+        return raw[1]
+    if kind == "str":
+        if len(raw) != 2 or type(raw[1]) is not str:
+            raise ValueError("canonical string specialization value is invalid")
+        return raw[1]
+    if kind == "float":
+        if len(raw) != 2 or type(raw[1]) is not str:
+            raise ValueError("canonical float specialization value is invalid")
+        try:
+            decoded = float.fromhex(raw[1])
+        except (OverflowError, ValueError) as exc:
+            raise MetalRecipeError(
+                "canonical float specialization value is invalid"
+            ) from exc
+        if not math.isfinite(decoded) or decoded.hex() != raw[1]:
+            raise ValueError("canonical float specialization value is invalid")
+        return decoded
+    if kind == "tuple":
+        if len(raw) != 2 or type(raw[1]) is not tuple:
+            raise ValueError("canonical tuple specialization value is invalid")
+        return tuple(_decoded_value(cast(CanonicalValue, item)) for item in raw[1])
+    raise ValueError(f"unknown canonical specialization value kind {kind!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,11 +114,17 @@ class MetalSpecializationKey:
     def __post_init__(self) -> None:
         if not isinstance(self.logical_kernel, LogicalKernel):
             raise TypeError("logical_kernel must be a LogicalKernel")
+        if type(self.axes) is not tuple or any(
+            type(axis) is not tuple or len(axis) != 2 for axis in self.axes
+        ):
+            raise ValueError("specialization axes must be name/value pairs")
         names = tuple(name for name, _value in self.axes)
         if any(not isinstance(name, str) or not name for name in names):
             raise ValueError("specialization axis names must be non-empty strings")
         if names != tuple(sorted(names)) or len(names) != len(set(names)):
             raise ValueError("specialization axes must be unique and sorted by name")
+        for _name, value in self.axes:
+            _decoded_value(value)
 
     @classmethod
     def from_axes(
@@ -149,6 +204,103 @@ class CompiledMetalKernel:
             raise TypeError("compiled Metal facts must be GeneratedMetalFacts")
 
 
+type CompilationObserver = Callable[[MetalSpecializationKey, CompiledMetalKernel], None]
+type MetalCompiler = Callable[[MetalSpecializationKey], CompiledMetalKernel]
+type RecipeParser = Callable[[MetalSpecializationKey], object]
+type RecipeCompiler = Callable[
+    [Any, MetalSpecializationKey, object], CompiledMetalKernel
+]
+
+_COMPILATION_OBSERVERS: ContextVar[tuple[CompilationObserver, ...]] = ContextVar(
+    "strideweave_metal_compilation_observers", default=()
+)
+
+_RECIPE_MODULES = {
+    "metal.pointwise": "strideweave.carriers.metal._executor",
+    "metal.reduction": "strideweave.carriers.metal._reduction_executor",
+    "metal.scan": "strideweave.carriers.metal._reduction_executor",
+    "metal.indexing": "strideweave.carriers.metal._indexing_executor",
+    "metal.selection": "strideweave.carriers.metal._indexing_executor",
+    "metal.matmul": "strideweave.carriers.metal._contraction_executor",
+    "metal.conv_general": "strideweave.carriers.metal._contraction_executor",
+}
+
+
+@contextmanager
+def observe_compilations(observer: CompilationObserver):
+    """Observe exact cached or newly compiled specializations before launch."""
+    if not callable(observer):
+        raise TypeError("compilation observer must be callable")
+    token = _COMPILATION_OBSERVERS.set((*_COMPILATION_OBSERVERS.get(), observer))
+    try:
+        yield
+    finally:
+        _COMPILATION_OBSERVERS.reset(token)
+
+
+def _publish_compilation(
+    key: MetalSpecializationKey, compiled: CompiledMetalKernel
+) -> None:
+    for observer in _COMPILATION_OBSERVERS.get():
+        observer(key, compiled)
+
+
+def specialization_axes(
+    key: MetalSpecializationKey,
+    expected_names: frozenset[str],
+) -> dict[str, object]:
+    """Decode one canonical recipe while requiring its exact axis vocabulary."""
+    if not isinstance(key, MetalSpecializationKey):
+        raise TypeError("key must be a MetalSpecializationKey")
+    axes = {name: _decoded_value(value) for name, value in key.axes}
+    if axes.keys() != expected_names:
+        missing = sorted(expected_names - axes.keys())
+        extra = sorted(axes.keys() - expected_names)
+        raise MetalRecipeError(
+            "Metal specialization recipe has unexpected axes; "
+            f"missing={missing}, extra={extra}"
+        )
+    return axes
+
+
+def _validated_recipe(key: MetalSpecializationKey) -> tuple[Any, object]:
+    if not isinstance(key, MetalSpecializationKey):
+        raise TypeError("key must be a MetalSpecializationKey")
+    try:
+        module_name = _RECIPE_MODULES[key.logical_kernel.operation]
+    except KeyError as exc:
+        raise RuntimeError(
+            "Metal specialization has no provider-owned reconstruction recipe: "
+            f"{key.logical_kernel.operation}/{key.logical_kernel.variant}"
+        ) from exc
+    module = import_module(module_name)
+    parser = cast(RecipeParser, getattr(module, "_recipe_from_key", None))
+    compiler = cast(RecipeCompiler, getattr(module, "_recompile_recipe", None))
+    if not callable(parser) or not callable(compiler):
+        raise RuntimeError(
+            "Metal specialization family has no callable reconstruction recipe: "
+            f"{key.logical_kernel.operation}"
+        )
+    return module, parser(key)
+
+
+def validate_specialization_recipe(key: MetalSpecializationKey) -> None:
+    """Validate provider recipe data without importing the optional runtime."""
+    _validated_recipe(key)
+
+
+def recompile_specialization(key: MetalSpecializationKey) -> CompiledMetalKernel:
+    """Regenerate current facts from a provider-owned recipe without launch."""
+    module, recipe = _validated_recipe(key)
+    compiler = cast(RecipeCompiler, getattr(module, "_recompile_recipe"))
+    from ._runtime import load_metal_runtime
+
+    compiled = compiler(load_metal_runtime(), key, recipe)
+    if not isinstance(compiled, CompiledMetalKernel):
+        raise TypeError("Metal specialization recipe returned an invalid kernel")
+    return compiled
+
+
 class MetalJITCache:
     """Bounded, failure-atomic cache over a fixed logical-kernel manifest."""
 
@@ -183,7 +335,7 @@ class MetalJITCache:
     def get_or_compile(
         self,
         key: MetalSpecializationKey,
-        compiler: Callable[[MetalSpecializationKey], CompiledMetalKernel],
+        compiler: MetalCompiler,
     ) -> CompiledMetalKernel:
         if not isinstance(key, MetalSpecializationKey):
             raise TypeError("key must be a MetalSpecializationKey")
@@ -195,16 +347,21 @@ class MetalJITCache:
             cached = self._entries.get(key)
             if cached is not None:
                 self._entries.move_to_end(key)
-                return cached
-
-            compiled = compiler(key)
-            if not isinstance(compiled, CompiledMetalKernel):
-                raise TypeError("compiler must return a CompiledMetalKernel")
-            self._entries[key] = compiled
-            self._entries.move_to_end(key)
-            while len(self._entries) > self._max_specializations:
-                self._entries.popitem(last=False)
-            return compiled
+                compiled = cached
+            else:
+                compiled = compiler(key)
+                if not isinstance(compiled, CompiledMetalKernel):
+                    raise TypeError("compiler must return a CompiledMetalKernel")
+                self._entries[key] = compiled
+                self._entries.move_to_end(key)
+                while len(self._entries) > self._max_specializations:
+                    self._entries.popitem(last=False)
+        # Provenance observers run after the cache transaction but before the
+        # caller can launch the returned executable. An observer that cannot
+        # bind complete facts therefore fails closed without publishing
+        # verification evidence or entering the kernel.
+        _publish_compilation(key, compiled)
+        return compiled
 
     def clear(self) -> None:
         with self._lock:

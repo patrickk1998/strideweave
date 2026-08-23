@@ -8,6 +8,39 @@
 
 StrideWeave is an experimental framework for tensor computation being developed by Patrick Krusiec. It is currently in a state of rapid development. I hope to release a somewhat stable version very soon. What makes StrideWeave different from other machine learning libraries? Well...
 
+## Installation
+
+StrideWeave requires Python 3.12 or newer. The default installation provides the
+native CPU backend:
+
+```bash
+pip install strideweave
+```
+
+On Apple silicon Macs, install the optional Metal runtime to use the initial
+TileLang-backed accelerator carrier:
+
+```bash
+pip install 'strideweave[metal]'
+```
+
+`Metal` stores `Float32`, `Int32`, and `Bool` values in private PyTorch MPS
+tensors and JIT-compiles its operations through TileLang. The optional modules
+are loaded only when Metal is constructed or selected for verification, so CPU
+imports and execution do not require them. This first implementation favors
+faithful coverage over performance; direct Metal allocation, PyTorch-free
+interchange, optimization, autotuning, CUDA, and ROCm remain future work.
+
+The installed backends can be verified locally without contacting a network or
+opening an evidence store:
+
+```python
+import strideweave as sw
+
+cpu_report = sw.verify_backend("cpu-compiled")
+metal_report = sw.verify_backend("metal-tilelang")  # Apple Metal hardware
+```
+
 ## Layouts, Layouts, Layouts!
 
 Layouts are the mortar that binds everything in StrideWeave together. A layout is simply a shape and a stride that define a map from a coordinate space onto a flat index space. But unlike in PyTorch, layouts in StrideWeave are hierarchical. They have a CuTe-style layout algebra. You can compose them, divide them into tiles, or assemble tiles into a large layout. A flat index can also be expanded back into a coordinate of a multi-mode shape, allowing a layout to map onto a non-flat space.

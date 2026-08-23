@@ -20,9 +20,11 @@ from ._jit import (
     MetalJITCache,
     MetalSpecializationKey,
 )
+from ._recipe import PointwiseRecipe, pointwise_recipe
 
 _THREADS = 64
 _TEMPLATE_REVISION = "strideweave.metal.pointwise.v1"
+_SCALAR_ADDRESS_KEY = ("strideweave.metal.scalar-address.v1",)
 
 _FORWARD_EXPRESSIONS = (
     "abs",
@@ -139,6 +141,13 @@ class _PreparedOperand:
     address_key: object
 
 
+@dataclass(frozen=True, slots=True)
+class _OperandRecipe:
+    storage_dtype: DType
+    convert_dtype: DType
+    storage_size: int
+
+
 def _dtype_name(dtype: DType) -> str:
     if dtype is DType.Float32:
         return "float32"
@@ -201,7 +210,7 @@ def _prepare_operand(
         convert_dtype=operand_plan.convert_to,
         storage_size=1,
         addresses=(0,) * logical_size,
-        address_key=("strideweave.metal.scalar-address.v1",),
+        address_key=_SCALAR_ADDRESS_KEY,
     )
 
 
@@ -522,7 +531,7 @@ def _converted(T: Any, value: Any, storage: DType, convert: DType) -> Any:
 def _build_prim_func(
     runtime: Any,
     expression: str,
-    operands: tuple[_PreparedOperand, ...],
+    operands: tuple[_OperandRecipe, ...],
     output_dtype: DType,
     logical_size: int,
 ) -> tuple[Any, int]:
@@ -748,7 +757,7 @@ def _compile_kernel(
     runtime: Any,
     key: MetalSpecializationKey,
     expression: str,
-    operands: tuple[_PreparedOperand, ...],
+    operands: tuple[_OperandRecipe, ...],
     output_dtype: DType,
     logical_size: int,
 ) -> CompiledMetalKernel:
@@ -783,6 +792,41 @@ def _compile_kernel(
         runtime_artifact_digest=None,
     )
     return CompiledMetalKernel(executable, facts)
+
+
+def _recompile_from_key(
+    runtime: Any, key: MetalSpecializationKey
+) -> CompiledMetalKernel:
+    """Compile pointwise facts from immutable specialization axes only."""
+    if key.logical_kernel not in _LOGICAL_KERNELS:
+        raise RuntimeError("unknown Metal pointwise reconstruction recipe")
+    recipe = _recipe_from_key(key)
+    return _recompile_recipe(runtime, key, recipe)
+
+
+def _recipe_from_key(key: MetalSpecializationKey) -> PointwiseRecipe:
+    if key.logical_kernel not in _LOGICAL_KERNELS:
+        raise RuntimeError("unknown Metal pointwise reconstruction recipe")
+    return pointwise_recipe(key, template_revision=_TEMPLATE_REVISION)
+
+
+def _recompile_recipe(
+    runtime: Any,
+    key: MetalSpecializationKey,
+    recipe: PointwiseRecipe,
+) -> CompiledMetalKernel:
+    prepared = tuple(
+        _OperandRecipe(item.storage_dtype, item.convert_dtype, item.storage_size)
+        for item in recipe.operands
+    )
+    return _compile_kernel(
+        runtime,
+        key,
+        recipe.expression,
+        prepared,
+        recipe.output_dtype,
+        recipe.logical_size,
+    )
 
 
 def execute_expression(
@@ -866,13 +910,21 @@ def execute_expression(
         "template_revision": _TEMPLATE_REVISION,
     }
     key = MetalSpecializationKey.from_axes(logical_kernel, axes)
+    recipe_operands = tuple(
+        _OperandRecipe(
+            storage_dtype=item.storage_dtype,
+            convert_dtype=item.convert_dtype,
+            storage_size=item.storage_size,
+        )
+        for item in prepared
+    )
     compiled = _JIT_CACHE.get_or_compile(
         key,
         lambda specialization: _compile_kernel(
             runtime,
             specialization,
             expression,
-            prepared,
+            recipe_operands,
             output_dtype,
             logical_size,
         ),

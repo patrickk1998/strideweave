@@ -145,10 +145,12 @@ def test_an_unknown_or_duplicate_manifest_entry_fails_closed(monkeypatch):
 
 def test_profiles_are_immutable_and_jit_specialization_does_not_expand_logical_scope():
     cpu = verification_profile("cpu-compiled")
+    metal = verification_profile("metal-tilelang")
     jit = verification_profile("synthetic-jit")
 
-    assert verification_profiles() == (cpu, jit)
+    assert verification_profiles() == (cpu, metal, jit)
     assert cpu.stages == (VerificationStage.ORACLE, VerificationStage.TARGET)
+    assert metal.stages == (VerificationStage.TARGET,)
     assert jit.stages == (VerificationStage.TARGET,)
     assert len(kernel_manifest(cpu)) == len(kernel_manifest(jit))
     assert {classification.plan for classification in classify_profile_plans(cpu)} == {

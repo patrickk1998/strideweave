@@ -35,6 +35,7 @@ from strideweave.verification.provenance import (
     make_jit_specialization_receipt,
 )
 from strideweave.verification.reporting import (
+    bind_report,
     certificate_value,
     make_verification_report,
 )
@@ -106,15 +107,18 @@ def _compiled_receipt(*, profile_id: str = "cpu-compiled"):
     )
 
 
-def _jit_receipt(block_size: int):
+def _jit_receipt(block_size: int, *, logical_kernel: LogicalKernel | None = None):
     provider = "test-jit-provider"
+    kernel = logical_kernel or LogicalKernel(
+        "synthetic-jit", "add", "cpu.add", "default"
+    )
     return make_jit_specialization_receipt(
         profile_id="synthetic-jit",
         provider=provider,
         target=_target(),
         toolchain=_toolchain(provider),
         runtime=_runtime(),
-        logical_kernel=LogicalKernel("synthetic-jit", "add", "cpu.add", "default"),
+        logical_kernel=kernel,
         declared_input_uris=("provider://source/add.py",),
         inputs=(
             CompilationInput(0, "provider://source/add.py", "source", _SOURCE_DIGEST),
@@ -234,6 +238,44 @@ def _mixed_report() -> VerificationReport:
     )
 
 
+def _mixed_report_with_supporting_receipt() -> VerificationReport:
+    report = _mixed_report()
+    assert report.header is not None
+    supporting = _jit_receipt(
+        32,
+        logical_kernel=LogicalKernel(
+            "synthetic-jit",
+            "validate_indices",
+            "synthetic-jit.indexing",
+            "validate_indices",
+        ),
+    )
+    target = next(
+        record for record in report.records if record.stage is VerificationStage.TARGET
+    )
+    changed = tuple(
+        replace(
+            record,
+            supporting_compilation_receipt_ids=(supporting.receipt_id,),
+        )
+        if record == target
+        else record
+        for record in report.records
+    )
+    bundle = make_compilation_bundle(
+        (*report.header.compilation_bundle.receipts, supporting)
+    )
+    records, header = bind_report(
+        changed,
+        (),
+        selected_target_profile=report.header.selected_target_profile,
+        oracle_profile=report.header.oracle_profile,
+        compilation_bundle=bundle,
+        certificate_facts_override=report.header.certificates,
+    )
+    return VerificationReport(records, header.schema_version, header)
+
+
 def _rehash_bundle_and_header(header: dict[str, Any]) -> None:
     bundle = header["compilation_bundle"]
     bundle["bundle_id"] = _digest(
@@ -306,6 +348,64 @@ def test_mixed_compiled_and_jit_report_is_deterministic_and_self_contained() -> 
     )
     assert jit_receipts[0].logical_kernel == jit_receipts[1].logical_kernel
     assert jit_receipts[0].receipt_id != jit_receipts[1].receipt_id
+
+
+def test_supporting_jit_receipt_round_trips_and_survives_selection() -> None:
+    report = _mixed_report_with_supporting_receipt()
+    serialized = report.to_jsonl()
+    loaded = VerificationReport.from_jsonl(serialized)
+    target = next(
+        record for record in loaded.records if record.stage is VerificationStage.TARGET
+    )
+
+    assert loaded.to_jsonl() == serialized
+    assert len(target.supporting_compilation_receipt_ids) == 1
+    selected = loaded.select(operation="add")
+    assert selected.header is not None
+    assert target.supporting_compilation_receipt_ids[0] in {
+        receipt.receipt_id for receipt in selected.header.compilation_bundle.receipts
+    }
+
+
+@pytest.mark.parametrize(
+    ("supporting_id", "message"),
+    (
+        ("f" * 64, "unknown supporting receipt"),
+        (None, "primary logical kernel"),
+    ),
+)
+def test_supporting_jit_receipt_rejects_unknown_or_cross_case_primary(
+    supporting_id: str | None,
+    message: str,
+) -> None:
+    report = _mixed_report()
+    assert report.header is not None
+    target = next(
+        record for record in report.records if record.stage is VerificationStage.TARGET
+    )
+    if supporting_id is None:
+        supporting_id = next(
+            receipt.receipt_id
+            for receipt in report.header.compilation_bundle.receipts
+            if receipt.kind == "jit-specialization"
+            and receipt.receipt_id != target.compilation_receipt_id
+        )
+    changed = tuple(
+        replace(record, supporting_compilation_receipt_ids=(supporting_id,))
+        if record == target
+        else record
+        for record in report.records
+    )
+
+    with pytest.raises(ValueError, match=message):
+        bind_report(
+            changed,
+            (),
+            selected_target_profile=report.header.selected_target_profile,
+            oracle_profile=report.header.oracle_profile,
+            compilation_bundle=report.header.compilation_bundle,
+            certificate_facts_override=report.header.certificates,
+        )
 
 
 def test_loading_uses_only_report_bytes(
@@ -650,7 +750,7 @@ def test_loader_rejects_forged_receipt_reference_after_internal_rehash() -> None
         )
 
 
-def test_loader_rejects_receiptless_error_when_compilation_receipt_exists() -> None:
+def test_loader_accepts_receiptless_error_when_failure_precedes_jit() -> None:
     def mutation(header: dict[str, Any], records: list[dict[str, Any]]) -> None:
         target = next(item for item in records if item["stage"] == "stage_two")
         target["outcome"] = "error"
@@ -663,10 +763,13 @@ def test_loader_rejects_receiptless_error_when_compilation_receipt_exists() -> N
         target["mismatches"] = None
         _replace_target_binding(header, records, None)
 
-    with pytest.raises(
-        ValueError, match="compiled evidence has no compilation receipt"
-    ):
-        VerificationReport.from_jsonl(_mutate_report(_mixed_report(), mutation))
+    report = VerificationReport.from_jsonl(_mutate_report(_mixed_report(), mutation))
+    target = next(
+        record for record in report.records if record.stage.value == "stage_two"
+    )
+    assert target.outcome is VerificationOutcome.ERROR
+    assert target.compilation_receipt_id is None
+    assert not target.supporting_compilation_receipt_ids
 
 
 def test_report_rejects_receipt_kind_that_disagrees_with_profile() -> None:

@@ -4,14 +4,22 @@ from hashlib import sha256
 
 import pytest
 
+import strideweave.carriers.metal._address_plan as address_plans
+import strideweave.carriers.metal._executor as pointwise_executor
 from strideweave import Layout, Shape, Stride
-from strideweave.carriers.metal._address_plan import address_plan
+from strideweave.carriers.metal._address_plan import (
+    address_plan,
+    address_plan_from_key,
+)
 from strideweave.carriers.metal._jit import (
     CompiledMetalKernel,
     GeneratedMetalFacts,
     LogicalKernel,
     MetalJITCache,
     MetalSpecializationKey,
+    _decoded_value,
+    observe_compilations,
+    recompile_specialization,
 )
 
 
@@ -99,6 +107,48 @@ def test_address_plan_validates_layout_and_nonnegative_integer_offset() -> None:
         address_plan(layout, offset=-1)
 
 
+def test_address_plan_reconstructs_an_exact_valid_key() -> None:
+    original = address_plan(Layout(Shape([2, [3, 4]]), Stride([1, [2, 6]])), offset=7)
+
+    assert address_plan_from_key(original.key) is original
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        (),
+        ("strideweave.metal.address-plan.v1",),
+        ("strideweave.metal.address-plan.v1", 0),
+        ("strideweave.metal.address-plan.v2", 0, ("node", ())),
+        ("strideweave.metal.address-plan.v1", True, ("node", ())),
+        ("strideweave.metal.address-plan.v1", -1, ("node", ())),
+        ("strideweave.metal.address-plan.v1", 0, ()),
+        ("strideweave.metal.address-plan.v1", 0, ("node",)),
+        ("strideweave.metal.address-plan.v1", 0, ("node", [])),
+        ("strideweave.metal.address-plan.v1", 0, ("unknown", ())),
+        ("strideweave.metal.address-plan.v1", 0, ("leaf", 1)),
+        ("strideweave.metal.address-plan.v1", 0, ("leaf", True, 1)),
+        ("strideweave.metal.address-plan.v1", 0, ("leaf", 1, False)),
+        ("strideweave.metal.address-plan.v1", 0, ("leaf", 0, 1)),
+        ("strideweave.metal.address-plan.v1", 0, ("leaf", 1, -1)),
+        (
+            "strideweave.metal.address-plan.v1",
+            0,
+            ("node", (("node", (("leaf", 1),)),)),
+        ),
+    ),
+)
+def test_address_plan_reconstruction_rejects_malformed_trees_before_caching(
+    value: object,
+) -> None:
+    cache_size = address_plans._build_address_plan.cache_info().currsize
+
+    with pytest.raises(RuntimeError, match="address-plan"):
+        address_plan_from_key(value)
+
+    assert address_plans._build_address_plan.cache_info().currsize == cache_size
+
+
 def _facts(tag: str = "base") -> GeneratedMetalFacts:
     return GeneratedMetalFacts(
         provider="tilelang",
@@ -138,6 +188,30 @@ def test_jit_cache_reuses_an_exact_specialization_once() -> None:
     assert first is second
     assert calls == [key]
     assert len(cache) == 1
+
+
+def test_jit_observer_failure_prevents_specialization_launch() -> None:
+    logical = LogicalKernel("pointwise", "unary")
+    cache = MetalJITCache((logical,))
+    key = _key(logical, dtype="Float32", logical_size=4)
+    launches = 0
+
+    def executable() -> None:
+        nonlocal launches
+        launches += 1
+
+    compiled = CompiledMetalKernel(executable, _compiled().facts)
+
+    def reject_provenance(
+        _key: MetalSpecializationKey, _compiled: CompiledMetalKernel
+    ) -> None:
+        raise ValueError("incomplete specialization provenance")
+
+    with observe_compilations(reject_provenance):
+        with pytest.raises(ValueError, match="incomplete specialization provenance"):
+            cache.get_or_compile(key, lambda _candidate: compiled).executable()
+
+    assert launches == 0
 
 
 @pytest.mark.parametrize(
@@ -252,6 +326,113 @@ def test_jit_cache_has_fixed_logical_manifest_and_bounded_specializations() -> N
     assert len(cache) == 3
     with pytest.raises(KeyError, match="undeclared logical kernel"):
         cache.get_or_compile(_key(undeclared, logical_size=1), compiler)
+
+
+def test_unknown_provider_recipe_fails_before_loading_the_runtime() -> None:
+    key = _key(LogicalKernel("metal.unknown", "missing"), logical_size=1)
+
+    with pytest.raises(RuntimeError, match="no provider-owned reconstruction recipe"):
+        recompile_specialization(key)
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        (),
+        ("bool",),
+        ("none", None),
+        ("bool", 1),
+        ("int", True),
+        ("str", 1),
+        ("float", 1.0),
+        ("float", "not-a-float"),
+        ("float", "0x1p+999999999"),
+        ("float", "nan"),
+        ("float", "0x1p+0"),
+        ("tuple", []),
+        ("tuple", (("int",),)),
+        ("unknown",),
+        (1, None),
+    ),
+)
+def test_canonical_specialization_decoder_rejects_malformed_values(
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match=r"canonical|unknown"):
+        _decoded_value(value)  # type: ignore[arg-type]
+
+
+def test_pointwise_reconstruction_validates_every_address_recipe() -> None:
+    malformed_address_key = (
+        "strideweave.metal.address-plan.v1",
+        0,
+        ("node", (("unknown", ()),)),
+    )
+    key = MetalSpecializationKey.from_axes(
+        LogicalKernel("metal.pointwise", "add"),
+        {
+            "address_plans": (malformed_address_key,),
+            "convert_dtypes": ("Float32",),
+            "expression": "add",
+            "logical_size": 1,
+            "output_dtype": "Float32",
+            "physical_sizes": (1,),
+            "plan": ("test-plan",),
+            "storage_dtypes": ("Float32",),
+            "template_revision": "strideweave.metal.pointwise.v1",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="unknown address-plan tag"):
+        pointwise_executor._recompile_from_key(object(), key)
+
+
+def test_pointwise_recipe_rejects_logical_cardinality_before_runtime_or_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    one_element_plan = address_plan(Layout(Shape(1), Stride(1))).key
+    key = MetalSpecializationKey.from_axes(
+        LogicalKernel("metal.pointwise", "add"),
+        {
+            "address_plans": (one_element_plan, one_element_plan),
+            "convert_dtypes": ("Float32", "Float32"),
+            "expression": "add",
+            "logical_size": 2,
+            "output_dtype": "Float32",
+            "physical_sizes": (2, 2),
+            "plan": (
+                "add",
+                (
+                    ("tensor", "Float32", "Float32"),
+                    ("tensor", "Float32", "Float32"),
+                ),
+                "binary32",
+                None,
+                None,
+                "Float32",
+            ),
+            "storage_dtypes": ("Float32", "Float32"),
+            "template_revision": "strideweave.metal.pointwise.v1",
+        },
+    )
+    cache_size = address_plans._build_address_plan.cache_info().currsize
+    runtime_loads = 0
+
+    def fail_runtime_load() -> object:
+        nonlocal runtime_loads
+        runtime_loads += 1
+        raise AssertionError("malformed recipe loaded the Metal runtime")
+
+    monkeypatch.setattr(
+        "strideweave.carriers.metal._runtime.load_metal_runtime",
+        fail_runtime_load,
+    )
+
+    with pytest.raises(ValueError, match="address cardinality is inconsistent"):
+        recompile_specialization(key)
+
+    assert runtime_loads == 0
+    assert address_plans._build_address_plan.cache_info().currsize == cache_size
 
 
 def test_specialization_axes_are_canonical_typed_and_deterministic() -> None:

@@ -23,6 +23,12 @@ from ._kernel_support import (
     plan_axis,
     prepare_tensor,
 )
+from ._recipe import (
+    ContractionRecipe,
+    ConvolutionRecipe,
+    MatmulRecipe,
+    contraction_recipe,
+)
 
 _TEMPLATE_REVISION = "strideweave.metal.contraction.v1"
 _PASS_CONFIGS = (("tl.disable_data_race_check", True),)
@@ -451,6 +457,88 @@ def _compile(
         family="contraction",
         pass_configs=_PASS_CONFIGS,
     )
+
+
+def _recompile_from_key(
+    runtime: Any, key: MetalSpecializationKey
+) -> CompiledMetalKernel:
+    """Compile contraction facts from immutable specialization axes only."""
+    if key.logical_kernel not in _LOGICAL_KERNELS:
+        raise RuntimeError("unknown Metal contraction reconstruction recipe")
+    recipe = _recipe_from_key(key)
+    return _recompile_recipe(runtime, key, recipe)
+
+
+def _recipe_from_key(key: MetalSpecializationKey) -> ContractionRecipe:
+    if key.logical_kernel not in _LOGICAL_KERNELS:
+        raise RuntimeError("unknown Metal contraction reconstruction recipe")
+    return contraction_recipe(
+        key,
+        template_revision=_TEMPLATE_REVISION,
+        pass_configs=_PASS_CONFIGS,
+    )
+
+
+def _recompile_recipe(
+    runtime: Any, _key: MetalSpecializationKey, recipe: ContractionRecipe
+) -> CompiledMetalKernel:
+    if isinstance(recipe, MatmulRecipe):
+        prim_func, output_index = _build_matmul(
+            runtime,
+            recipe.operation,
+            recipe.first,
+            recipe.second,
+            recipe.output.storage_size,
+            recipe.n_size,
+            recipe.m_size,
+            recipe.k_size,
+        )
+        return _compile(
+            runtime,
+            prim_func,
+            output_index,
+            (
+                "input0",
+                "addresses0",
+                "input1",
+                "addresses1",
+                "output_addresses",
+                "output",
+            ),
+        )
+
+    assert isinstance(recipe, ConvolutionRecipe)
+    prim_func, output_index = _build_conv(
+        runtime,
+        recipe.operation,
+        recipe.first.storage_size,
+        recipe.second.storage_size,
+        recipe.output.storage_size,
+        recipe.geometry.output_count,
+        recipe.geometry.contraction_count,
+    )
+    expected = (
+        (
+            "input0",
+            "input1",
+            "addresses1",
+            "addresses2",
+            "addresses3",
+            "output_addresses",
+            "output",
+        )
+        if recipe.operation == "conv_forward"
+        else (
+            "input0",
+            "addresses0",
+            "input1",
+            "addresses1",
+            "addresses3",
+            "output_addresses",
+            "output",
+        )
+    )
+    return _compile(runtime, prim_func, output_index, expected)
 
 
 def execute_matmul(

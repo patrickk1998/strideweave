@@ -82,6 +82,9 @@ def _record_json(record: EvidenceRecord) -> dict[str, Any]:
         "case_id": record.case.case_id,
         "class": record.test_class.value,
         "compilation_receipt_id": record.compilation_receipt_id,
+        "supporting_compilation_receipt_ids": list(
+            record.supporting_compilation_receipt_ids
+        ),
         "consumed_certificate_digest": record.consumed_certificate_digest,
         "deviations": record.as_json_object()["deviations"],
         "kernel_id": record.case.kernel_id,
@@ -108,6 +111,8 @@ def _format_record(record: EvidenceRecord) -> str:
         f"outcome={value['outcome']} deviations={deviations} tolerance={tolerance} "
         f"requirement_id={value['verification_requirement_id']} "
         f"compilation_receipt_id={value['compilation_receipt_id']} "
+        "supporting_compilation_receipt_ids="
+        f"{value['supporting_compilation_receipt_ids']} "
         f"tolerance_policy_id={value['tolerance_policy_id']} "
         f"oracle_reference_id={value['oracle_reference_id']} "
         f"consumed_certificate_digest={value['consumed_certificate_digest']}"

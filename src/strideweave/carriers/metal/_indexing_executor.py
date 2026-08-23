@@ -35,6 +35,17 @@ from ._kernel_support import (
 from ._kernel_support import (
     prepare_tensor as _shared_prepare_tensor,
 )
+from ._recipe import (
+    GatherBackwardRecipe,
+    GatherRecipe,
+    IndexingRecipe,
+    ScatterBackwardRecipe,
+    ScatterRecipe,
+    SelectionBackwardRecipe,
+    SelectionRecipe,
+    ValidateIndicesRecipe,
+    indexing_recipe,
+)
 
 _THREADS = 64
 _TEMPLATE_REVISION = "strideweave.metal.indexing.v1"
@@ -717,6 +728,199 @@ def _build_selection_backward(
         k,
         output_storage_size,
     ), 5
+
+
+def _recompile_from_key(
+    runtime: Any, key: MetalSpecializationKey
+) -> CompiledMetalKernel:
+    """Compile indexing or selection facts from immutable recipe axes."""
+    if key.logical_kernel not in _LOGICAL_KERNELS:
+        raise RuntimeError("unknown Metal indexing reconstruction recipe")
+    recipe = _recipe_from_key(key)
+    return _recompile_recipe(runtime, key, recipe)
+
+
+def _recipe_from_key(key: MetalSpecializationKey) -> IndexingRecipe:
+    if key.logical_kernel not in _LOGICAL_KERNELS:
+        raise RuntimeError("unknown Metal indexing reconstruction recipe")
+    return indexing_recipe(
+        key,
+        template_revision=_TEMPLATE_REVISION,
+        pass_configs=_PASS_CONFIGS,
+    )
+
+
+def _recompile_recipe(
+    runtime: Any, _key: MetalSpecializationKey, recipe: IndexingRecipe
+) -> CompiledMetalKernel:
+    if isinstance(recipe, ValidateIndicesRecipe):
+        prim_func, output_index = _build_validate_indices(
+            runtime,
+            recipe.indices,
+            recipe.extent,
+            recipe.unique,
+        )
+        return _compile_kernel(
+            runtime,
+            prim_func,
+            output_index,
+            ("input0", "addresses0", "status"),
+        )
+
+    if isinstance(recipe, GatherRecipe):
+        prim_func, output_index = _build_gather(
+            runtime,
+            recipe.source,
+            recipe.indices,
+            recipe.output_size,
+            recipe.axis_stride,
+            recipe.axis_extent,
+            output_addresses=False,
+            output_storage_size=0,
+        )
+        return _compile_kernel(
+            runtime,
+            prim_func,
+            output_index,
+            ("input0", "addresses0", "input1", "addresses1", "output"),
+        )
+
+    if isinstance(recipe, ScatterRecipe):
+        prim_func, output_index = _build_scatter(
+            runtime,
+            recipe.base,
+            recipe.indices,
+            recipe.updates,
+            recipe.axis_stride,
+            recipe.axis_extent,
+            add=recipe.operation == "scatter_add",
+        )
+        return _compile_kernel(
+            runtime,
+            prim_func,
+            output_index,
+            (
+                "input0",
+                "addresses0",
+                "input1",
+                "addresses1",
+                "input2",
+                "addresses2",
+                "output",
+            ),
+        )
+
+    if isinstance(recipe, GatherBackwardRecipe):
+        prim_func, output_index = _build_gather_backward(
+            runtime,
+            recipe.indices,
+            recipe.gradient,
+            recipe.source_size,
+            recipe.axis_stride,
+            recipe.axis_extent,
+            recipe.output.storage_size,
+        )
+        return _compile_kernel(
+            runtime,
+            prim_func,
+            output_index,
+            (
+                "input0",
+                "addresses0",
+                "input1",
+                "addresses1",
+                "output_addresses",
+                "output",
+            ),
+        )
+
+    if isinstance(recipe, ScatterBackwardRecipe):
+        if recipe.operation == "grad_scatter_updates":
+            prim_func, output_index = _build_gather(
+                runtime,
+                recipe.gradient,
+                recipe.indices,
+                len(recipe.output.addresses),
+                recipe.axis_stride,
+                recipe.axis_extent,
+                output_addresses=True,
+                output_storage_size=recipe.output.storage_size,
+            )
+            expected = (
+                "input0",
+                "addresses0",
+                "input1",
+                "addresses1",
+                "output_addresses",
+                "output",
+            )
+        else:
+            prim_func, output_index = _build_scatter_base_backward(
+                runtime,
+                recipe.indices,
+                recipe.gradient,
+                recipe.axis_stride,
+                recipe.axis_extent,
+                recipe.output.storage_size,
+                overwrite=recipe.operation == "grad_scatter_base",
+            )
+            expected = (
+                (
+                    "input0",
+                    "addresses0",
+                    "input1",
+                    "addresses1",
+                    "output_addresses",
+                    "output",
+                )
+                if recipe.operation == "grad_scatter_base"
+                else ("input1", "addresses1", "output_addresses", "output")
+            )
+        return _compile_kernel(runtime, prim_func, output_index, expected)
+
+    if isinstance(recipe, SelectionBackwardRecipe):
+        prim_func, output_index = _build_selection_backward(
+            runtime,
+            recipe.source,
+            recipe.gradient,
+            len(recipe.source.addresses),
+            recipe.axis_stride,
+            recipe.axis_extent,
+            recipe.k,
+            recipe.descending,
+            recipe.output.storage_size,
+        )
+        return _compile_kernel(
+            runtime,
+            prim_func,
+            output_index,
+            (
+                "input0",
+                "addresses0",
+                "input1",
+                "addresses1",
+                "output_addresses",
+                "output",
+            ),
+        )
+
+    assert isinstance(recipe, SelectionRecipe)
+    prim_func, output_index = _build_selection(
+        runtime,
+        recipe.source,
+        recipe.output_dtype,
+        recipe.output_size,
+        recipe.axis_stride,
+        recipe.axis_extent,
+        recipe.k,
+        recipe.descending,
+    )
+    return _compile_kernel(
+        runtime,
+        prim_func,
+        output_index,
+        ("input0", "addresses0", "output"),
+    )
 
 
 def _result_tensor(

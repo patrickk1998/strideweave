@@ -91,6 +91,46 @@ def test_validated_mixed_report_records_one_complete_graph(synthetic_report) -> 
     assert tables["observations"] == len(synthetic_report.records)
 
 
+def test_public_record_validates_each_receipt_exactly_once(
+    monkeypatch: pytest.MonkeyPatch, synthetic_report
+) -> None:
+    assert synthetic_report.header is not None
+    validation_calls = 0
+    regenerated_receipts: list[str] = []
+    validate = recording._validate_current_report
+
+    def validate_once(report) -> None:
+        nonlocal validation_calls
+        validation_calls += 1
+        validate(report)
+
+    def regenerate(profile, receipts):
+        del profile
+        regenerated_receipts.extend(receipt.receipt_id for receipt in receipts)
+        return make_compilation_bundle(receipts)
+
+    monkeypatch.setattr(recording, "_validate_current_report", validate_once)
+    monkeypatch.setattr(recording, "_current_profile_compilation_bundle", regenerate)
+    monkeypatch.setattr(
+        recording, "_validate_installed_verification_graph", lambda _report: None
+    )
+    monkeypatch.setattr(
+        recording,
+        "bind_report",
+        lambda *_args, **_kwargs: (synthetic_report.records, synthetic_report.header),
+    )
+    store = RecordingEvidenceStore()
+
+    recording.record_report(synthetic_report, store, producer_id="producer")
+
+    assert validation_calls == 1
+    assert regenerated_receipts == [
+        receipt.receipt_id
+        for receipt in synthetic_report.header.compilation_bundle.receipts
+    ]
+    assert len(store.transactions) == 1
+
+
 def test_caller_naive_recording_time_is_rejected(synthetic_report) -> None:
     from datetime import datetime
 
@@ -115,7 +155,7 @@ def test_public_record_rejects_stale_cpu_receipt_before_store(
     assert store.transactions == []
 
 
-def test_public_record_rejects_an_unavailable_selected_target_before_store_creation(
+def test_public_record_rejects_unavailable_target_provenance_before_store_creation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, synthetic_report
 ) -> None:
     resolve = recording._current_profile_compilation_bundle
@@ -131,7 +171,9 @@ def test_public_record_rejects_an_unavailable_selected_target_before_store_creat
     path = tmp_path / "unavailable-target-store"
     store = DoltEvidenceStore(path)
 
-    with pytest.raises(VerificationStoreError, match="no installed provider runtime"):
+    with pytest.raises(
+        VerificationStoreError, match="no installed provider provenance"
+    ):
         recording.record_report(synthetic_report, store, producer_id="producer")
 
     assert not path.exists()

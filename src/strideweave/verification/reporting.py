@@ -12,7 +12,7 @@ from importlib import resources
 from types import MappingProxyType
 from typing import Any
 
-from .classification import verification_profile
+from .classification import kernel_manifest, verification_profile
 from .model import (
     EvidenceRecord,
     KernelDescriptor,
@@ -101,6 +101,17 @@ def _require_optional_digest(value: Any, field: str) -> str | None:
     return _require_digest(value, field)
 
 
+def _require_digests(value: Any, field: str) -> tuple[str, ...]:
+    if type(value) is not list:
+        raise ValueError(f"{field} must be an array")
+    digests = tuple(
+        _require_digest(item, f"{field}[{index}]") for index, item in enumerate(value)
+    )
+    if digests != tuple(sorted(set(digests))):
+        raise ValueError(f"{field} must contain unique digests in canonical order")
+    return digests
+
+
 def _requirement_value(record: EvidenceRecord) -> dict[str, Any]:
     case = record.as_json_object()["case"]
     value = {
@@ -130,6 +141,9 @@ def _evidence_binding_value(record: EvidenceRecord) -> dict[str, Any]:
         "compilation_receipt_id": record.compilation_receipt_id,
         "consumed_certificate_digest": record.consumed_certificate_digest,
         "requirement_id": record.requirement_id,
+        "supporting_compilation_receipt_ids": list(
+            record.supporting_compilation_receipt_ids
+        ),
     }
     return {"binding_id": _digest(value), **value}
 
@@ -204,7 +218,23 @@ def _generic_oracle_input_uris(package: Any) -> tuple[str, ...]:
                 reverse=True,
             )
         )
-    return tuple(sorted(discovered.values()))
+    return _canonical_case_alias_uris(package, tuple(discovered.values()))
+
+
+def _canonical_case_alias_uris(package: Any, uris: tuple[str, ...]) -> tuple[str, ...]:
+    """Deduplicate identical case-compatibility resources deterministically."""
+    groups: dict[str, list[str]] = {}
+    for uri in uris:
+        groups.setdefault(uri.casefold(), []).append(uri)
+    canonical = []
+    for folded in sorted(groups):
+        aliases = sorted(set(groups[folded]))
+        contents = {package.joinpath(*uri.split("/")).read_bytes() for uri in aliases}
+        if len(contents) == 1:
+            canonical.append(min(aliases, key=lambda uri: (uri != uri.casefold(), uri)))
+        else:
+            canonical.extend(aliases)
+    return tuple(sorted(canonical))
 
 
 def _generic_oracle_value() -> dict[str, Any]:
@@ -499,18 +529,55 @@ def bind_report(
         if record.outcome.value == "blocked" and receipt_id is not None:
             raise ValueError("blocked evidence cannot reference an executed receipt")
         if receipt_id is None:
-            if record.outcome.value in {"blocked", "deferred"}:
-                pass
-            elif len(matching_receipts) == 1:
-                receipt_id = matching_receipts[0].receipt_id
-            elif len(matching_receipts) > 1:
-                raise ValueError(
-                    "evidence does not identify one exact compilation receipt"
+            if record.outcome.value not in {"blocked", "deferred"}:
+                compiled_receipts = tuple(
+                    receipt
+                    for receipt in matching_receipts
+                    if receipt.kind == "compiled-executable"
                 )
+                if len(compiled_receipts) == 1:
+                    receipt_id = compiled_receipts[0].receipt_id
+                elif len(compiled_receipts) > 1:
+                    raise ValueError(
+                        "evidence does not identify one exact compilation receipt"
+                    )
         elif receipt_id not in {item.receipt_id for item in matching_receipts}:
             raise ValueError(
                 "evidence compilation receipt does not match its profile and logical kernel"
             )
+        supporting_receipt_ids = record.supporting_compilation_receipt_ids
+        receipts_by_id = {item.receipt_id: item for item in compilation_bundle.receipts}
+        supporting_receipts = tuple(
+            receipts_by_id.get(item) for item in supporting_receipt_ids
+        )
+        if any(item is None for item in supporting_receipts):
+            raise ValueError("evidence references an unknown supporting receipt")
+        manifest_receipts = (
+            set(kernel_manifest(verification_profile(record_profile)))
+            if supporting_receipts
+            else set()
+        )
+        for supporting in supporting_receipts:
+            if supporting is None:  # narrowed by the check above
+                continue
+            if supporting.profile_id != record_profile:
+                raise ValueError(
+                    "evidence supporting receipt belongs to another profile"
+                )
+            if supporting.kind != "jit-specialization":
+                raise ValueError("evidence supporting receipt must be a JIT receipt")
+            primary = receipts_by_id.get(receipt_id) if receipt_id is not None else None
+            if (
+                primary is not None
+                and supporting.logical_kernel == primary.logical_kernel
+            ):
+                raise ValueError(
+                    "evidence supporting receipt names its primary logical kernel"
+                )
+            if supporting.logical_kernel in manifest_receipts:
+                raise ValueError(
+                    "evidence supporting receipt names a primary manifest kernel"
+                )
         consumed = record.consumed_certificate_digest
         if consumed is not None and consumed not in certificate_ids:
             raise ValueError("evidence references an unknown Stage One certificate")
@@ -655,6 +722,7 @@ def parse_report_header(value: Any) -> ReportHeader:
                     "compilation_receipt_id",
                     "consumed_certificate_digest",
                     "requirement_id",
+                    "supporting_compilation_receipt_ids",
                 }
             ),
         )
@@ -664,6 +732,10 @@ def parse_report_header(value: Any) -> ReportHeader:
         )
         _require_optional_digest(
             binding["compilation_receipt_id"], f"{field}.compilation_receipt_id"
+        )
+        _require_digests(
+            binding["supporting_compilation_receipt_ids"],
+            f"{field}.supporting_compilation_receipt_ids",
         )
         _require_optional_digest(
             binding["consumed_certificate_digest"],
@@ -806,6 +878,11 @@ def validate_report(header: ReportHeader, records: Sequence[EvidenceRecord]) -> 
         binding = evidence_bindings.get(record.requirement_id)
         if binding is None or _evidence_binding_value(record) != _thaw(binding):
             raise ValueError("evidence provenance references do not match its binding")
+        expected_profile = (
+            header.oracle_profile
+            if record.stage is VerificationStage.ORACLE
+            else header.selected_target_profile
+        )
         receipt = (
             None
             if record.compilation_receipt_id is None
@@ -816,11 +893,6 @@ def validate_report(header: ReportHeader, records: Sequence[EvidenceRecord]) -> 
         if record.outcome.value == "blocked" and receipt is not None:
             raise ValueError("blocked evidence cannot reference an executed receipt")
         if receipt is None:
-            expected_profile = (
-                header.oracle_profile
-                if record.stage is VerificationStage.ORACLE
-                else header.selected_target_profile
-            )
             matches_logical_kernel = any(
                 candidate.profile_id == expected_profile
                 and candidate.logical_kernel.operation == record.case.operation
@@ -828,17 +900,9 @@ def validate_report(header: ReportHeader, records: Sequence[EvidenceRecord]) -> 
                 and candidate.logical_kernel.variant == record.case.variant
                 for candidate in receipts_by_id.values()
             )
-            if matches_logical_kernel and record.outcome.value not in {
-                "blocked",
-                "deferred",
-            }:
+            if matches_logical_kernel and record.outcome.value in {"passed", "failed"}:
                 raise ValueError("compiled evidence has no compilation receipt")
         else:
-            expected_profile = (
-                header.oracle_profile
-                if record.stage is VerificationStage.ORACLE
-                else header.selected_target_profile
-            )
             kernel = receipt.logical_kernel
             if (
                 receipt.profile_id != expected_profile
@@ -849,6 +913,32 @@ def validate_report(header: ReportHeader, records: Sequence[EvidenceRecord]) -> 
             ):
                 raise ValueError(
                     "evidence compilation receipt does not match its profile and logical kernel"
+                )
+        manifest_receipts = (
+            set(kernel_manifest(verification_profile(expected_profile)))
+            if record.supporting_compilation_receipt_ids
+            else set()
+        )
+        for supporting_id in record.supporting_compilation_receipt_ids:
+            supporting = receipts_by_id.get(supporting_id)
+            if supporting is None:
+                raise ValueError("evidence references an unknown supporting receipt")
+            if supporting.profile_id != expected_profile:
+                raise ValueError(
+                    "evidence supporting receipt belongs to another profile"
+                )
+            if supporting.kind != "jit-specialization":
+                raise ValueError("evidence supporting receipt must be a JIT receipt")
+            if (
+                receipt is not None
+                and supporting.logical_kernel == receipt.logical_kernel
+            ):
+                raise ValueError(
+                    "evidence supporting receipt names its primary logical kernel"
+                )
+            if supporting.logical_kernel in manifest_receipts:
+                raise ValueError(
+                    "evidence supporting receipt names a primary manifest kernel"
                 )
         if record.tolerance_policy_id not in policy_ids:
             raise ValueError("evidence references an unknown tolerance policy")
@@ -948,6 +1038,11 @@ def subset_report(
         for record in records
         if record.compilation_receipt_id is not None
     }
+    receipt_ids.update(
+        receipt_id
+        for record in records
+        for receipt_id in record.supporting_compilation_receipt_ids
+    )
     compilation_bundle = make_compilation_bundle(
         tuple(
             receipt

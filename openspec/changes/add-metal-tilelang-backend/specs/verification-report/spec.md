@@ -7,10 +7,15 @@ selected target profile, oracle profile, complete required coverage, tolerance
 policies, oracle identity, oracle certificates, and one `CompilationBundle`.
 The bundle SHALL contain every compilation receipt referenced by evidence.
 
-Every oracle or target execution record SHALL reference its exact receipt ID.
-Every certificate-gated target record SHALL reference the exact reconstructed
-oracle certificate it consumed. A JIT execution SHALL reference the receipt for
-the exact specialization launched, not merely its logical kernel identity.
+Every successful oracle or target execution record SHALL reference its exact
+primary receipt ID. Every certificate-gated target record SHALL reference the
+exact reconstructed oracle certificate it consumed. A JIT execution SHALL
+reference the receipt for the exact primary specialization launched, not merely
+its logical kernel identity, and SHALL separately reference every case-local
+supporting specialization that ran as part of the attempt. Supporting receipt
+relationships SHALL be canonical, unique, and distinct from primary manifest
+kernels. A JIT error that occurs before compilation SHALL carry no primary
+receipt; report binding SHALL NOT infer one from later cases or bundle contents.
 
 Report construction SHALL validate complete classifications, receipt and
 certificate content identities, evidence references, payload hashes, plan
@@ -39,6 +44,18 @@ v2 compilation records SHALL not be nested, wrapped, or adapted.
 - **WHEN** a Metal target report is completed
 - **THEN** its one bundle contains referenced CPU compiled-executable receipts
   and exact TileLang JIT-specialization receipts
+
+#### Scenario: Retain supporting validation specializations
+
+- **WHEN** a Metal indexing case launches index validation before its primary kernel
+- **THEN** the evidence separately binds both the primary receipt and every
+  case-local validation receipt
+
+#### Scenario: Preserve a failure before JIT
+
+- **WHEN** one target case fails before compilation and a later case compiles
+- **THEN** the failed row has no receipt and the later receipts remain bound only
+  to the cases that observed them
 
 ### Requirement: Installed compilation provenance exposes exact immutable receipts
 
@@ -72,6 +89,14 @@ facts, cache locations, or producer observations.
 
 - **WHEN** TileLang compilation fails or omits required generated artifacts
 - **THEN** no specialization receipt is added to the bundle
+
+#### Scenario: Reconstruct current JIT artifact facts for recording
+
+- **WHEN** online recording reconciles an observed JIT specialization
+- **THEN** the provider regenerates its current compile options, specialization
+  axes, generated artifacts, and exposed runtime artifacts without launching the
+  computational kernel or trusting those incoming receipt fields as current,
+  including when recording occurs in a later process with no retained operands
 
 ### Requirement: Report loading is strict, offline, and line-diagnostic
 

@@ -5,11 +5,14 @@ from __future__ import annotations
 import math
 import random
 from collections.abc import Callable, Iterable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 
 import strideweave as sw
 from strideweave import (
     CPU,
+    Carrier,
     DType,
     FileBacked,
     Generic,
@@ -88,8 +91,32 @@ def _dtype(name: str) -> SimpleDType:
     return dtype
 
 
+type _TargetCarrierFactory = Callable[[int, SimpleDType], Carrier]
+
+_TARGET_CARRIER_FACTORY: ContextVar[_TargetCarrierFactory | None] = ContextVar(
+    "strideweave_verification_target_carrier_factory", default=None
+)
+
+
+@contextmanager
+def _target_carrier_factory(factory: _TargetCarrierFactory):
+    """Select the carrier used by target-side verification allocations."""
+    if not callable(factory):
+        raise TypeError("target carrier factory must be callable")
+    token = _TARGET_CARRIER_FACTORY.set(factory)
+    try:
+        yield
+    finally:
+        _TARGET_CARRIER_FACTORY.reset(token)
+
+
 def _tensor(
-    values: Iterable[float | int], dtype: SimpleDType, layout: Layout, cpu: bool
+    values: Iterable[float | int],
+    dtype: SimpleDType,
+    layout: Layout,
+    cpu: bool,
+    *,
+    allow_target_override: bool = True,
 ) -> Tensor:
     zero: bool | int | float = 0.0
     if dtype is DType.Bool:
@@ -100,7 +127,12 @@ def _tensor(
     for logical_index, value in enumerate(values):
         physical[layout.index(logical_index)] = value
     if cpu:
-        carrier = CPU(layout.cosize, dtype=dtype)
+        factory = _TARGET_CARRIER_FACTORY.get() if allow_target_override else None
+        carrier = (
+            CPU(layout.cosize, dtype=dtype)
+            if factory is None
+            else factory(layout.cosize, dtype)
+        )
         for index, value in enumerate(physical):
             carrier[index] = value
     else:

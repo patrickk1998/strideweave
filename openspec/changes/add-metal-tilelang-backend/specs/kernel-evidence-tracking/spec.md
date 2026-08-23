@@ -45,6 +45,13 @@ compiled-executable and JIT-specialization receipts, verification requirements,
 tolerances, certificates, and evidence graph against the current installed
 baseline before store initialization. A v2 report or any stale, incomplete,
 forged, or inconsistent v3 graph SHALL return status 2 before mutation.
+For JIT receipts, current-baseline reconciliation SHALL independently regenerate
+the current specialization-specific compilation and artifact facts without
+launching computational kernels; it SHALL NOT echo the incoming receipt as its
+own expected baseline. Provider-owned recipes SHALL be reconstructable from
+canonical specialization facts in a later process and SHALL NOT retain
+invocation operands or user storage. Missing or unreconstructable current JIT
+facts SHALL fail closed before store initialization.
 
 One verification run SHALL have exactly one selected target profile. CPU oracle
 certificates, evidence, and receipts used by another target SHALL be stored as
@@ -63,6 +70,20 @@ remain independent raw facts.
 
 - **WHEN** a Metal report references CPU compiled receipts and TileLang JIT receipts
 - **THEN** one Metal-selected run retains both receipt kinds and their exact graph
+
+#### Scenario: Reject same-identity JIT artifact drift
+
+- **WHEN** the current JIT provider regenerates different host, device, or runtime
+  artifacts while declared version and specialization axes remain unchanged
+- **THEN** recording rejects the report before initializing or mutating the store
+
+#### Scenario: Record a JIT report in a later process
+
+- **WHEN** one process writes a valid Metal report and an ordinary later CLI
+  process records it against the unchanged installation
+- **THEN** the provider reconstructs every selected recipe from canonical facts,
+  retains no invocation operands, launches no computational kernel, and records
+  the run atomically
 
 #### Scenario: Reject a v2 report before store creation
 

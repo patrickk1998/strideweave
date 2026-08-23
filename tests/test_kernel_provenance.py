@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError, replace
 from importlib import resources
 from typing import Any
@@ -30,6 +34,7 @@ from strideweave.verification.provenance import (
     parse_compilation_receipt,
 )
 from strideweave.verification.reporting import (
+    _canonical_case_alias_uris,
     _generic_oracle_input_uris,
     _generic_oracle_value,
 )
@@ -160,7 +165,7 @@ def test_installed_bundle_requires_one_registered_profile() -> None:
         installed_compilation_bundle(verification_profile("synthetic-jit"))
 
 
-def test_neutral_runtime_adapter_rebinds_current_jit_receipts(monkeypatch) -> None:
+def test_neutral_provider_adapter_rebinds_before_runtime_preflight(monkeypatch) -> None:
     profile = verification_profile("synthetic-jit")
     receipt = _jit_receipt()
     baseline = stage_two._target_runtime(profile)
@@ -187,7 +192,7 @@ def test_neutral_runtime_adapter_rebinds_current_jit_receipts(monkeypatch) -> No
     current = stage_two._current_profile_compilation_bundle(profile, (receipt,))
 
     assert current == make_compilation_bundle((receipt,))
-    assert preflight_calls == 1
+    assert preflight_calls == 0
     assert resolution_calls == 1
 
 
@@ -440,6 +445,58 @@ def test_generic_oracle_closure_follows_transitive_implementation_imports() -> N
     assert "carriers/generic/helpers.py" in inputs
     assert "carriers/operation_capability.py" in inputs
     assert "carriers/operation_helpers.py" in inputs
+
+
+def test_generic_oracle_closure_deduplicates_only_identical_case_aliases() -> None:
+    contents = {
+        "Alias.py": b"same",
+        "alias.py": b"same",
+        "Distinct.py": b"first",
+        "distinct.py": b"second",
+    }
+
+    class Resource:
+        def __init__(self, value: bytes) -> None:
+            self._value = value
+
+        def read_bytes(self) -> bytes:
+            return self._value
+
+    class Package:
+        def joinpath(self, *parts: str) -> Resource:
+            return Resource(contents["/".join(parts)])
+
+    assert _canonical_case_alias_uris(Package(), tuple(contents)) == (
+        "Distinct.py",
+        "alias.py",
+        "distinct.py",
+    )
+
+
+def test_generic_oracle_reference_is_hash_seed_independent() -> None:
+    command = (
+        sys.executable,
+        "-c",
+        (
+            "import json; "
+            "from strideweave.verification.reporting import _generic_oracle_value; "
+            "print(json.dumps(_generic_oracle_value(), sort_keys=True))"
+        ),
+    )
+    values = []
+    for seed in ("0", "1", "4", "7"):
+        environment = dict(os.environ)
+        environment["PYTHONHASHSEED"] = seed
+        process = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        values.append(json.loads(process.stdout))
+
+    assert all(value == values[0] for value in values[1:])
 
 
 def test_generic_oracle_reference_changes_with_a_transitive_helper(

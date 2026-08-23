@@ -285,6 +285,7 @@ def _parse_evidence_record(value: Any) -> EvidenceRecord:
                 "diagnostic",
                 "requirement_id",
                 "compilation_receipt_id",
+                "supporting_compilation_receipt_ids",
                 "tolerance_policy_id",
                 "oracle_reference_id",
                 "consumed_certificate_digest",
@@ -323,6 +324,10 @@ def _parse_evidence_record(value: Any) -> EvidenceRecord:
         requirement_id=_require_string(data["requirement_id"], "record.requirement_id"),
         compilation_receipt_id=_require_optional_string(
             data["compilation_receipt_id"], "record.compilation_receipt_id"
+        ),
+        supporting_compilation_receipt_ids=_require_strings(
+            data["supporting_compilation_receipt_ids"],
+            "record.supporting_compilation_receipt_ids",
         ),
         tolerance_policy_id=_require_string(
             data["tolerance_policy_id"], "record.tolerance_policy_id"
@@ -551,6 +556,22 @@ def _validate_evidence_record(record: EvidenceRecord) -> None:
     ):
         if value is not None and (type(value) is not str or not value):
             raise ValueError(f"evidence {field} must be a non-empty string or None")
+    supporting_receipts = record.supporting_compilation_receipt_ids
+    if type(supporting_receipts) is not tuple or any(
+        type(value) is not str or not value for value in supporting_receipts
+    ):
+        raise ValueError(
+            "evidence supporting_compilation_receipt_ids must be a tuple of "
+            "non-empty strings"
+        )
+    if supporting_receipts != tuple(sorted(set(supporting_receipts))):
+        raise ValueError(
+            "evidence supporting compilation receipt IDs must be unique and sorted"
+        )
+    if record.compilation_receipt_id in supporting_receipts:
+        raise ValueError(
+            "evidence primary compilation receipt cannot also be supporting"
+        )
 
     tolerance = record.tolerance
     for field, value in (
@@ -631,6 +652,7 @@ def _validate_evidence_record(record: EvidenceRecord) -> None:
             raise ValueError("blocked evidence requires an authorization diagnostic")
         if (
             record.compilation_receipt_id is not None
+            or record.supporting_compilation_receipt_ids
             or record.consumed_certificate_digest is not None
         ):
             raise ValueError("blocked evidence cannot reference executed provenance")
@@ -643,6 +665,7 @@ def _validate_evidence_record(record: EvidenceRecord) -> None:
             raise ValueError("deferred evidence requires a diagnostic")
         if (
             record.compilation_receipt_id is not None
+            or record.supporting_compilation_receipt_ids
             or record.consumed_certificate_digest is not None
         ):
             raise ValueError("deferred evidence cannot reference executed provenance")
@@ -705,6 +728,7 @@ class EvidenceRecord:
     diagnostic: str | None = None
     requirement_id: str = "unbound"
     compilation_receipt_id: str | None = None
+    supporting_compilation_receipt_ids: tuple[str, ...] = ()
     tolerance_policy_id: str = "unbound"
     oracle_reference_id: str = "unbound"
     consumed_certificate_digest: str | None = None
@@ -1390,6 +1414,7 @@ class OracleCertificate:
             value = record.as_json_object()
             for field in (
                 "compilation_receipt_id",
+                "supporting_compilation_receipt_ids",
                 "consumed_certificate_digest",
                 "oracle_reference_id",
                 "requirement_id",

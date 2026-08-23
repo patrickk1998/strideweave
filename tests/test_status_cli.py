@@ -4,8 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from evidence_doubles import RecordingEvidenceStore
 
 import strideweave.verification.status_cli as status_cli
+import strideweave.verification.store.recording as recording
+from strideweave.carriers.metal._jit import MetalRecipeError, _decoded_value
+from strideweave.verification.provenance import make_compilation_bundle
 from strideweave.verification.store import VerificationStoreError
 
 
@@ -59,9 +63,6 @@ def test_cli_success_commands_dispatch_without_implicit_network_or_mutation(
     )
     monkeypatch.setattr(status_cli.VerificationReport, "load", lambda _: object())
     monkeypatch.setattr(
-        status_cli.recording_module, "_validate_current_report", lambda _: None
-    )
-    monkeypatch.setattr(
         status_cli, "record_report", lambda *_args, **_kwargs: _Record()
     )
     monkeypatch.setattr(
@@ -109,6 +110,195 @@ def test_cli_success_commands_dispatch_without_implicit_network_or_mutation(
     assert status_cli.main(["todo", "--target", "synthetic-jit", "--json"]) == 0
     assert len(stores) == 4
     assert capsys.readouterr().err == ""
+
+
+def test_record_cli_validates_each_receipt_once_through_public_recording(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys, synthetic_report
+) -> None:
+    assert synthetic_report.header is not None
+    validation_calls = 0
+    regenerated_receipts: list[str] = []
+    validate = recording._validate_current_report
+
+    def validate_once(report) -> None:
+        nonlocal validation_calls
+        validation_calls += 1
+        validate(report)
+
+    def regenerate(profile, receipts):
+        del profile
+        regenerated_receipts.extend(receipt.receipt_id for receipt in receipts)
+        return make_compilation_bundle(receipts)
+
+    monkeypatch.setattr(recording, "_validate_current_report", validate_once)
+    monkeypatch.setattr(recording, "_current_profile_compilation_bundle", regenerate)
+    monkeypatch.setattr(
+        recording, "_validate_installed_verification_graph", lambda _report: None
+    )
+    monkeypatch.setattr(
+        recording,
+        "bind_report",
+        lambda *_args, **_kwargs: (synthetic_report.records, synthetic_report.header),
+    )
+    store = RecordingEvidenceStore(tmp_path / "store")
+    monkeypatch.setattr(
+        status_cli.VerificationReport, "load", lambda _: synthetic_report
+    )
+    monkeypatch.setattr(status_cli, "DoltEvidenceStore", lambda _path: store)
+
+    exit_code = status_cli.main(
+        [
+            "record",
+            "--report",
+            str(tmp_path / "report.jsonl"),
+            "--producer",
+            "producer",
+            "--store",
+            str(store.path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert validation_calls == 1
+    assert regenerated_receipts == [
+        receipt.receipt_id
+        for receipt in synthetic_report.header.compilation_bundle.receipts
+    ]
+    assert len(store.transactions) == 1
+    assert "Recorded schema-v3 run" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_record_cli_validation_failure_is_once_and_does_not_mutate_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys,
+    existing: bool,
+) -> None:
+    store_path = tmp_path / "store"
+    marker = store_path / "marker"
+    if existing:
+        store_path.mkdir()
+        marker.write_text("unchanged", encoding="utf-8")
+    validation_calls = 0
+
+    def reject(_report) -> None:
+        nonlocal validation_calls
+        validation_calls += 1
+        raise VerificationStoreError("stale report")
+
+    monkeypatch.setattr(status_cli.VerificationReport, "load", lambda _: object())
+    monkeypatch.setattr(recording, "_validate_current_report", reject)
+
+    exit_code = status_cli.main(
+        [
+            "record",
+            "--report",
+            str(tmp_path / "report.jsonl"),
+            "--producer",
+            "producer",
+            "--store",
+            str(store_path),
+        ]
+    )
+
+    assert exit_code == 2
+    assert validation_calls == 1
+    if existing:
+        assert marker.read_text(encoding="utf-8") == "unchanged"
+        assert tuple(store_path.iterdir()) == (marker,)
+    else:
+        assert not store_path.exists()
+    assert "stale report" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_record_cli_normalizes_provider_recipe_failure_without_store_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys,
+    synthetic_report,
+    existing: bool,
+) -> None:
+    store_path = tmp_path / "store"
+    marker = store_path / "marker"
+    if existing:
+        store_path.mkdir()
+        marker.write_text("unchanged", encoding="utf-8")
+
+    def provider_recipe(profile, receipts):
+        if profile.profile_id == "synthetic-jit":
+            _decoded_value(("float", "0x1p+999999999"))
+        return make_compilation_bundle(receipts)
+
+    monkeypatch.setattr(
+        status_cli.VerificationReport, "load", lambda _: synthetic_report
+    )
+    monkeypatch.setattr(
+        recording, "_current_profile_compilation_bundle", provider_recipe
+    )
+
+    exit_code = status_cli.main(
+        [
+            "record",
+            "--report",
+            str(tmp_path / "report.jsonl"),
+            "--producer",
+            "producer",
+            "--store",
+            str(store_path),
+        ]
+    )
+
+    assert exit_code == 2
+    if existing:
+        assert marker.read_text(encoding="utf-8") == "unchanged"
+        assert tuple(store_path.iterdir()) == (marker,)
+    else:
+        assert not store_path.exists()
+    error = capsys.readouterr().err
+    assert "canonical float specialization value is invalid" in error
+    assert "Traceback" not in error
+
+
+def test_record_cli_normalizes_metal_plan_mismatch_without_store_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys,
+    synthetic_report,
+) -> None:
+    store_path = tmp_path / "store"
+
+    def provider_recipe(profile, receipts):
+        del profile, receipts
+        raise MetalRecipeError(
+            "Metal recipe plan is not a current executable operation plan"
+        )
+
+    monkeypatch.setattr(
+        status_cli.VerificationReport, "load", lambda _: synthetic_report
+    )
+    monkeypatch.setattr(
+        recording, "_current_profile_compilation_bundle", provider_recipe
+    )
+
+    exit_code = status_cli.main(
+        [
+            "record",
+            "--report",
+            str(tmp_path / "report.jsonl"),
+            "--producer",
+            "producer",
+            "--store",
+            str(store_path),
+        ]
+    )
+
+    assert exit_code == 2
+    assert not store_path.exists()
+    error = capsys.readouterr().err
+    assert "current executable operation plan" in error
+    assert "Traceback" not in error
 
 
 @pytest.mark.parametrize(

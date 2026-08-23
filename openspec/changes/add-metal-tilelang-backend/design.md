@@ -149,8 +149,19 @@ receipt containing:
 - generated host and Metal device source digests;
 - the runtime artifact digest when the provider exposes it.
 
-Evidence points to the exact specialization receipt. Loading remains offline and
-validates only report bytes. Fresh stores use v3; v2 reports, stores, and
+Evidence points to the exact primary specialization receipt and separately
+relates every case-local supporting specialization, such as index validation. A
+pre-compilation error has no receipt and report binding never borrows one from a
+later case. Loading remains offline and validates only report bytes. Online
+recording independently regenerates current JIT artifact facts from a
+provider-owned specialization recipe that is reconstructable in a later process
+without retaining invocation tensors or launching the computational kernel; it
+does not treat incoming generated-artifact fields as their own baseline. Canonical
+axes are transport data rather than trusted runtime inputs: recording first decodes
+them into immutable family-typed recipes that validate exact fields, types, plans,
+address cardinalities, and dimensional relationships before address/JIT caches or
+the optional TileLang runtime are consulted.
+Fresh stores use v3; v2 reports, stores, and
 snapshots are rejected before mutation with actionable new-store or manual
 recreation guidance. Nothing migrates, wraps, rewrites, preserves, or deletes v2
 state automatically.

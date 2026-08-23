@@ -60,8 +60,34 @@ def _tree_values(tree: AddressTree) -> tuple[object, object]:
     return shape, stride
 
 
-@lru_cache(maxsize=512)
-def _build_address_plan(key: AddressPlanKey) -> AddressPlan:
+def _validated_tree(value: object) -> AddressTree:
+    if type(value) is not tuple or not value or type(value[0]) is not str:
+        raise RuntimeError("Metal specialization contains an invalid address-plan tree")
+    tag = value[0]
+    if tag == "leaf":
+        if (
+            len(value) != 3
+            or type(value[1]) is not int
+            or value[1] < 1
+            or type(value[2]) is not int
+            or value[2] < 0
+        ):
+            raise RuntimeError(
+                "Metal specialization contains an invalid address-plan leaf"
+            )
+        return value
+    if tag == "node":
+        if len(value) != 2 or type(value[1]) is not tuple:
+            raise RuntimeError(
+                "Metal specialization contains an invalid address-plan node"
+            )
+        return ("node", tuple(_validated_tree(child) for child in value[1]))
+    raise RuntimeError(
+        f"Metal specialization contains unknown address-plan tag {tag!r}"
+    )
+
+
+def _materialize_address_plan(key: AddressPlanKey) -> AddressPlan:
     _, offset, tree = key
     shape_values, stride_values = _tree_values(tree)
     layout = Layout(Shape(shape_values), Stride(stride_values))
@@ -78,6 +104,11 @@ def _build_address_plan(key: AddressPlanKey) -> AddressPlan:
     )
 
 
+@lru_cache(maxsize=512)
+def _build_address_plan(key: AddressPlanKey) -> AddressPlan:
+    return _materialize_address_plan(key)
+
+
 def address_plan(layout: Layout, *, offset: int = 0) -> AddressPlan:
     """Return the cached immutable address plan for an exact layout snapshot."""
     if not isinstance(layout, Layout):
@@ -92,6 +123,29 @@ def address_plan(layout: Layout, *, offset: int = 0) -> AddressPlan:
         tree,
     )
     return _build_address_plan(key)
+
+
+def address_plan_from_key(value: object, *, cache: bool = True) -> AddressPlan:
+    """Rebuild an immutable address plan from one canonical recipe key."""
+    if (
+        type(value) is not tuple
+        or len(value) != 3
+        or value[0] != "strideweave.metal.address-plan.v1"
+        or type(value[1]) is not int
+        or value[1] < 0
+    ):
+        raise RuntimeError("Metal specialization contains an invalid address-plan key")
+    key: AddressPlanKey = (
+        "strideweave.metal.address-plan.v1",
+        value[1],
+        _validated_tree(value[2]),
+    )
+    try:
+        return _build_address_plan(key) if cache else _materialize_address_plan(key)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Metal specialization contains an invalid address-plan tree"
+        ) from exc
 
 
 __all__: list[str] = []

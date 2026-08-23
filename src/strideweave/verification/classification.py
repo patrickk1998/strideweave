@@ -150,6 +150,7 @@ class _ProfileDefinition:
     profile: VerificationProfile
     kernel_prefix: str
     capabilities: Callable[[], tuple[OperationCapability, ...]]
+    manifest: Callable[[], tuple[tuple[str, str, str], ...]]
 
 
 _CPU_COMPILED = VerificationProfile(
@@ -164,11 +165,56 @@ _SYNTHETIC_JIT = VerificationProfile(
     "jit-specialization",
     (VerificationStage.TARGET,),
 )
+
+
+def _cpu_manifest() -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (operation, f"cpu.{operation}", variant)
+        for operation, _, variant, _, _ in _native_metadata()
+    )
+
+
+def _synthetic_manifest() -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (operation, f"synthetic-jit.{operation}", variant)
+        for operation, _, variant, _, _ in _native_metadata()
+    )
+
+
+def _metal_capabilities() -> tuple[OperationCapability, ...]:
+    from strideweave.carriers.metal.capabilities import metal_capabilities
+
+    return metal_capabilities()
+
+
+def _metal_manifest() -> tuple[tuple[str, str, str], ...]:
+    from strideweave.carriers.metal._verification import metal_kernel_metadata
+
+    return metal_kernel_metadata()
+
+
+_METAL_TILELANG = VerificationProfile(
+    "metal-tilelang",
+    "Metal",
+    "jit-specialization",
+    (VerificationStage.TARGET,),
+)
 _PROFILE_DEFINITIONS = tuple(
     sorted(
         (
-            _ProfileDefinition(_CPU_COMPILED, "cpu", cpu_capabilities),
-            _ProfileDefinition(_SYNTHETIC_JIT, "synthetic-jit", cpu_capabilities),
+            _ProfileDefinition(_CPU_COMPILED, "cpu", cpu_capabilities, _cpu_manifest),
+            _ProfileDefinition(
+                _METAL_TILELANG,
+                "metal",
+                _metal_capabilities,
+                _metal_manifest,
+            ),
+            _ProfileDefinition(
+                _SYNTHETIC_JIT,
+                "synthetic-jit",
+                cpu_capabilities,
+                _synthetic_manifest,
+            ),
         ),
         key=lambda definition: definition.profile.profile_id,
     )
@@ -196,7 +242,7 @@ def verification_profiles() -> tuple[VerificationProfile, ...]:
 
     Examples:
         >>> [profile.profile_id for profile in verification_profiles()]
-        ['cpu-compiled', 'synthetic-jit']
+        ['cpu-compiled', 'metal-tilelang', 'synthetic-jit']
     """
     return tuple(definition.profile for definition in _PROFILE_DEFINITIONS)
 
@@ -270,13 +316,8 @@ def kernel_manifest(profile: VerificationProfile) -> tuple[LogicalKernel, ...]:
     """
     definition = _definition(profile)
     kernels = tuple(
-        LogicalKernel(
-            profile.profile_id,
-            operation,
-            f"{definition.kernel_prefix}.{operation}",
-            variant,
-        )
-        for operation, _, variant, _, _ in _native_metadata()
+        LogicalKernel(profile.profile_id, operation, kernel_id, variant)
+        for operation, kernel_id, variant in definition.manifest()
     )
     ordered = tuple(
         sorted(kernels, key=lambda kernel: (kernel.kernel_id, kernel.variant))
@@ -385,10 +426,9 @@ def _validate_classification_catalog(manifest: tuple[LogicalKernel, ...]) -> Non
         | _TRANSCENDENTAL_OPERATIONS
         | {"matmul", "pow", "reduce_sum"}
     )
-    declared_keys = {(operation, "default") for operation in declared_operations}
-    manifest_keys = {(kernel.operation, kernel.variant) for kernel in manifest}
-    missing = manifest_keys - declared_keys
-    stale = declared_keys - manifest_keys
+    manifest_operations = {kernel.operation for kernel in manifest}
+    missing = manifest_operations - declared_operations
+    stale = declared_operations - manifest_operations
     if missing or stale:
         raise ValueError(
             "verification classifications do not exactly match the logical "

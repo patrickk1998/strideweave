@@ -6,11 +6,11 @@ layout. A carrier owns or references storage and dispatches the operations it
 supports; StrideWeave deliberately has no separate device abstraction.
 
 The project is currently a tested prototype rather than a complete PyTorch
-replacement. It provides native CPU kernels, a Python reference carrier,
-autograd, hierarchical layout transformations, a small module system, and a
-user-facing tensor layer (`strideweave.friendly`), with a minimal model layer
-(`strideweave.nn`) above it as a backstop. It does not yet include accelerator
-carriers.
+replacement. It provides native CPU kernels, a Python reference carrier, an
+initial TileLang-backed Metal accelerator carrier, autograd, hierarchical layout
+transformations, a small module system, and a user-facing tensor layer
+(`strideweave.friendly`), with a minimal model layer (`strideweave.nn`) above it
+as a backstop.
 
 ## Specifications And This Document
 
@@ -157,7 +157,7 @@ zero-copy views and their reverse-mode behavior. Dispatch itself is
 
 ## Carriers
 
-StrideWeave currently provides four carrier implementations:
+StrideWeave currently provides five carrier implementations:
 
 - `Generic(values, mutable=True, dtype=DType.Floating)` stores Python
   objects. It supports differentiable `Floating` values, non-differentiable
@@ -178,6 +178,15 @@ StrideWeave currently provides four carrier implementations:
   alignment, reduction, and accumulator mechanics live in the neighbouring
   headers. Duplicate dispatch names or kernel IDs are rejected rather than
   overwritten.
+- `Metal(size, *, mutable=True, dtype=DType.Float32, empty=False)` owns typed
+  accelerator storage through a private PyTorch MPS tensor and dispatches its
+  advertised plans through TileLang JIT specializations. It is an independent,
+  closed sibling carrier rather than a `CPU` subclass or a public device
+  abstraction. PyTorch and TileLang are optional and lazy: importing
+  StrideWeave or using CPU-only paths does not load them, while constructing
+  Metal performs one actionable availability check. The first implementation
+  uses immutable logical-to-physical address plans and deliberately simple
+  serial kernels to prioritize faithful plan coverage over optimization.
 - `FileBacked(filename=None, mutable=True, dtype=DType.Floating)` stores raw
   numeric values in a temporary binary file. It is intended for storage and
   movement rather than direct tensor computation.
@@ -191,8 +200,8 @@ these carriers accepts, allocates, and reports, and
 [`carrier-composition`](openspec/specs/carrier-composition/spec.md) states
 `Evictable`'s ownership and residency behavior.
 
-These four are closed implementations: `Carrier` is the extension interface and
-stays open, but `Generic`, `CPU`, `FileBacked`, and `Evictable` reject subclass
+These five are closed implementations: `Carrier` is the extension interface and
+stays open, but `Generic`, `CPU`, `Metal`, `FileBacked`, and `Evictable` reject subclass
 creation with a message naming the supported alternative, and each is declared
 `@final` on every import path, so a type checker reports the same closure before
 the program runs. Each states its allocation factories, storage normalization,
@@ -288,12 +297,13 @@ reduction association order is backend-defined. The policy is a deliberately
 evolvable starting point rather than a compatibility promise.
 
 `Generic` executes those plans and is the reference every other backend
-conforms to. Native `CPU` resolves the same plans: each operation asks the
-planner for its overload, promotion, arithmetic, accumulation, and output dtype
-while the GIL is still held, then releases it to run the kernel that plan
-selected. No backend carries a promotion table of its own, so Generic and CPU
-agree on Float32, Int32, and Bool storage/results by construction rather than by
-parallel maintenance.
+conforms to. Native `CPU` and TileLang `Metal` resolve the same central plans:
+each operation asks the planner for its overload, promotion, arithmetic,
+accumulation, and output dtype before it reaches backend work. CPU then releases
+the GIL for native execution; Metal requires an exact advertised plan before
+allocating or selecting a JIT specialization. No backend carries a promotion
+table of its own, so Generic, CPU, and Metal agree on Float32, Int32, and Bool
+storage/results by construction rather than by parallel maintenance.
 
 One consequence of the policy is worth calling out for `pow`: an exponent
 preserves an `Int32` result only when it is a weak *integer* in
@@ -337,7 +347,7 @@ descriptor fields, ordering, registration, sealing, and refusal contract.
 
 Capabilities belong to an exact carrier class and are never resolved through its
 bases: a class that declares nothing supports nothing. A class declares once —
-`Generic`, `CPU`, and `FileBacked` during carrier-package initialization,
+`Generic`, `CPU`, `Metal`, and `FileBacked` during carrier-package initialization,
 `FileBacked` declaring the empty set as a stated fact — and its answer is fixed
 from then on, because publication and sealing happen in the same call and first
 observation seals an undeclared class's empty set. That is what lets one carrier
@@ -562,6 +572,7 @@ set of descriptors:
 | --- | --- |
 | `Generic` | `Any`, `Floating` (legacy opaque storage), `Float32`, `Int32`, `Bool` |
 | `CPU` | `Float32`, `Int32`, `Bool` |
+| `Metal` | `Float32`, `Int32`, `Bool` |
 | `FileBacked` | `Floating`, `Float32`, `Int32` |
 | `Evictable` | Whatever both composed tiers accept, which must match |
 
@@ -746,7 +757,11 @@ dispatch names are not public operations.
 
 `Generic` provides Python reference implementations. `CPU` provides native C++
 kernels that use cached expanded layout keys and release the GIL in hot loops.
-`FileBacked` does not dispatch computational operations.
+`Metal` lowers every advertised operation to a TileLang specialization keyed by
+its stable logical kernel plus all compilation-affecting plan, dtype, layout,
+shape, and option axes; cached address plans preserve hierarchical and
+noncompact layout semantics. `FileBacked` does not dispatch computational
+operations.
 
 An Evictable tensor dispatches through a public `EvictableOperation` adapter,
 which is the worked example of the composite lowering described under Core
@@ -833,8 +848,9 @@ to the parent's self time. Aggregates derive from the immutable raw events.
 
 Profiling state is thread-local, so work on another thread requires its own
 context, and a context must exit on the thread that entered it. Timings measure
-synchronous host wall time only; asynchronous accelerator activity is not
-modeled. [`operation-profiling`](openspec/specs/operation-profiling/spec.md)
+the synchronous host boundary only. For Metal that includes host-side JIT
+selection and launch work but is not presented as device-kernel timing.
+[`operation-profiling`](openspec/specs/operation-profiling/spec.md)
 states the recorded boundary, event fields, nesting and timing arithmetic,
 thread rules, exclusions, and report determinism exactly.
 
@@ -954,7 +970,8 @@ each one actually does, rather than a blanket `strideweave.nn` restriction:
   stride-zero bias broadcast, so it requires CPU inputs in the flat
   column-major `[batch, features]` convention below.
 - `MSELoss` is composed from carrier-dispatched operations (`sub`, `pow`,
-  reduction), so it works on any carrier that supports them (CPU or Generic);
+  reduction), so it works on any carrier that supports them (CPU, Generic, or
+  Metal);
   it does require the prediction and target to share a flat two-mode layout.
 - `SGD` writes elementwise through each parameter's layout, so it works on any
   mutable parameter with a compatible gradient — no CPU or two-mode
@@ -987,17 +1004,20 @@ CPU tensors export DLPack through `__dlpack__` and `__dlpack_device__`, with
 hierarchical shapes and strides flattened for the DLPack representation. Export
 is the interesting boundary: it is zero-copy, same-device, and opt-in per
 carrier through a `dlpack_info` hook, so Generic, FileBacked, and Evictable do
-not participate, a multi-subtensor tensor is refused rather than partially
+not participate, and neither does Metal in this initial release. A
+multi-subtensor tensor is refused rather than partially
 described, and there is no import, copy, or cross-device path.
 
 `move(tensor, destination)` dispatches on the exact source and destination
 carrier class *pair* against an explicit process-global registry: CPU-to-
-FileBacked and FileBacked-to-CPU use native bulk copies, and every other pair —
-including a subclass of a registered class, and `(CPU, CPU)` — falls back to
-elementwise copying until registered on its own. A new pair is a public
+FileBacked and FileBacked-to-CPU use native bulk copies; CPU-to-Metal,
+Metal-to-CPU, and Metal-to-Metal use registered bulk operations over the private
+MPS storage. Every other pair — including a subclass of a registered class and
+`(CPU, CPU)` — falls back to elementwise copying until registered on its own. A new pair is a public
 `MoveOperation` subclass implementing the protected `_copy` hook, registered for
 its exact pair. A successful move releases the source carrier only after that
-hook returns, and autograd moves gradients back into fresh source-class storage.
+hook returns, and Metal synchronizes before CPU-visible decode or source release.
+Autograd moves gradients back into fresh source-class storage.
 Moving a broadcast tensor preserves its exact stride-zero layout and copies its
 `cosize` physical span rather than materializing `size` logical elements, so its
 backward consumes an injective same-shape gradient before the broadcast node
@@ -1027,8 +1047,12 @@ residency transitions themselves.
 
 What is deliberately not built yet, and why it is safe to leave undone:
 
-- No CUDA, Metal, or other accelerator carriers. The carrier interface is the
-  extension point for one; nothing in the core assumes a device abstraction.
+- Metal is the only accelerator carrier. It currently allocates through private
+  PyTorch MPS tensors and uses straightforward TileLang JIT kernels; direct
+  Metal allocation, PyTorch-free interchange, kernel optimization, autotuning,
+  CUDA, and ROCm are deliberately outside this first backend. Nothing in the
+  core assumes a device abstraction, so future accelerators remain sibling
+  carriers rather than device flags on Tensor.
 - No carrier stores `Float64`. It names widened accumulator arithmetic only, and
   a request for it is gated by each backend's exact capabilities rather than
   silently downgraded.
@@ -1061,39 +1085,60 @@ What is deliberately not built yet, and why it is safe to leave undone:
 
 ## Local Kernel Verification
 
-`test_backend(output=None)` verifies the installed CPU backend without CI,
-network, or database access.
+`verify_backend(target, *, output=None)` selects one explicit installed target
+profile without CI, network, or database access. CPU remains the oracle for
+every target; the shipped targets are the native CPU itself and TileLang Metal.
 
 ```python
-report = sw.test_backend()
-sw.test_backend("kernel-evidence.jsonl")
+cpu_report = sw.verify_backend("cpu-compiled")
+metal_report = sw.verify_backend(
+    "metal-tilelang", output="kernel-evidence.jsonl"
+)
 ```
 
 Its organizing idea is that coverage is *enumerated from the build rather than
-asserted by the test*. Cases are derived from the native kernel manifest and the
-backend's active capability plans, so every registered kernel is either actively
-certified or explicitly deferred with a stated reason, and a kernel added in C++
-without a classification fails the manifest check rather than passing silently.
-Stage One compares the correctly rounded and exact-integer kernels bit for bit
-against `Generic` on seeded arbitrary finite encoded inputs; operations whose
-accumulation order is normative use payloads whose every legal partial result is
-exactly representable, so a comparison never encodes an association order the
-contract does not fix. Stage Two runs ordinary target execution only where an
-exact kernel-ID/variant certificate reconstructed from Stage One evidence covers
-the plan it depends on — a missing, forged, or incomplete certificate blocks its
-dependent cases without executing them. Floating `pow`,
-vendor-transcendental kernels, and autograd certification remain visible v0
-deferrals rather than being reported as passes.
+asserted by the test*. Each profile supplies a finite logical-kernel manifest,
+its exact executable capability plans, and independent movement/structural
+subjects. Missing, duplicate, stale, or unknown pairings fail completeness
+before target execution. Stage One certifies the installed CPU kernels against
+`Generic`. Stage Two then matches the selected target to complete CPU authority
+by operation, exact plan obligations, and verification class rather than by
+requiring the target and oracle to share a kernel ID. Missing, forged, or
+incomplete authority produces blocked evidence without launching the target.
+
+Metal runs the same generic case graph over real Metal storage. It synchronizes
+before decode and classification, and every computational row binds the exact
+primary TileLang specialization selected before that launch. Case-local helper
+launches, currently indexing bounds validation, are bound separately as
+supporting receipts; an error before compilation carries no receipt and cannot
+borrow one from a later case. Distinct shapes, layouts, dtypes, plans, or options
+may share one logical classification while producing different receipt IDs.
+Floating `pow`, vendor-transcendental accuracy, and
+autograd certification remain explicit deferrals rather than being reported as
+passes; ordinary focused tests continue to own backward behavior.
 [`kernel-verification`](openspec/specs/kernel-verification/spec.md) states the
 classification, staging, payload, envelope, and gate contract exactly.
 
 The returned report is immutable and provenance-complete: alongside passed,
-failed, errored, blocked, and deferred attempts, it binds the native compilation
-manifest, target and toolchain, per-kernel receipts and source closures,
-verification requirements, tolerance policies, Generic reference identity, and
-Stage One certificates. It deliberately contains no wall-clock timestamp, CI
-status, database state, source commit, or status aggregation — those are facts
-about a run's environment, not about the build's behavior.
+failed, errored, blocked, and deferred attempts, schema v3 binds one mixed
+compilation bundle. CPU rows use compiled-executable receipts; Metal rows use
+JIT-specialization receipts covering typed specialization axes, complete stable
+source closure, generated host/device source, and every runtime artifact the
+provider exposes. The header also binds verification requirements, tolerance
+policies, Generic reference identity, and Stage One certificates. It
+deliberately contains no wall-clock timestamp, CI status, database state, source
+commit, or status aggregation — those are facts about a run's environment, not
+about the build's behavior.
+
+Strict report loading validates those relationships from bytes and remains
+offline. Recording is intentionally online: before store initialization it
+recompiles provider-owned JIT recipes reconstructed from canonical specialization
+facts, including in a later process, without retaining invocation tensors or
+launching their computational kernels. It reconstructs current generated-artifact
+facts independently of the incoming report and rejects stale, missing, or
+unreconstructable facts. Canonical axes cross a typed recipe boundary before that
+runtime work: each Metal family validates exact fields, operation plans, address
+cardinalities, and dimensional relationships before caches or TileLang are used.
 
 ```python
 summary = report.summary()
@@ -1138,7 +1183,7 @@ Three properties shape everything else about it:
   being resolved by timestamp; `status` is a factual inventory, `stale` explains
   identity differences axis by axis, and `todo` is an unranked deterministic set
   difference.
-- Access is explicit. `test_backend`, imports, and every `--help` path are
+- Access is explicit. `verify_backend`, imports, and every `--help` path are
   offline and mutation-free; a store is touched only by an explicit
   record/query command, and a network endpoint only under `--publish` or
   `--refresh`.
@@ -1177,14 +1222,16 @@ evidence before it initializes or mutates anything, merging atomically. Local
 paths and `file:` endpoints are the initial transport; no central service or
 account is required.
 
-Confidence policies, ranked verification levels, autotuning, real JIT adapters,
-MSVC/Visual Studio provenance, manual assembly/sanitizer levels, and CI
-integration remain future work.
+Confidence policies, ranked verification levels, Metal autotuning and kernel
+optimization, additional JIT providers, MSVC/Visual Studio provenance, manual
+assembly/sanitizer levels, and CI integration remain future work.
 
 ## Development
 
 The package requires Python 3.12 or newer and builds its native modules with
-scikit-build-core and pybind11.
+scikit-build-core and pybind11. The default development environment is CPU-only;
+Apple silicon contributors use `uv sync --extra metal --group dev` to add the
+pinned TileLang and PyTorch MPS runtime before running Metal-marked tests.
 
 Development workflow lives in [`CONTRIBUTING.md`](CONTRIBUTING.md): environment
 setup, the native rebuild step, the local verification suite, the test markers
