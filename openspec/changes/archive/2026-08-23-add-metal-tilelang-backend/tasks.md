@@ -36,4 +36,4 @@
 - [x] 5.2 Update `INVARIANTS.md` and enforcement evidence for RT007, RT012, RT023 including RT023e, and RT024, adding a new invariant only if synchronization or specialization identity is a distinct cross-cutting rule.
 - [x] 5.3 Update public documentation, type stubs, docstrings, and optional-installation guidance for Metal and `verify_backend`, while identifying direct Metal allocation, PyTorch-free interop, optimization, autotuning, and non-Metal accelerators as follow-on work.
 - [x] 5.4 Run strict OpenSpec validation, the full CPU test suite, provenance/store suites, temporary and provenance-backed Metal suites on supported hardware, Ruff, pyright, duplication checks, and applicable strict-warning or sanitizer jobs; document any hardware-gated validations that cannot run in the PR environment.
-- [ ] 5.5 Review the delivered result against the proposal, delta specs, design, repository invariants, and acceptance criteria before preparing one pull request.
+- [x] 5.5 Review the delivered result against the proposal, delta specs, design, repository invariants, and acceptance criteria before preparing one pull request.

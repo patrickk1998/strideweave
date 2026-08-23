@@ -18,10 +18,10 @@ exchange validated snapshots.
 
 | Term | Meaning |
 | --- | --- |
-| tracking report | A provenance-complete v2 verification report accepted by `VerificationReport.load`, carrying the compilation, verification, tolerance, oracle, certificate, case, and outcome identities required for tracking. Tracking consumes those identities as one validated input and does not redefine their verification semantics. |
-| compilation receipt | The content-addressed provenance record for one exact kernel and variant, binding its provider, target, toolchain, compile invocation, compiled object, operation-owned source closure, and shared artifact provenance. |
+| tracking report | A provenance-complete schema-v3 verification report accepted by `VerificationReport.load`, carrying the compilation, verification, tolerance, oracle, certificate, case, and outcome identities required for tracking. Tracking consumes those identities as one validated input and does not redefine their verification semantics. |
+| compilation receipt | A content-addressed compiled-executable or JIT-specialization provenance record for one exact logical kernel and variant, binding its provider, target, toolchain, complete source closure, generated artifacts, and kind-specific executable or specialization facts. |
 | source closure | The complete ordered transitive input set reported for one compilation, including the operation-owned source and every project, generated, external-user, SDK, standard-library, compiler, and build input selected by that action. |
-| current baseline | The installed build's locally constructed compilation manifest, verification specification, tolerance policies, oracle references, and required evidence cases. |
+| current baseline | The installed build's locally constructed compilation bundle, verification specification, tolerance policies, oracle references, and required evidence cases for the selected profile. |
 | evidence | One immutable raw verification outcome and its exact requirement, report, compilation, tolerance, oracle, payload, and certificate relationships. |
 | observation | One producer's immutable provenance for retaining an evidence fact, including its producer identity and optional source-revision and artifact metadata. |
 | direct target | A run whose execution target and represented target have the same exact target identity. |
@@ -30,12 +30,13 @@ exchange validated snapshots.
 
 ## Boundaries
 
-This baseline captures direct-target evidence from the current native C++
-provider. It does not define a compiler or build-generator support matrix,
-proxy-target ingestion, JIT-framework providers, confidence or risk policy,
-autotuning, CI integration, historical snapshot retention, or network exchange
-transports. Those areas require separate behavior-change decisions. Status and
-todo results remain factual and unranked within this capability.
+This baseline captures direct-target evidence from the current compiled CPU and
+TileLang Metal JIT providers. It does not define additional compilation
+providers, a broader compiler or build-generator support matrix, proxy-target
+ingestion, confidence or risk policy, autotuning, CI integration, historical
+snapshot retention, or network exchange transports. Those areas require
+separate behavior-change decisions. Status and todo results remain factual and
+unranked within this capability.
 
 ## Requirements
 
@@ -171,35 +172,38 @@ independent facts, regardless of their recording times.
 
 ### Requirement: Local state is lazy, isolated, compatible, and atomic
 
-The default store location SHALL be the platform application-data base followed
-by `strideweave/kernel-evidence`: `~/Library/Application Support` on macOS,
-`${XDG_DATA_HOME:-~/.local/share}` on Linux, and `%LOCALAPPDATA%` on Windows
-with `~/AppData/Local` as its fallback. `STRIDEWEAVE_STATUS_HOME` SHALL replace
-the platform base while preserving the stable suffix. Every command SHALL
-accept `--store PATH` as an optional complete location override and SHALL
-default to that platform location.
+The default store location SHALL remain the platform application-data base
+followed by `strideweave/kernel-evidence`. `STRIDEWEAVE_STATUS_HOME` SHALL
+replace only that base, and every command SHALL continue accepting optional
+`--store PATH` as a complete override.
 
-Resolving a default or overridden path SHALL only select local state.
-Initialization SHALL occur on the first explicit persistence or query
-operation. Distinct selected store paths SHALL keep their facts isolated. A
-compatible earlier store SHALL be upgraded atomically while preserving its
-facts. An incompatible runtime or schema history SHALL terminate the command
-with process status 2 before partially applying an operation.
+Path resolution and every help path SHALL leave an absent store uninitialized.
+The first explicit persistence or query SHALL initialize a fresh schema-v3
+store, and distinct paths SHALL remain isolated. Every recording and refresh
+SHALL commit atomically; failure SHALL retain exactly the prior committed state.
 
-Every recording and refresh SHALL commit all of its facts atomically. A failure
-SHALL leave the previously committed state intact.
+A store whose schema is v2 SHALL be detected before migrations, table changes,
+or any other mutation. Every command against it SHALL return process status 2
+with an actionable diagnostic requiring a new store path or an explicit manual
+recreation after the user has handled existing data. The system SHALL not
+migrate, rewrite, delete, or preserve v2 rows as v3 facts automatically. An
+unknown or corrupt schema SHALL likewise fail before mutation.
 
 #### Scenario: Inspect command help with an unused store path
 
-- **WHEN** a caller invokes a help path while a store override names a path that
-  does not exist
-- **THEN** help returns process status 0 and that path remains uninitialized
+- **WHEN** help is invoked while `--store` names an absent path
+- **THEN** it returns status 0 and leaves that path uninitialized
 
 #### Scenario: Fail during an atomic write
 
-- **WHEN** one fact in a recording or refresh operation cannot be persisted
-- **THEN** the operation returns process status 2
-- **AND** the store retains exactly its previously committed facts
+- **WHEN** one fact in a recording or refresh cannot be persisted
+- **THEN** status 2 is returned and prior facts remain unchanged
+
+#### Scenario: Reject a v2 store before mutation
+
+- **WHEN** any command opens a schema-v2 store
+- **THEN** it returns status 2 before mutation and explains how to select a new
+  store or recreate the old path manually
 
 ### Requirement: Status returns every matching factual observation
 
@@ -427,3 +431,132 @@ their command-specific result contracts.
 - **WHEN** a required input is absent or an option interaction is invalid
 - **THEN** the command returns process status 2 with an actionable diagnostic
   on standard error
+
+### Requirement: Tracking stores schema-v3 selected-target facts directly
+
+`record` SHALL accept only a strictly loaded schema-v3 report and reconcile its
+selected target profile, CPU oracle dependencies, compilation bundle, exact
+compiled-executable and JIT-specialization receipts, verification requirements,
+tolerances, certificates, and evidence graph against the current installed
+baseline before store initialization. A v2 report or any stale, incomplete,
+forged, or inconsistent v3 graph SHALL return status 2 before mutation.
+For JIT receipts, current-baseline reconciliation SHALL independently regenerate
+the current specialization-specific compilation and artifact facts without
+launching computational kernels; it SHALL NOT echo the incoming receipt as its
+own expected baseline. Provider-owned recipes SHALL be reconstructable from
+canonical specialization facts in a later process and SHALL NOT retain
+invocation operands or user storage. Missing or unreconstructable current JIT
+facts SHALL fail closed before store initialization.
+
+One verification run SHALL have exactly one selected target profile. CPU oracle
+certificates, evidence, and receipts used by another target SHALL be stored as
+dependencies of that selected-target run, not as a second target run. Immutable
+content identities and producer observations SHALL coexist append-orientedly;
+exact repetition SHALL remain idempotent and contradictory observations SHALL
+remain independent raw facts.
+
+#### Scenario: Create and record into a fresh v3 store
+
+- **WHEN** a current valid v3 report is recorded to an absent store
+- **THEN** one atomic operation initializes v3 and stores every selected-target
+  outcome, dependency, relationship, and producer observation
+
+#### Scenario: Record mixed compiled and JIT provenance
+
+- **WHEN** a Metal report references CPU compiled receipts and TileLang JIT receipts
+- **THEN** one Metal-selected run retains both receipt kinds and their exact graph
+
+#### Scenario: Reject same-identity JIT artifact drift
+
+- **WHEN** the current JIT provider regenerates different host, device, or runtime
+  artifacts while declared version and specialization axes remain unchanged
+- **THEN** recording rejects the report before initializing or mutating the store
+
+#### Scenario: Record a JIT report in a later process
+
+- **WHEN** one process writes a valid Metal report and an ordinary later CLI
+  process records it against the unchanged installation
+- **THEN** the provider reconstructs every selected recipe from canonical facts,
+  retains no invocation operands, launches no computational kernel, and records
+  the run atomically
+
+#### Scenario: Reject a v2 report before store creation
+
+- **WHEN** `record` receives a schema-v2 report and the store path is absent
+- **THEN** it returns status 2 with v3 guidance and leaves the path absent
+
+### Requirement: Queries describe selected profiles and provenance axes factually
+
+`status` SHALL filter and return observations for selected target profile,
+logical kernel, variant, class, case, and producer in deterministic order,
+including referenced oracle dependencies and receipt discriminators. `stale`
+SHALL compare provider, target, toolchain, runtime, specialization, generated
+source, compilation-input closure, executable artifact, verification,
+tolerance, and oracle axes independently. `todo` SHALL return the stable
+unranked difference between the selected profile's current complete
+requirements and matching observations.
+
+All successful queries SHALL be offline, factual, and mutation-free. Invalid
+selectors, unavailable current baselines, or v2 state SHALL return status 2.
+
+#### Scenario: Report selected Metal status
+
+- **WHEN** status selects `metal-tilelang`
+- **THEN** it returns matching Metal observations and their CPU oracle dependencies
+
+#### Scenario: Explain a changed JIT specialization
+
+- **WHEN** stored and current JIT receipts differ in specialization or generated source
+- **THEN** stale reports each changed axis independently
+
+#### Scenario: Compute target-specific todo
+
+- **WHEN** some current Metal requirements lack matching observations
+- **THEN** todo returns exactly those requirements in deterministic unranked order
+
+### Requirement: Publication and refresh exchange complete v3 graphs atomically
+
+Publication SHALL create one canonical content-addressed current schema-v3
+snapshot per producer containing exactly its observations and complete required
+run, evidence, receipt, certificate, oracle, and compilation relationships.
+Refresh SHALL strictly validate every snapshot envelope, schema, identity,
+canonical encoding, and complete relationship graph before store initialization
+or mutation, then merge all accepted snapshots atomically and idempotently.
+
+V2 snapshots and reports, missing mixed-receipt relationships, forged content,
+or immutable identity conflicts SHALL return status 2 without changing the
+destination. Ordinary record and query paths SHALL remain local; only explicit
+publication or refresh SHALL access a configured exchange endpoint.
+
+#### Scenario: Publish a mixed-provenance snapshot
+
+- **WHEN** a producer publishes Metal observations
+- **THEN** its snapshot contains the selected-target facts and complete CPU and
+  TileLang dependency graph
+
+#### Scenario: Refresh a valid v3 snapshot
+
+- **WHEN** a complete canonical v3 snapshot is refreshed twice
+- **THEN** both merges succeed atomically and the second changes no factual counts
+
+#### Scenario: Reject a v2 snapshot atomically
+
+- **WHEN** refresh encounters a schema-v2 snapshot
+- **THEN** it returns status 2 before initializing or changing the destination
+
+### Requirement: Tracking commands use v3-only replacement interfaces
+
+The tracking CLI and public tracking APIs SHALL operate only on schema-v3
+reports, stores, queries, publications, and refreshes. Successful commands SHALL
+return status 0. Invalid usage, report schema, store schema, baseline, or
+exchange input SHALL return status 2 with an actionable diagnostic on standard
+error. Help SHALL describe the v3-only boundary, fresh-store behavior, and v2
+create/recreate guidance without initializing storage or accessing a network.
+
+No compatibility wrapper, automatic migration, preservation mode, or deletion
+option for v2 SHALL be part of the replacement surface.
+
+#### Scenario: Explain v2 replacement from help
+
+- **WHEN** a caller inspects command help
+- **THEN** it sees v3-only inputs, exit behavior, and manual new-store guidance
