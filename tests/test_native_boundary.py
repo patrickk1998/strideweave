@@ -1,10 +1,12 @@
-"""The boundary between instrumented native work and the real-Dolt suites.
+"""The boundary between instrumented Linux native work and real-Dolt suites.
 
-CI runs the sanitizers over everything except ``dolt_integration`` and
-``dolt_lifecycle``, so those two selections must contain no native work at all.
-``conftest.native_work_forbidden`` makes that true by construction for every
-marked item; these tests prove the guard itself covers the whole boundary and
-actually refuses, and that the two selections stay disjoint and exhaustive.
+CI runs the sanitizers over every Linux-capable selection except
+``dolt_integration`` and ``dolt_lifecycle``. The separate ``metal`` selection
+requires Apple silicon and is outside that platform boundary. The two Dolt
+selections must contain no native work at all; ``conftest.native_work_forbidden``
+makes that true by construction for every marked item. These tests prove the
+guard covers the whole Dolt boundary and actually refuses, and that the two
+Dolt selections stay disjoint and exhaustive.
 """
 
 from __future__ import annotations
@@ -21,9 +23,13 @@ import strideweave.verification.store.recording as recording_module
 from strideweave._carrier import (  # pyright: ignore[reportMissingModuleSource]
     _cpu_native_kernel_metadata as captured_native_kernel_metadata,
 )
-from strideweave.verification.classification import native_cpu_kernel_manifest
-from strideweave.verification.provenance import load_compilation_manifest
+from strideweave.verification.classification import (
+    kernel_manifest,
+    verification_profile,
+)
+from strideweave.verification.provenance import installed_compilation_bundle
 from strideweave.verification.reporting import bind_report
+from strideweave.verification.stage_two import _current_profile_compilation_bundle
 
 _MARKERS = ("dolt_integration", "dolt_lifecycle")
 
@@ -41,27 +47,31 @@ def test_every_binding_that_reaches_the_installed_build_is_guarded() -> None:
     importlib.import_module("strideweave.verification.status_cli")
     bindings = {(module.__name__, name) for module, name in conftest.native_bindings()}
 
-    assert ("strideweave", "test_backend") in bindings
-    assert ("strideweave.verification.api", "test_backend") in bindings
-    assert ("strideweave.verification.store.querying", "test_backend") in bindings
-    assert ("strideweave.verification.provenance", "load_compilation_manifest") in (
-        bindings
-    )
-    assert ("strideweave.verification.reporting", "load_compilation_manifest") in (
+    assert ("strideweave", "verify_backend") in bindings
+    assert ("strideweave.verification.api", "verify_backend") in bindings
+    assert ("strideweave.verification.provenance", "installed_compilation_bundle") in (
         bindings
     )
     assert ("strideweave.verification.reporting", "bind_report") in bindings
     assert ("strideweave.verification.store.recording", "bind_report") in bindings
     assert (
+        "strideweave.verification.stage_two",
+        "_current_profile_compilation_bundle",
+    ) in bindings
+    assert (
+        "strideweave.verification.store.recording",
+        "_current_profile_compilation_bundle",
+    ) in bindings
+    assert (
         "strideweave.verification.classification",
-        "native_cpu_kernel_manifest",
+        "kernel_manifest",
     ) in (bindings)
     for module_name, attribute in conftest.NATIVE_ENTRY_POINTS:
         assert (module_name, attribute) in bindings
 
 
 def test_the_guard_refuses_every_native_entry_point_and_restores_it() -> None:
-    original = sw.test_backend
+    original = sw.verify_backend
 
     with conftest.native_work_forbidden() as bindings:
         assert bindings
@@ -70,11 +80,17 @@ def test_the_guard_refuses_every_native_entry_point_and_restores_it() -> None:
                 getattr(module, name)()
         assert recording_module.bind_report is not bind_report
 
-    assert sw.test_backend is original
+    assert sw.verify_backend is original
     assert recording_module.bind_report is bind_report
     assert (
-        load_compilation_manifest
-        is sys.modules["strideweave.verification.provenance"].load_compilation_manifest
+        recording_module._current_profile_compilation_bundle
+        is _current_profile_compilation_bundle
+    )
+    assert (
+        installed_compilation_bundle
+        is sys.modules[
+            "strideweave.verification.provenance"
+        ].installed_compilation_bundle
     )
 
 
@@ -92,7 +108,7 @@ def test_the_guard_refuses_the_compiled_metadata_export_itself() -> None:
 
     assert carrier._cpu_native_kernel_metadata is original
     assert len(carrier._cpu_native_kernel_metadata()) == len(
-        native_cpu_kernel_manifest()
+        kernel_manifest(verification_profile("cpu-compiled"))
     )
 
 
@@ -135,8 +151,12 @@ def test_the_marked_facts_need_no_installed_build() -> None:
     assert report.header is not None
     assert report.records
     assert changed.records != report.records
-    manifest = recording_module._report_manifest(report)
-    assert manifest.target.architecture == synthetic_evidence.ARCHITECTURE
+    target_receipt = next(
+        receipt
+        for receipt in report.header.compilation_bundle.receipts
+        if receipt.profile_id == report.header.selected_target_profile
+    )
+    assert target_receipt.target.architecture == "synthetic-arch64"
 
 
 def test_the_two_ci_selections_are_disjoint_exhaustive_and_derived() -> None:

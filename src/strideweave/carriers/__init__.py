@@ -20,6 +20,7 @@ from .dtype import (
 from .evictable import Evictable, EvictableOperation
 from .file_backed import FileBacked
 from .generic import Generic
+from .metal import Metal
 from .operation_capability import (
     DependentCarrier,
     OperandCapability,
@@ -41,6 +42,7 @@ __all__ = [
     "Generic",
     "Level",
     "LevelExtent",
+    "Metal",
     "OperandCapability",
     "OperationCapability",
     "RepresentationRule",

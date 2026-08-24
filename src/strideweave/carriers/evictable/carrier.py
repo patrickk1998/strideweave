@@ -12,6 +12,20 @@ from ..operation_capability import DependentCarrier, OperationCapability
 from ..operation_helpers import execute_lowered_operation
 
 
+def _require_exact_metal_move_edge(source_class: type, destination_class: type) -> None:
+    from ..metal import Metal
+
+    if Metal not in (source_class, destination_class):
+        return
+    from ..move.ops import _has_registered_move_operation
+
+    if not _has_registered_move_operation(source_class, destination_class):
+        raise RuntimeError(
+            "Evictable Metal tiers require an exact registered move operation for "
+            f"{source_class.__name__} to {destination_class.__name__}"
+        )
+
+
 def _new_like_with_dtype(
     prototype: Carrier,
     values: Iterable[Any],
@@ -113,6 +127,8 @@ class Evictable(DependentCarrier):
 
         # Validate both directions now; resolve them again for every transition
         # so later registry overrides take effect.
+        _require_exact_metal_move_edge(type(primary), type(secondary))
+        _require_exact_metal_move_edge(type(secondary), type(primary))
         dispatch_move(type(primary), type(secondary))
         dispatch_move(type(secondary), type(primary))
         self._size = size
@@ -381,6 +397,7 @@ class Evictable(DependentCarrier):
             return
         from ..move import dispatch_move
 
+        _require_exact_metal_move_edge(type(self._primary), type(self._secondary))
         destination, destination_token, replaces_secondary = self._prepare_destination(
             self._secondary, self._secondary_token
         )
@@ -431,6 +448,7 @@ class Evictable(DependentCarrier):
             return
         from ..move import dispatch_move
 
+        _require_exact_metal_move_edge(type(self._secondary), type(self._primary))
         destination, destination_token, replaces_primary = self._prepare_destination(
             self._primary, self._primary_token
         )

@@ -11,7 +11,7 @@ summary: Carrier construction, dtype support, value access, factories, mutation,
 ## Purpose
 
 Define the storage-facing contract shared by carriers and the concrete storage
-behavior of Generic, CPU, FileBacked, and Evictable carriers.
+behavior of Generic, CPU, Metal, FileBacked, and Evictable carriers.
 
 ## Terminology
 
@@ -72,6 +72,7 @@ The accepted sets SHALL be:
 | --- | --- |
 | `Generic` | `DType.Any`, `DType.Floating`, `DType.Float32`, `DType.Int32`, `DType.Bool` |
 | `CPU` | `DType.Float32`, `DType.Int32`, `DType.Bool` |
+| `Metal` | `DType.Float32`, `DType.Int32`, `DType.Bool` |
 | `FileBacked` | `DType.Floating`, `DType.Float32`, `DType.Int32` |
 | `Evictable` | The identity-based intersection reported by its primary and secondary tiers |
 
@@ -81,7 +82,7 @@ dtypes.
 
 #### Scenario: Query support independently of current storage
 
-- **WHEN** a `CPU` currently holding `Float32` is asked whether it supports
+- **WHEN** a `Metal` currently holding `Float32` is asked whether it supports
   `DType.Int32`
 - **THEN** it returns `True` without changing or allocating storage
 
@@ -371,33 +372,36 @@ the wrapper SHALL remain the version authority visible to its Tensors.
 ### Requirement: Scatter maps logical source values into destination storage
 
 `scatter(to_scatter, scatter_onto, mapping, mapping_offset=0)` SHALL write
-source Tensor values into the receiver's storage and return `None`.
-`to_scatter` and `scatter_onto` name single-subtensor Tensors; `mapping` names a
-`Layout` whose shape equals the source layout shape; `mapping_offset` names an
-optional non-negative integer offset and SHALL default to zero.
+source Tensor values into receiver storage and return `None`. The two Tensor
+arguments SHALL be single-subtensor; `mapping` SHALL be a `Layout` with source
+shape; and `mapping_offset` SHALL be a non-negative integer defaulting to zero.
+For source logical index `i`, the destination physical index SHALL be
+`scatter_onto.offset + mapping_offset + mapping.index(i)`.
 
-`scatter_onto` SHALL be backed by the receiver. For each source logical index
-`i`, the destination physical index SHALL be
-`scatter_onto.offset + mapping_offset + mapping.index(i)`. When `to_scatter` or
-`scatter_onto` is not a Tensor, or when `mapping` is not a `Layout`, the call
-SHALL fail with `TypeError`. When `scatter_onto` is backed by a different
-receiver, when `mapping.shape` differs from the source layout shape, or when
-either Tensor has a multi-subtensor representation, the call SHALL fail with
-`ValueError`. When `mapping_offset` is invalid or a computed destination index
-is outside the receiver, the call SHALL fail before an out-of-range write.
-Public mutability and dtype normalization SHALL apply to every write.
+Invalid argument types SHALL raise `TypeError`. A foreign destination,
+mismatched mapping shape, multi-subtensor argument, invalid offset, or
+out-of-range destination SHALL fail before any write. Public mutability and
+dtype normalization SHALL apply. A failed call SHALL preserve values and
+version. A successful Metal call SHALL complete all writes before returning and
+advance the visible Metal version at least once; aliases SHALL observe it.
 
-Generic and CPU SHALL implement this contract. Evictable SHALL require a
-promoted hierarchy, lower to its primary tier, and advance the wrapper version
-once. FileBacked SHALL fail with `NotImplementedError` because it does not
-support scatter.
+Generic, CPU, and Metal SHALL implement this carrier mutation. Evictable SHALL
+require promotion, lower to its primary tier, and advance the wrapper version
+once. FileBacked SHALL raise `NotImplementedError`. This carrier method is
+distinct from the computational `scatter` operation, which returns a new Tensor
+under operation dispatch and its own dtype and autograd contract.
 
 #### Scenario: Scatter through a mapping
 
-- **WHEN** valid source and destination Tensors and a matching mapping are
-  supplied to a mutable Generic or CPU receiver
-- **THEN** each source logical value is stored at the mapped destination index
-  and the receiver version advances
+- **WHEN** valid source, destination, and mapping values are supplied to a
+  mutable Generic, CPU, or Metal receiver
+- **THEN** every source value is stored at its mapped destination and the
+  receiver version advances
+
+#### Scenario: Fail Metal scatter atomically
+
+- **WHEN** Metal scatter validation or execution fails
+- **THEN** destination values and visible version remain unchanged
 
 ### Requirement: Release permanently invalidates storage access
 
@@ -423,3 +427,47 @@ subsequent residency transitions.
 
 - **WHEN** `new_like(values)` is called on a released carrier
 - **THEN** it returns fresh usable storage without reading the released values
+
+### Requirement: Metal owns typed accelerator storage
+
+`Metal(size, *, mutable=True, dtype=DType.Float32, empty=False)` SHALL return
+accelerator storage with `size` physical slots. `size` names the slot count and
+SHALL be a non-negative integer; another type SHALL fail with `TypeError`, and a
+negative value SHALL fail with `ValueError`. `mutable` states intrinsic
+mutability, SHALL be optional, and SHALL default to `True`. `dtype` names the
+homogeneous storage dtype, SHALL be optional, and SHALL default to
+`DType.Float32`. `empty` states whether initialization may be skipped, SHALL be
+optional, and SHALL default to `False`.
+
+Unless `empty=True`, Float32, Int32, and Bool slots SHALL initially contain
+`0.0`, `0`, and `False` respectively. Reads and successful writes SHALL obey the
+common physical-index, normalization, mutability, version, ownership, and
+release contracts. `new_like` and `allocate_like` SHALL return fresh Metal
+storage and preserve the receiver's dtype unless an accepted dtype override is
+supplied.
+
+Construction SHALL fail with `RuntimeError` before exposing storage when the
+required Metal runtime is unavailable. Missing optional accelerator
+dependencies SHALL not prevent CPU-only import or execution, and attempting to
+construct Metal without them SHALL fail with an actionable `RuntimeError`.
+
+#### Scenario: Allocate initialized Metal storage
+
+- **WHEN** a caller constructs `Metal(3, dtype=DType.Float32)` on an available
+  Metal runtime
+- **THEN** it returns live mutable size-three Float32 storage whose slots read
+  as `0.0`
+
+#### Scenario: Preserve CPU-only use without accelerator dependencies
+
+- **WHEN** the optional Metal dependency set is absent and a caller uses only
+  CPU functionality
+- **THEN** importing and executing CPU functionality succeeds without loading
+  the Metal runtime
+
+#### Scenario: Refuse unavailable Metal construction
+
+- **WHEN** a caller constructs Metal without an available supported Metal
+  runtime
+- **THEN** construction fails with `RuntimeError` before exposing partial
+  storage

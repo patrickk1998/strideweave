@@ -38,6 +38,9 @@ from .carriers import (
     LevelExtent as LevelExtent,
 )
 from .carriers import (
+    Metal as Metal,
+)
+from .carriers import (
     OperandCapability as OperandCapability,
 )
 from .carriers import (
@@ -102,7 +105,7 @@ from .module import Parameter as Parameter
 from .operation import *  # noqa: F403
 from .operation import __all__ as _operation_all
 from .tensor import Tensor as Tensor
-from .verification.api import test_backend as test_backend
+from .verification.api import verify_backend as verify_backend
 
 _CORE_EXPORTS = [
     "BlockScaledDType",
@@ -120,6 +123,7 @@ _CORE_EXPORTS = [
     "Layout",
     "Level",
     "LevelExtent",
+    "Metal",
     "Module",
     "Node",
     "OperandCapability",
@@ -136,7 +140,7 @@ _CORE_EXPORTS = [
     "Swizzle",
     "SwizzleStage",
     "Tensor",
-    "test_backend",
+    "verify_backend",
     "Tiler",
     "Tree",
     "UnsupportedOperationPlan",

@@ -108,90 +108,101 @@ newline.
 
 ### Requirement: Reports bind complete provenance before exposure
 
-`VerificationReport(records: tuple[EvidenceRecord, ...], schema_version: str =
-"strideweave.kernel-verification.v2", header: ReportHeader | None = None)` SHALL take
-`records`, the complete immutable evidence tuple; `schema_version`, the report
-wire-format version that defaults to the current provenance-complete v2 value;
-and `header`, an optional immutable report header that defaults to `None`.
-Another schema version SHALL fail with `ValueError`.
+Every schema-v3 report SHALL begin with one immutable header containing the
+selected target profile, oracle profile, complete required coverage, tolerance
+policies, oracle identity, oracle certificates, and one `CompilationBundle`.
+The bundle SHALL contain every compilation receipt referenced by evidence.
 
-When `header` is `None`, construction SHALL bind the evidence with an empty
-certificate set to the current
-compilation manifest and per-kernel receipts, target and toolchain, complete
-verification requirements, versioned tolerance policies, Generic oracle
-identity, and record references before exposing the report. This path SHALL
-succeed only when every record can be bound without a consumed certificate; a
-non-blocked Stage Two `reduce_sum` or `matmul` record that requires a certificate
-SHALL make construction fail with `ValueError`. Certificate-bearing complete
-reports SHALL be returned by `test_backend()` or reconstructed from JSONL using
-a supplied validated header. When `header` is supplied, construction SHALL
-validate it and every record reference as a closed set.
+Every successful oracle or target execution record SHALL reference its exact
+primary receipt ID. Every certificate-gated target record SHALL reference the
+exact reconstructed oracle certificate it consumed. A JIT execution SHALL
+reference the receipt for the exact primary specialization launched, not merely
+its logical kernel identity, and SHALL separately reference every case-local
+supporting specialization that ran as part of the attempt. Supporting receipt
+relationships SHALL be canonical, unique, and distinct from primary manifest
+kernels. A JIT error that occurs before compilation SHALL carry no primary
+receipt; report binding SHALL NOT infer one from later cases or bundle contents.
 
-The Generic oracle identity SHALL be content-derived from the reviewed Generic
-roots and their complete local static-import closure. Each native CPU evidence
-record SHALL identify the exact compilation receipt for its kernel and variant.
-Each non-blocked Stage Two `reduce_sum` or `matmul` record SHALL identify the
-exact Stage One certificate it consumed. The report SHALL reject missing,
-duplicate, unexpected, unknown, mismatched, malformed, or forged identities and
-references with `ValueError`.
-
-The canonical report wire format SHALL consist exactly of its bound compilation,
-verification-requirement, tolerance-policy, Generic-oracle, certificate, and
-evidence facts. Observation state such as wall-clock timestamps, CI status,
-database state, source commits, producers, publication, confidence, and
-autotuning belongs to the separate evidence-tracking model.
-
-`header.as_json_object()` SHALL accept no inputs and return a mutable JSON-safe
-object reflecting the header fields. For a header exposed by a validated report,
-the result SHALL be the canonical header object including its content-derived
-digest.
+Report construction SHALL validate complete classifications, receipt and
+certificate content identities, evidence references, payload hashes, plan
+obligations, target selection, and the complete relationship graph before
+exposing the report. Missing, duplicate, unexpected, stale, inconsistent, or
+forged facts SHALL raise `ValueError`. Evidence SHALL use v3 receipts directly;
+v2 compilation records SHALL not be nested, wrapped, or adapted.
 
 #### Scenario: Bind one native record
 
-- **WHEN** `test_backend()` binds native CPU evidence and its Stage One certificates, or a supplied validated header is loaded with those facts
-- **THEN** the exposed record references its exact compilation receipt, tolerance policy, Generic oracle, verification requirement, and consumed certificate when Stage Two requires one
+- **WHEN** CPU compiled-executable evidence is bound
+- **THEN** it references the exact CPU receipt in the report bundle
 
 #### Scenario: Reject certificate-required rows without a header
 
-- **WHEN** `VerificationReport(records, header=None)` receives a non-blocked Stage Two reduction or matmul record
-- **THEN** construction fails with `ValueError` because the implicit empty certificate set cannot bind that row
+- **WHEN** certificate-gated evidence is constructed without its bound header
+- **THEN** construction raises `ValueError` before report exposure
 
 #### Scenario: Reject a forged reference
 
-- **WHEN** a record names a receipt, tolerance policy, oracle, requirement, or certificate not present under the matching header identity
-- **THEN** report construction fails with `ValueError` before returning a report
+- **WHEN** evidence names a receipt or certificate whose content does not match
+- **THEN** report construction raises `ValueError`
+
+#### Scenario: Bind CPU oracle and Metal target records
+
+- **WHEN** a Metal target report is completed
+- **THEN** its one bundle contains referenced CPU compiled-executable receipts
+  and exact TileLang JIT-specialization receipts
+
+#### Scenario: Retain supporting validation specializations
+
+- **WHEN** a Metal indexing case launches index validation before its primary kernel
+- **THEN** the evidence separately binds both the primary receipt and every
+  case-local validation receipt
+
+#### Scenario: Preserve a failure before JIT
+
+- **WHEN** one target case fails before compilation and a later case compiles
+- **THEN** the failed row has no receipt and the later receipts remain bound only
+  to the cases that observed them
 
 ### Requirement: Installed compilation provenance exposes exact immutable receipts
 
-`load_compilation_manifest()` SHALL accept no inputs, read the installed native
-compilation manifest once per process, strictly validate its current schema and
-content identities against the installed native kernel metadata, and return an
-immutable `CompilationManifest`. A missing or malformed installed resource
-SHALL fail with `RuntimeError`; an unsupported schema, invalid field, mismatched
-digest, duplicate source, source/manifest mismatch, or other provenance
-inconsistency SHALL fail with `ValueError`.
+`installed_compilation_bundle(profile)` SHALL take a registered verification
+profile and return a validated immutable schema-v3 `CompilationBundle` for the
+installed compiled-executable inputs known before execution. A non-profile
+value SHALL raise `TypeError`; unavailable or inconsistent installed facts
+SHALL raise `RuntimeError` or `ValueError` before evidence exposure.
 
-The manifest SHALL expose its content digest, schema, provider kind, shared
-artifact digest, exact `CompilationTarget`, exact `CompilationToolchain`, and a
-deterministically ordered immutable receipt tuple. Each `CompilationReceipt`
-SHALL bind one exact native kernel/variant to its receipt schema, provider,
-target, toolchain, complete content-addressed input closure, normalized compile
-invocation and digest, compiled-object digest, shared-artifact digest, and any
-framework or specialization facts.
+JIT providers SHALL add a specialization receipt only after compilation
+succeeds and all required inputs and generated artifacts are available. Failed
+compilation SHALL expose no receipt. Bundle receipt order SHALL be canonical by
+discriminator, profile, logical kernel, and receipt ID, independent of
+discovery, compilation, or cache order.
 
-`manifest.receipt_for(kernel_id, variant)` SHALL take exact string `kernel_id`
-and `variant` identities and return the unique matching receipt. An identity for
-which exactly one receipt does not exist SHALL fail with `ValueError`.
+Receipts and bundles SHALL be immutable, content-addressed, and deterministic.
+They SHALL not include local absolute paths, timestamps, source commits, CI
+facts, cache locations, or producer observations.
 
 #### Scenario: Resolve one installed kernel receipt
 
-- **WHEN** `receipt_for` receives a kernel ID and variant that occur exactly once in the validated installed manifest
-- **THEN** it returns the immutable receipt whose kernel, target, toolchain, closure, invocation, object, and artifact identities are bound together
+- **WHEN** the CPU compiled profile is available and internally consistent
+- **THEN** its bundle contains the exact immutable compiled-executable receipts
 
 #### Scenario: Reject an inconsistent installed manifest
 
-- **WHEN** the installed manifest has an invalid digest, duplicate owning source, or a source set that differs from native kernel metadata
-- **THEN** strict manifest loading fails before a report binds any native evidence
+- **WHEN** installed compilation inputs disagree with declared receipt facts
+- **THEN** bundle creation raises `ValueError` before verification evidence exists
+
+#### Scenario: Publish a JIT receipt only after compilation
+
+- **WHEN** TileLang compilation fails or omits required generated artifacts
+- **THEN** no specialization receipt is added to the bundle
+
+#### Scenario: Reconstruct current JIT artifact facts for recording
+
+- **WHEN** online recording reconciles an observed JIT specialization
+- **THEN** the provider regenerates its current compile options, specialization
+  axes, generated artifacts, and exposed runtime artifacts without launching the
+  computational kernel or trusting those incoming receipt fields as current,
+  including when recording occurs in a later process with no retained operands
 
 ### Requirement: Stage One certificates are evidence-reconstructable
 
@@ -248,34 +259,35 @@ with `ValueError`.
 
 ### Requirement: Report loading is strict, offline, and line-diagnostic
 
-`VerificationReport.from_jsonl(text)` SHALL take `text`, a decoded JSONL string,
-and return the validated immutable report. A non-string input SHALL fail with
-`TypeError`. The first line SHALL be a current v2 provenance header. Missing or
-blank header lines, blank evidence lines, malformed JSON, duplicate object keys,
-non-standard `NaN` or infinity literals, unknown or missing fields, unsupported
-schema versions, invalid enum values, malformed nested values, duplicate
-requirements or evidence, incomplete header coverage, and any provenance or
-certificate mismatch SHALL fail with `ValueError` identifying the one-based
-JSONL line at which parsing failed when applicable.
+`VerificationReport.load(path)` and `VerificationReport.from_jsonl(text)` SHALL
+accept only canonical schema-v3 JSONL and reconstruct the entire report without
+consulting an installed backend, compilation provider, accelerator runtime,
+store, network, or source tree. The loader SHALL validate the header, bundle,
+receipt discriminators and fields, complete input closures, typed artifacts,
+receipt and certificate identities, evidence references, ordering, and every
+nested relationship before returning immutable values.
 
-Loading SHALL validate every nested identity exclusively from the supplied
-header and evidence bytes. Consequently the installed compilation manifest,
-current source tree, network, status store, and database are outside its inputs.
-
-`VerificationReport.load(path)` SHALL take `path`, a string or filesystem
-path-like input, read it as UTF-8, and return
-`VerificationReport.from_jsonl(...)`. Filesystem failures SHALL remain
-observable as the corresponding I/O error.
+Malformed JSON, non-canonical encoding, unsupported schemas, unknown receipt
+discriminators, missing or extra fields, duplicate identities, invalid ordering,
+incomplete closure, forged digests, and mismatched references SHALL raise the
+documented `ValueError` carrying the one-based failing line when attributable.
+Schema-v2 and prototype evidence-only reports SHALL be rejected directly and
+SHALL not be migrated or adapted.
 
 #### Scenario: Reject prototype evidence-only JSONL
 
-- **WHEN** the first line is a prototype v1 evidence record instead of a current provenance header
-- **THEN** loading fails with a line-1 `ValueError` identifying the required provenance header
+- **WHEN** input begins with evidence rather than a complete v3 header
+- **THEN** loading raises the line-diagnostic `ValueError`
+
+#### Scenario: Reject an earlier report schema
+
+- **WHEN** a schema-v2 report is supplied
+- **THEN** loading rejects it as unsupported without migration
 
 #### Scenario: Validate a report on another installation
 
-- **WHEN** a provenance-complete current report is loaded where the installed build differs or is unavailable
-- **THEN** loading validates solely from the report's bound facts and returns the same immutable evidence model
+- **WHEN** canonical v3 JSONL is loaded where neither Metal nor TileLang exists
+- **THEN** all provenance is validated from report bytes alone
 
 ### Requirement: Summary and bounded text expose the complete selected gate
 
@@ -385,3 +397,56 @@ confidence lattices, risk rankings, and autotuning.
 
 - **WHEN** a report is serialized, transferred, loaded, filtered, and summarized
 - **THEN** its results depend only on its immutable bound facts and its field set remains exactly the raw report/provenance contract
+
+### Requirement: Compilation bundles discriminate executable and JIT receipts
+
+A `CompilationBundle` SHALL contain an ordered immutable tuple of receipts.
+Every receipt SHALL have exactly one discriminator: `compiled-executable` or
+`jit-specialization`. Both kinds SHALL bind schema version, receipt ID, profile,
+provider, target, toolchain and runtime facts, logical kernel identity, complete
+ordered provider-declared compilation inputs, and ordered typed generated
+artifacts. Receipt ID SHALL be the deterministic digest of its canonical facts.
+
+Each compilation input SHALL bind a stable path-free URI, input kind, ordinal,
+and content digest. Each generated artifact SHALL bind an artifact kind, ordinal,
+content digest, and optional provider-declared executable digest. Any
+compilation-affecting fact not represented by the declared closure SHALL make
+receipt construction fail with `ValueError` as undeclared rather than silently
+remaining outside identity.
+
+A `compiled-executable` receipt SHALL additionally bind ordered compiled object
+artifacts and the shared executable artifact used by the CPU profile. A
+`jit-specialization` receipt SHALL additionally bind the exact ordered
+specialization axes and values, generated host source, generated device source,
+and every executable or runtime artifact the provider exposes. A provider that
+cannot supply a required source or declared artifact SHALL fail before evidence
+exposure. The two kinds SHALL not be required to expose identical artifacts.
+
+Canonical JSON SHALL order object keys lexicographically and retain tuple order
+for closures, specialization axes, and artifacts. Unknown discriminators,
+missing kind-specific fields, fields belonging only to the other kind,
+duplicate ordinals or URIs, non-canonical ordering, incomplete closure, or
+forged digests SHALL raise `ValueError`.
+
+#### Scenario: Bind a CPU compiled executable
+
+- **WHEN** CPU receipt facts cover its complete declared inputs, objects, and
+  shared executable
+- **THEN** a deterministic `compiled-executable` receipt is produced
+
+#### Scenario: Distinguish two Metal specializations
+
+- **WHEN** two TileLang launches differ in one compilation-affecting axis
+- **THEN** their `jit-specialization` receipts have distinct IDs while their
+  logical classification identity may remain the same
+
+#### Scenario: Reject incomplete generated-code provenance
+
+- **WHEN** a JIT receipt omits generated host or device source or a declared
+  compilation input
+- **THEN** receipt construction raises `ValueError` before evidence exposure
+
+#### Scenario: Reject a v2 receipt payload
+
+- **WHEN** a v2 native receipt is supplied where a v3 receipt is required
+- **THEN** validation rejects it rather than wrapping or translating it

@@ -34,6 +34,12 @@ Homepage = "https://github.com/patrickk1998/strideweave"
 Issues = "https://github.com/patrickk1998/strideweave/issues"
 Repository = "https://github.com/patrickk1998/strideweave.git"
 
+[project.optional-dependencies]
+metal = [
+    "tilelang==0.1.12; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "torch==2.13.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
+
 [project.scripts]
 strideweave-kernel-status = "strideweave.verification.status_cli:main"
 strideweave-verify-report = "strideweave.verification.cli:main"
@@ -48,7 +54,12 @@ dev = [
     # that job passes -n; every other job runs pytest serially.
     "pytest-xdist>=3.6",
     "ruff>=0.14.10",
-    "torch~=2.6.0",
+    # PyTorch 2.2.x is the last release with Intel macOS wheels, and its final
+    # 2.2.2 wheel supports the project's Python 3.12 development baseline.
+    # Newer Intel interpreters run non-Torch tests and skip only reference cases.
+    "torch~=2.6.0; platform_system != 'Darwin'",
+    "torch>=2.2.2; python_version < '3.13' and platform_system == 'Darwin' and platform_machine == 'x86_64'",
+    "torch==2.13.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
     "types-pymysql>=1.1",
 ]
 # Pinned to the maintained MkDocs 1.x continuation. Do NOT switch back to
@@ -113,7 +124,13 @@ doctest_optionflags = "NORMALIZE_WHITESPACE"
 markers = [
     "dolt_integration: exercises a real local Dolt store on the shared session server (applied from fixture use)",
     "dolt_lifecycle: starts and stops its own managed Dolt servers",
+    "metal: requires optional TileLang dependencies and an available Apple Metal device",
 ]
 
 [tool.uv]
 required-version = ">=0.8.5"
+# Keep the Intel development requirement compatible with the arm64-only Metal
+# extra during universal resolution, then pin the last installable Intel release.
+constraint-dependencies = [
+    "torch==2.2.2; python_version < '3.13' and sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]

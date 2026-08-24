@@ -3,111 +3,103 @@ title: Kernel Verification
 publish: true
 status: stable
 order: 90
-summary: Fail-closed classification and staged local verification of the installed CPU backend.
+summary: Fail-closed classification and staged local verification of selected installed CPU and Metal targets.
 ---
 
 # kernel-verification Specification
 
 ## Purpose
 
-Define fail-closed classification and staged local verification of the installed
-CPU backend against StrideWeave's Generic reference semantics.
+Define fail-closed classification and staged local verification of explicit
+installed target profiles, using Generic to certify CPU oracle behavior and
+that CPU authority to validate targets such as TileLang Metal.
 
 ## Terminology
 
 | Term | Meaning |
 | --- | --- |
+| verification profile | One immutable installed oracle or target identity with an exact carrier, compilation provider, stage roles, logical-kernel manifest, executable plans, and required movement or structural subjects. |
+| logical kernel | One bounded operation, stable kernel ID, and variant identity in a verification profile; compilation-affecting shapes, layouts, dtypes, plans, and options remain specialization facts rather than creating new logical kernels. |
 | native kernel | One compiled CPU operation implementation identified by its operation name, stable kernel ID, variant, native Python/pybind binding name, and owning source identity. |
 | executable CPU plan | One exact operation plan advertised by the installed CPU carrier under `backend-capabilities`, including operand roles and dtypes, conversions, compute arithmetic, accumulation, accumulator dtype, and output dtype. |
-| verification classification | The complete ordered verification-class obligation assigned to one native kernel/variant and refined into an active or deferred disposition for each executable CPU plan. |
+| verification classification | The complete ordered verification-class obligation assigned to one profile logical kernel and exact executable plan, refined into an active or deferred disposition independently of any runtime JIT specialization. |
 | encoded payload | An immutable, content-hashed operand representation from which both target and oracle values are decoded, placing source quantization outside the comparison boundary. |
 | Stage One | Local oracle validation that compares the installed CPU implementation with Generic for every active executable CPU plan and issues plan-scoped certificates only for complete passing coverage. |
 | Stage One certificate | A digest-backed fact for one exact kernel/variant identifying every certified verification class, every certified executable-plan/class obligation, and the evidence digest from which it was issued. |
-| Stage Two | Local target validation of ordinary CPU Float32 movement, reduction, and matmul behavior, with reduction and matmul execution gated by a matching Stage One certificate for the required Float64 oracle plan. |
+| Stage Two | Local validation of one explicit installed target profile, including CPU or TileLang Metal, whose active computational cases run only behind matching reconstructed Stage One authority and whose queued target work synchronizes before host-visible comparison. |
+| JIT specialization | One compilation identity beneath a logical JIT kernel, distinguished by every compilation-affecting plan, dtype, layout, shape, and option axis and bound to its exact receipt without expanding the logical classification surface. |
 | recoverable case error | A `RuntimeError` or `ValueError` raised while preparing or executing one independent verification case; it becomes error evidence while other cases continue. |
 
 ## Requirements
 
 ### Requirement: Native kernels and executable CPU plans have complete classifications
 
-`native_cpu_kernel_manifest()` SHALL accept no inputs and return the installed
-native kernels as an immutable tuple of `KernelDescriptor` values.
-`classifications_for_kernel(kernel)` SHALL take `kernel`, the native kernel to
-classify, and return its ordered verification classes. An unknown kernel ID and
-variant SHALL fail with `ValueError` identifying that no classification exists.
+`verification_profiles()` SHALL return immutable `VerificationProfile` records
+sorted by `profile_id`. Each record SHALL expose exact string `profile_id`,
+`carrier`, and `provider` fields plus ordered `VerificationStage` roles. The
+stages SHALL be `oracle` and `target`. Shipped profiles SHALL include
+`cpu-compiled`, usable in both roles, and `metal-tilelang`, usable as a target.
 
-`require_complete_classification(kernels)` SHALL take `kernels`, an iterable of
-native kernel descriptors, and return an immutable one-to-one pairing between
-each descriptor and its classes. A duplicate kernel/variant, a manifest entry
-without a classification, or a classification without a manifest entry SHALL
-fail with `ValueError` before verification cases run.
+`verification_profile(profile_id)` SHALL resolve an exact string selector. A
+non-string selector SHALL raise `TypeError`; an unknown selector SHALL raise
+`ValueError` before provider initialization, compilation, execution, or output
+mutation. `kernel_manifest(profile)` SHALL return immutable `LogicalKernel`
+records binding `profile_id`, `operation`, `kernel_id`, and `variant`.
 
-`classify_cpu_kernel_plans()` SHALL accept no inputs and return an immutable
-tuple of `KernelPlanDescriptor` values covering every executable CPU plan. Each
-descriptor SHALL bind one exact native kernel, one exact executable CPU plan,
-its ordered required classes, an active or deferred disposition, and a concrete
-reason for every deferral. A CPU capability without native metadata or a native
-kernel with no executable CPU plan SHALL fail with `ValueError`.
+`classify_profile_plans(profile)` SHALL return immutable `PlanClassification`
+records covering every plan advertised by the profile. Each SHALL bind one
+logical kernel, one exact `PlanKey`, ordered `VerificationClass` values, an
+active or deferred `ClassificationDisposition`, and a non-empty reason for a
+deferral. `PlanKey.from_plan_like(plan)` SHALL normalize the operation, ordered
+operand roles and dtypes, conversions, compute dtype, accumulation kind and
+dtype, and output dtype.
 
-`PlanKey.from_plan_like(plan)` SHALL take `plan`, an `OperationPlan` or
-`OperationCapability` exposing `operation`; ordered `operands` whose entries
-expose `role.name`, optional `dtype.name`, and optional `convert_to.name`;
-`compute.name`; optional `accumulation.name`; optional
-`accumulator_dtype.name`; and `output.name`. It SHALL return the immutable
-normalized identity of those values.
+Completeness SHALL raise `ValueError` before execution for any duplicate,
+missing, stale, unknown, or mismatched manifest kernel, plan, operation,
+classification, movement subject, or structural subject. `metal-tilelang`
+SHALL cover at least one executable plan for every registered computational
+dispatch name. Logical classification identity SHALL remain bounded
+independently of runtime JIT specialization identity.
 
-`VerificationStage`, `VerificationClass`, and `ClassificationDisposition` SHALL
-expose the stage, class, and active/deferred enum values used by this spec.
-`MOVEMENT_CLASSIFICATIONS` SHALL expose the five movement operation names mapped
-to their ordered bit-exact obligation. The exported direct-construction records
-SHALL accept these annotated field types:
-
-| Value | Supported constructor fields and result |
-| --- | --- |
-| `KernelDescriptor` | `operation: str`, `kernel_id: str`, `variant: str`, `pybind_name: str`, and `owning_source: str = ""`; returns one native-kernel identity. |
-| `PlanKey` | `operation: str`, `operands: tuple[tuple[str, str | None, str | None], ...]`, `compute: str`, `accumulation: str | None`, `accumulator_dtype: str | None`, and `output: str`; returns one normalized exact-plan identity. |
-| `KernelPlanDescriptor` | `kernel: KernelDescriptor`, `plan: PlanKey`, `classes: tuple[VerificationClass, ...]`, `disposition: ClassificationDisposition`, and `deferred_reason: str | None = None`; returns one classified executable-plan obligation. |
-| `StageOneResult` | `report: VerificationReport` and `certificates: tuple[OracleCertificate, ...]`; returns the Stage One report/certificate pair. |
-| `OracleCertificate` | `kernel_id: str`, `variant: str`, `certified_classes: tuple[VerificationClass, ...]`, `evidence_digest: str`, and `certified_plan_classes: tuple[tuple[PlanKey, tuple[VerificationClass, ...]], ...] = ()`; returns one certificate fact. |
-
-Within those supported types, direct construction SHALL return a shallow-frozen
-record whose fields are protected from reassignment and whose nested field
-objects retain their supplied identities. The validated factories and staged-
-verification functions below SHALL own type, canonicality, content-identity,
-and deep-immutability validation.
+The public profile, logical-kernel, plan-key, and classification records SHALL
+be immutable. Lookup, manifest, classification, and staged-verification
+functions SHALL own canonicality, completeness, and deep validation.
 
 #### Scenario: Classify the complete installed backend
 
-- **WHEN** every native kernel/variant and every executable CPU plan has exactly one current classification
-- **THEN** classification returns the complete exact pairing of manifest entries and current classifications
+- **WHEN** every logical kernel, executable plan, operation, and required
+  structural subject has exactly one current classification
+- **THEN** classification returns their complete exact pairing
 
 #### Scenario: Reject stale classification metadata
 
-- **WHEN** the native manifest gains, loses, or duplicates a kernel/variant without the classification set changing with it
-- **THEN** completeness validation fails with `ValueError` before Stage One attempts any case
+- **WHEN** a profile gains, loses, or duplicates a logical kernel or plan
+  without its classifications changing
+- **THEN** completeness validation raises `ValueError` before execution
+
+#### Scenario: Keep JIT specialization out of classification
+
+- **WHEN** two TileLang executions specialize one logical variant differently
+- **THEN** they share one logical classification and use distinct receipts
 
 ### Requirement: Active and deferred dispositions remain explicit
 
-An active executable CPU plan SHALL name every verification class required for
-its Stage One certificate. A deferred executable CPU plan SHALL carry an empty
-active-class tuple and a non-empty reason. Stage One SHALL represent every such
-plan with exactly one `deferred` outcome.
-
-The current baseline SHALL defer vendor-transcendental accuracy and the floating
-`pow` plan that depends on the vendor math library. Exact-integer `pow` SHALL
-remain active. Movement subjects `move`, `view`, `permute`, `rearrange`, and
-`broadcast_to` SHALL each have an explicit bit-exact case independent of the
-native numerical-kernel manifest.
+An active plan SHALL name every required verification class. A deferred plan
+SHALL carry no active classes and a non-empty reason, and its applicable stage
+SHALL emit exactly one deferred outcome. The CPU profile SHALL preserve current
+vendor-transcendental and floating-`pow` deferrals while exact-integer `pow`
+remains active. Each profile SHALL explicitly classify required movement and
+structural subjects independently of numerical kernels.
 
 #### Scenario: Report a vendor-transcendental plan
 
-- **WHEN** Stage One reaches an executable CPU plan whose numerical contract is deferred because it uses the vendor math library
-- **THEN** it emits deferred evidence carrying the plan and concrete reason while certificate scope includes only active passing obligations
+- **WHEN** a CPU oracle plan is deferred for vendor-math accuracy
+- **THEN** evidence carries its concrete reason and no certificate covers it
 
 #### Scenario: Split pow by executable plan
 
-- **WHEN** the installed `pow` kernel has both checked-integer and floating executable plans
-- **THEN** the integer plan receives its active exact obligation while the floating plan receives its own deferred outcome and reason
+- **WHEN** CPU has active integer and deferred floating `pow` plans
+- **THEN** each receives its own exact disposition and evidence
 
 ### Requirement: Encoded inputs define one immutable comparison boundary
 
@@ -235,140 +227,123 @@ Float32 gamma-K bound. Integer numerical cases SHALL be exact.
 
 ### Requirement: Stage One records every required attempt and certifies complete passing coverage
 
-`run_stage_one(result_transform=None)` SHALL take optional `result_transform`, a
-test-only callable that defaults to `None`. When supplied, the callable SHALL
-receive the kernel ID string and immutable result tuple and return the
-replacement result tuple used for comparison. The function SHALL return a
-`StageOneResult` containing an immutable Stage One report and certificate tuple.
-With the default, Stage One SHALL attempt every required class for every active
-executable CPU plan, emit the explicit movement cases, and emit one deferred
-record for every deferred plan.
+`run_oracle_stage(profile)` SHALL require a profile registered for `oracle` and
+return an immutable `OracleStageResult` containing a report and certificates.
+The shipped oracle SHALL be `cpu-compiled`. Test-only result alteration SHALL
+exist only behind non-public test seams and SHALL not be an API input.
 
-A `RuntimeError` or `ValueError` raised by the result transform SHALL become
-recoverable error evidence for that case.
+The oracle stage SHALL attempt every required class for every active plan, emit
+required movement and structural cases, and emit one record for every deferred
+plan. It SHALL preserve signed-zero witnesses, exactly representable structural
+witnesses, independent analytic expectations, deterministic wide-exponent
+inputs, exact plan identities, and versioned tolerance policies.
 
-Stage One exact witnesses SHALL preserve signed zero and exercise deterministic
-arbitrary finite encoded inputs. Structural witnesses SHALL use payloads whose
-every legal partial result is exactly representable. Analytic witnesses SHALL
-use independently named fixed expected results. Numerical witnesses SHALL use
-deterministic wide-exponent inputs and the executable plan's accumulator dtype.
-Every attempted case SHALL identify its exact plan when it is plan-backed.
-
-A recoverable case error SHALL produce an `error` outcome retaining the prepared
-operation, kernel, variant, class, plan, payload hashes, shapes, contraction
-length, seed, and versioned tolerance, with unavailable comparison measurements
-represented as absent values. Stage One SHALL continue attempting independent
-cases after such an error.
-
-A Stage One certificate SHALL be issued for an exact kernel/variant only when
-every required class for every active executable plan of that kernel/variant has
-passed and all required evidence for that scope has a passing outcome. The
-certificate SHALL record the union of certified classes, exact per-plan class
-coverage, and a deterministic evidence digest. Missing, failed, errored, or
-incomplete required evidence SHALL prevent certificate issuance.
-
-`OracleCertificate.from_records(kernel, required_classes, records, *,
-required_plan_classes=())` SHALL take `kernel`, the exact native kernel to
-certify; `required_classes`, its complete class union; `records`, the Stage One
-evidence to digest; and optional `required_plan_classes`, the exact plan/class
-obligations defaulting to the empty tuple. It SHALL return the immutable
-certificate when all required evidence passed. Missing or non-passing required
-class or plan evidence SHALL fail with `ValueError`.
+A recoverable case error SHALL produce complete `error` evidence retaining the
+prepared operation, logical kernel, variant, class, plan, hashes, shapes,
+contraction length, seed, and tolerance, and SHALL not suppress independent
+cases. An `OracleCertificate` SHALL bind oracle profile, logical kernel,
+operation, exact oracle plan, complete classes, and deterministic evidence
+digest. Missing, failed, errored, forged, or incomplete evidence SHALL prevent
+certificate issuance.
 
 #### Scenario: Certify every active plan of one kernel
 
-- **WHEN** all required witnesses pass for every active executable CPU plan mapped to one kernel/variant
-- **THEN** Stage One emits one certificate whose plan/class scope and evidence digest cover all of those obligations
+- **WHEN** every required witness passes for one logical oracle obligation
+- **THEN** its certificate binds the operation, plan, classes, and evidence
 
 #### Scenario: Fail closed on one required witness
 
-- **WHEN** one required exact, structural, analytic, or numerical witness fails or errors
-- **THEN** its evidence remains in the report, independent cases continue, and certificate scope includes only complete passing kernel/variant obligations
+- **WHEN** one required witness fails or errors
+- **THEN** evidence remains, independent cases continue, and no certificate
+  covers the incomplete obligation
 
 ### Requirement: Stage Two runs only behind an exact valid certificate
 
-Stage Two SHALL verify movement subjects and the current Float32 `reduce_sum`
-and `matmul` target surface. For `reduce_sum` and `matmul`, authorization SHALL
-require a Stage One certificate for the same kernel ID and variant whose
-reconstructed evidence digest is valid and whose per-plan scope covers the
-active Float64 accumulator plan and all required classes.
+`run_target_stage(profile, oracle_result)` SHALL require a target-stage profile
+and a valid accepted `OracleStageResult`, then verify every active target plan
+plus required movement and structural subjects. Invalid roles or oracle results
+SHALL fail before target preparation or execution.
 
-Stage Two SHALL execute a reduction or matmul target case only after the exact
-certificate authorization succeeds. When authorization is absent, forged,
-inconsistent, or incomplete, it SHALL instead emit separate `blocked`
-structural and numerical records containing the prepared case identity, zero
-absolute, relative, and ULP deviations, zero mismatches, and a diagnostic that
-explains the missing or invalid certificate. Movement evidence SHALL remain
-independent of those certificates.
+Authorization SHALL require a reconstructed oracle certificate matching the
+target operation, complete oracle-plan obligations, and every required class.
+Target and oracle kernel IDs MAY differ. Float32 `reduce_sum` and `matmul`
+targets SHALL require certified CPU Float64-accumulator oracle coverage.
 
-Authorized structural target cases SHALL require encoded Float32 bit identity.
-Authorized numerical target cases SHALL compare ordinary Float32 accumulation
-with the Float64-accumulator oracle under the versioned single-path Float32
-gamma-K absolute envelope. The target catalog SHALL include flat and
-hierarchical multi-output contraction layouts and SHALL record effective operand
-shapes and contraction length. Recoverable target errors SHALL become complete
-`error` evidence, and Stage Two SHALL continue every independent case.
+Absent, forged, inconsistent, or incomplete authorization SHALL emit `blocked`
+evidence instead of executing. Explicit oracle deferrals SHALL emit deferred
+target evidence. Exact cases SHALL preserve bit identity; structural cases
+SHALL use exactly representable witnesses; numerical cases SHALL use the
+versioned single-path Float32 gamma-K envelope while recording absolute,
+symmetric-relative, and ULP deviations. Catalogs SHALL cover non-compact,
+hierarchical, and multi-output layouts and record effective shapes.
+
+Recoverable errors SHALL produce complete `error` evidence without suppressing
+independent cases. The profile SHALL synchronize target work before decoding,
+comparison, or evidence classification.
 
 #### Scenario: Block a target without Float64 oracle scope
 
-- **WHEN** a certificate matches the kernel and variant but omits the active Float64 accumulator plan or one of its required classes
-- **THEN** Stage Two selects the blocked structural and numerical evidence path in place of affected target execution
+- **WHEN** authorization omits the required Float64 plan or class
+- **THEN** blocked evidence replaces affected target execution
 
 #### Scenario: Run an authorized hierarchical contraction
 
-- **WHEN** a matching reconstructed certificate covers the required Float64 oracle plan and classes
-- **THEN** Stage Two executes the hierarchical Float32 target and Float64 oracle, records their shared input hashes, effective shapes, contraction length, deviations, tolerance, and passed or failed outcome
+- **WHEN** CPU oracle evidence authorizes a hierarchical target case
+- **THEN** synchronization precedes decode and the result records hashes,
+  shapes, contraction length, deviations, tolerance, and outcome
 
-### Requirement: test_backend is local, deterministic, and optionally writes one report
+#### Scenario: Continue after a target error
 
-`test_backend(output=None)` SHALL take `output`, an optional filesystem path for
-the complete verification JSONL; it SHALL accept a string or filesystem
-path-like value and default to `None`. It SHALL first
-require a compatible installed native verification binding, run Stage One, run
-Stage Two using that Stage One result, bind the combined evidence and
-certificates into one `VerificationReport`, optionally replace `output` with the
-report's deterministic UTF-8 JSONL, and return the same immutable report model.
-
-When the installed native extension lacks the required verification binding,
-the call SHALL fail with `RuntimeError` before Stage One and identify the command
-needed to rebuild the active environment. Errors raised by a present native
-binding SHALL propagate unchanged. A failure replacing `output` SHALL remain observable as the
-corresponding filesystem I/O error.
-
-With `output=None`, the call SHALL return the bound report as its only produced
-artifact. With a path, it SHALL additionally replace exactly that destination
-with the report bytes. In all modes its inputs SHALL be the installed
-verification binding and deterministic local verification facts; CI state,
-source Git history, wall-clock time, evidence databases, status stores,
-contributor exchange, and network resources are therefore outside this call's
-execution inputs.
-
-#### Scenario: Verify without persistence
-
-- **WHEN** `test_backend()` runs against a compatible installed CPU backend
-- **THEN** it produces exactly the complete deterministic returned report as its sole artifact
-
-#### Scenario: Write the same returned report
-
-- **WHEN** `test_backend(output=path)` succeeds
-- **THEN** it returns the report and replaces `path` with UTF-8 bytes equal to `report.to_jsonl()`
+- **WHEN** one target case raises a recoverable execution error
+- **THEN** complete error evidence is retained and independent cases continue
 
 ### Requirement: Deferred verification domains remain explicit boundaries
 
-The local kernel-verification capability SHALL treat vendor-transcendental and
-floating-`pow` accuracy, autograd certification, actual JIT-framework adapters,
-confidence or risk ranking, autotuning, unsupported compiler-provenance
-providers, and CI integration as deferred domains. Their absence SHALL remain
-visible through deferred evidence or documented capability boundaries rather
-than being represented as passing verification.
-
-Local verification SHALL read installed verification inputs, perform its staged
-case execution, return its immutable report, and optionally write only the
-caller-supplied report path. A separate evidence-tracking capability SHALL own
-evidence persistence, producer observations, stored status/staleness/todo
-queries, publication, refresh, and contributor exchange.
+Vendor-transcendental and floating-`pow` accuracy, autograd certification,
+confidence ranking, autotuning, unsupported compilation providers, and CI
+integration SHALL remain explicit deferred domains. The shipped TileLang JIT
+provider and Metal target SHALL be active. Local verification SHALL read only
+installed and deterministic local facts, return an immutable report, and write
+only an optional caller destination. Evidence persistence and exchange SHALL
+remain owned by `kernel-evidence-tracking`.
 
 #### Scenario: Inspect a local report with deferred work
 
-- **WHEN** the installed backend contains a plan whose verification domain is explicitly deferred
-- **THEN** the report retains a deferred record and returns it to the caller while the separate evidence-tracking capability remains the owner of persistence, publication, refresh, and confidence ranking
+- **WHEN** a selected profile contains a deferred plan
+- **THEN** its report retains deferred evidence without persisting it
+
+### Requirement: Backend verification selects one explicit target profile
+
+`verify_backend(target, *, output=None)` SHALL require `target`, a string
+registered target `profile_id`, and accept optional string or path-like
+`output`, defaulting to `None`. Invalid types SHALL raise `TypeError`; an
+unknown target SHALL raise `ValueError` before provider initialization,
+compilation, execution, or output mutation.
+
+The call SHALL resolve the profile, require its provider and runtime, run the
+`cpu-compiled` oracle stage, run the selected target stage, and bind evidence,
+certificates, and compilation receipts directly into one schema-v3
+`VerificationReport`. Missing runtime or dependencies SHALL raise actionable
+`RuntimeError` before affected target execution is represented as passing.
+
+The call SHALL return the immutable report. If `output` is supplied, it SHALL
+atomically replace only that path with canonical UTF-8 JSONL after the report is
+complete. I/O errors SHALL remain observable without partial replacement.
+CI state, Git history, wall-clock time, evidence stores, exchange, and network
+resources SHALL not be execution inputs. No prototype selector or report
+compatibility mode SHALL exist.
+
+#### Scenario: Verify the compiled CPU target
+
+- **WHEN** `verify_backend("cpu-compiled")` runs on a compatible installation
+- **THEN** it returns a deterministic v3 CPU oracle-and-target report
+
+#### Scenario: Verify the Metal TileLang target
+
+- **WHEN** `verify_backend("metal-tilelang")` runs on available Metal
+- **THEN** it returns CPU oracle dependencies and synchronized Metal evidence
+
+#### Scenario: Write the returned report atomically
+
+- **WHEN** `verify_backend(target, output=path)` succeeds
+- **THEN** `path` is atomically replaced with the returned canonical report

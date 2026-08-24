@@ -12,6 +12,7 @@ from importlib import resources
 from types import MappingProxyType
 from typing import Any
 
+from .classification import kernel_manifest, verification_profile
 from .model import (
     EvidenceRecord,
     KernelDescriptor,
@@ -21,12 +22,20 @@ from .model import (
     VerificationClass,
     VerificationReport,
     VerificationStage,
+    _evidence_sort_key,
     _parse_plan,
+    _validate_evidence_record,
 )
-from .provenance import load_compilation_manifest, parse_compilation_manifest
+from .provenance import (
+    CompilationBundle,
+    compilation_bundle_json_object,
+    installed_compilation_bundle,
+    make_compilation_bundle,
+    parse_compilation_bundle,
+)
 
-_REPORT_SCHEMA = "strideweave.kernel-verification.v2"
-_EVIDENCE_SCHEMA = "strideweave.kernel-evidence.v2"
+_REPORT_SCHEMA = "strideweave.kernel-verification.v3"
+_EVIDENCE_SCHEMA = "strideweave.kernel-evidence.v3"
 _SPEC_SCHEMA = "strideweave.kernel-verification-spec.v1"
 _ORACLE_SCHEMA = "strideweave.kernel-oracle-reference.v1"
 _TOLERANCE_SCHEMA = "strideweave.kernel-tolerance-policy.v1"
@@ -86,24 +95,21 @@ def _require_digest(value: Any, field: str) -> str:
     return value
 
 
-def _raw_compilation_manifest() -> dict[str, Any]:
-    resource = resources.files("strideweave.verification").joinpath(
-        "_native_provenance.json"
+def _require_optional_digest(value: Any, field: str) -> str | None:
+    if value is None:
+        return None
+    return _require_digest(value, field)
+
+
+def _require_digests(value: Any, field: str) -> tuple[str, ...]:
+    if type(value) is not list:
+        raise ValueError(f"{field} must be an array")
+    digests = tuple(
+        _require_digest(item, f"{field}[{index}]") for index, item in enumerate(value)
     )
-    value = json.loads(resource.read_text(encoding="utf-8"))
-    if type(value) is not dict:
-        raise ValueError("installed compilation manifest must be an object")
-    return value
-
-
-def _kernel_value(kernel: KernelDescriptor) -> dict[str, str]:
-    return {
-        "kernel_id": kernel.kernel_id,
-        "operation": kernel.operation,
-        "owning_source": kernel.owning_source,
-        "pybind_name": kernel.pybind_name,
-        "variant": kernel.variant,
-    }
+    if digests != tuple(sorted(set(digests))):
+        raise ValueError(f"{field} must contain unique digests in canonical order")
+    return digests
 
 
 def _requirement_value(record: EvidenceRecord) -> dict[str, Any]:
@@ -128,6 +134,18 @@ def _tolerance_value(record: EvidenceRecord) -> dict[str, Any]:
         "policy_schema": _TOLERANCE_SCHEMA,
     }
     return {"tolerance_policy_id": _digest(value), **value}
+
+
+def _evidence_binding_value(record: EvidenceRecord) -> dict[str, Any]:
+    value = {
+        "compilation_receipt_id": record.compilation_receipt_id,
+        "consumed_certificate_digest": record.consumed_certificate_digest,
+        "requirement_id": record.requirement_id,
+        "supporting_compilation_receipt_ids": list(
+            record.supporting_compilation_receipt_ids
+        ),
+    }
+    return {"binding_id": _digest(value), **value}
 
 
 def _module_name(uri: str) -> tuple[str, bool]:
@@ -200,7 +218,23 @@ def _generic_oracle_input_uris(package: Any) -> tuple[str, ...]:
                 reverse=True,
             )
         )
-    return tuple(sorted(discovered.values()))
+    return _canonical_case_alias_uris(package, tuple(discovered.values()))
+
+
+def _canonical_case_alias_uris(package: Any, uris: tuple[str, ...]) -> tuple[str, ...]:
+    """Deduplicate identical case-compatibility resources deterministically."""
+    groups: dict[str, list[str]] = {}
+    for uri in uris:
+        groups.setdefault(uri.casefold(), []).append(uri)
+    canonical = []
+    for folded in sorted(groups):
+        aliases = sorted(set(groups[folded]))
+        contents = {package.joinpath(*uri.split("/")).read_bytes() for uri in aliases}
+        if len(contents) == 1:
+            canonical.append(min(aliases, key=lambda uri: (uri != uri.casefold(), uri)))
+        else:
+            canonical.extend(aliases)
+    return tuple(sorted(canonical))
 
 
 def _generic_oracle_value() -> dict[str, Any]:
@@ -423,35 +457,32 @@ def _validate_certificate_evidence(
             raise ValueError("Stage One certificate disagrees with report evidence")
 
 
-def _compilation_value() -> tuple[dict[str, Any], dict[tuple[str, str], str]]:
-    manifest = load_compilation_manifest()
-    kernel_receipts = [
-        {
-            "kernel": _kernel_value(receipt.kernel),
-            "receipt_id": receipt.receipt_id,
-        }
-        for receipt in manifest.receipts
-    ]
-    value = {
-        "kernel_receipts": kernel_receipts,
-        "manifest": _raw_compilation_manifest(),
-    }
-    receipt_ids = {
-        (receipt.kernel.kernel_id, receipt.kernel.variant): receipt.receipt_id
-        for receipt in manifest.receipts
-    }
-    return value, receipt_ids
-
-
 def bind_report(
     records: Sequence[EvidenceRecord],
     certificates: Sequence[OracleCertificate],
     *,
+    selected_target_profile: str = "cpu-compiled",
+    oracle_profile: str = "cpu-compiled",
+    compilation_bundle: CompilationBundle | None = None,
     certificate_facts_override: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[tuple[EvidenceRecord, ...], ReportHeader]:
     """Bind raw records to current immutable compilation and oracle facts."""
 
-    compilation, receipt_ids = _compilation_value()
+    for field, value in (
+        ("selected_target_profile", selected_target_profile),
+        ("oracle_profile", oracle_profile),
+    ):
+        if type(value) is not str or not value:
+            raise ValueError(f"{field} must be a non-empty string")
+    if compilation_bundle is None:
+        if selected_target_profile != oracle_profile:
+            raise ValueError(
+                "a non-oracle target report requires an explicit compilation bundle"
+            )
+        profile = verification_profile(selected_target_profile)
+        compilation_bundle = installed_compilation_bundle(profile)
+    elif not isinstance(compilation_bundle, CompilationBundle):
+        raise TypeError("compilation_bundle must be a CompilationBundle")
     requirements_by_id = {
         value["requirement_id"]: value
         for value in (_requirement_value(record) for record in records)
@@ -476,37 +507,104 @@ def bind_report(
         ),
         key=lambda value: value["certificate_digest"],
     )
-    certificate_by_kernel = {
-        (value["kernel_id"], value["variant"]): value["certificate_digest"]
-        for value in certificate_facts
-    }
+    certificate_ids = {value["certificate_digest"] for value in certificate_facts}
     enriched = []
     for record in records:
         requirement = _requirement_value(record)
         tolerance = _tolerance_value(record)
-        kernel_key = (record.case.kernel_id, record.case.variant)
-        consumed = None
-        if record.stage is VerificationStage.TARGET and record.case.kernel_id in {
-            "cpu.reduce_sum",
-            "cpu.matmul",
-        }:
-            consumed = certificate_by_kernel.get(kernel_key)
+        record_profile = (
+            oracle_profile
+            if record.stage is VerificationStage.ORACLE
+            else selected_target_profile
+        )
+        matching_receipts = tuple(
+            receipt
+            for receipt in compilation_bundle.receipts
+            if receipt.profile_id == record_profile
+            and receipt.logical_kernel.kernel_id == record.case.kernel_id
+            and receipt.logical_kernel.variant == record.case.variant
+            and receipt.logical_kernel.operation == record.case.operation
+        )
+        receipt_id = record.compilation_receipt_id
+        if record.outcome.value == "blocked" and receipt_id is not None:
+            raise ValueError("blocked evidence cannot reference an executed receipt")
+        if receipt_id is None:
+            if record.outcome.value not in {"blocked", "deferred"}:
+                compiled_receipts = tuple(
+                    receipt
+                    for receipt in matching_receipts
+                    if receipt.kind == "compiled-executable"
+                )
+                if len(compiled_receipts) == 1:
+                    receipt_id = compiled_receipts[0].receipt_id
+                elif len(compiled_receipts) > 1:
+                    raise ValueError(
+                        "evidence does not identify one exact compilation receipt"
+                    )
+        elif receipt_id not in {item.receipt_id for item in matching_receipts}:
+            raise ValueError(
+                "evidence compilation receipt does not match its profile and logical kernel"
+            )
+        supporting_receipt_ids = record.supporting_compilation_receipt_ids
+        receipts_by_id = {item.receipt_id: item for item in compilation_bundle.receipts}
+        supporting_receipts = tuple(
+            receipts_by_id.get(item) for item in supporting_receipt_ids
+        )
+        if any(item is None for item in supporting_receipts):
+            raise ValueError("evidence references an unknown supporting receipt")
+        manifest_receipts = (
+            set(kernel_manifest(verification_profile(record_profile)))
+            if supporting_receipts
+            else set()
+        )
+        for supporting in supporting_receipts:
+            if supporting is None:  # narrowed by the check above
+                continue
+            if supporting.profile_id != record_profile:
+                raise ValueError(
+                    "evidence supporting receipt belongs to another profile"
+                )
+            if supporting.kind != "jit-specialization":
+                raise ValueError("evidence supporting receipt must be a JIT receipt")
+            primary = receipts_by_id.get(receipt_id) if receipt_id is not None else None
+            if (
+                primary is not None
+                and supporting.logical_kernel == primary.logical_kernel
+            ):
+                raise ValueError(
+                    "evidence supporting receipt names its primary logical kernel"
+                )
+            if supporting.logical_kernel in manifest_receipts:
+                raise ValueError(
+                    "evidence supporting receipt names a primary manifest kernel"
+                )
+        consumed = record.consumed_certificate_digest
+        if consumed is not None and consumed not in certificate_ids:
+            raise ValueError("evidence references an unknown Stage One certificate")
         enriched.append(
             replace(
                 record,
                 requirement_id=requirement["requirement_id"],
-                compilation_receipt_id=receipt_ids.get(kernel_key),
+                compilation_receipt_id=receipt_id,
                 tolerance_policy_id=tolerance["tolerance_policy_id"],
                 oracle_reference_id=oracle["oracle_reference_id"],
                 consumed_certificate_digest=consumed,
             )
         )
+    enriched.sort(key=_evidence_sort_key)
+    evidence_bindings = sorted(
+        (_evidence_binding_value(record) for record in enriched),
+        key=lambda value: value["requirement_id"],
+    )
     header_value = {
         "certificates": certificate_facts,
-        "compilation": compilation,
+        "compilation_bundle": compilation_bundle_json_object(compilation_bundle),
         "evidence_schema": _EVIDENCE_SCHEMA,
+        "evidence_bindings": evidence_bindings,
+        "oracle_profile": oracle_profile,
         "oracle_references": [oracle],
         "schema_version": _REPORT_SCHEMA,
+        "selected_target_profile": selected_target_profile,
         "tolerance_policies": tolerance_policies,
         "verification_spec": verification_spec,
     }
@@ -517,11 +615,22 @@ def bind_report(
 
 
 def make_verification_report(
-    records: Sequence[EvidenceRecord], certificates: Sequence[OracleCertificate] = ()
+    records: Sequence[EvidenceRecord],
+    certificates: Sequence[OracleCertificate] = (),
+    *,
+    selected_target_profile: str = "cpu-compiled",
+    oracle_profile: str = "cpu-compiled",
+    compilation_bundle: CompilationBundle | None = None,
 ) -> VerificationReport:
     """Construct a provenance-complete report from raw evidence and certificates."""
 
-    enriched, header = bind_report(records, certificates)
+    enriched, header = bind_report(
+        records,
+        certificates,
+        selected_target_profile=selected_target_profile,
+        oracle_profile=oracle_profile,
+        compilation_bundle=compilation_bundle,
+    )
     return VerificationReport(enriched, header.schema_version, header)
 
 
@@ -530,33 +639,17 @@ def report_header_json_object(header: ReportHeader) -> dict[str, Any]:
 
     return {
         "certificates": _thaw(header.certificates),
-        "compilation": _thaw(header.compilation),
+        "compilation_bundle": compilation_bundle_json_object(header.compilation_bundle),
         "evidence_schema": _EVIDENCE_SCHEMA,
+        "evidence_bindings": _thaw(header.evidence_bindings),
         "header_digest": header.header_digest,
+        "oracle_profile": header.oracle_profile,
         "oracle_references": _thaw(header.oracle_references),
         "schema_version": header.schema_version,
+        "selected_target_profile": header.selected_target_profile,
         "tolerance_policies": _thaw(header.tolerance_policies),
         "verification_spec": _thaw(header.verification_spec),
     }
-
-
-def _kernel_from_value(value: Any, field: str) -> KernelDescriptor:
-    data = _require_object(
-        value,
-        field,
-        frozenset(
-            {"kernel_id", "operation", "owning_source", "pybind_name", "variant"}
-        ),
-    )
-    if any(type(data[key]) is not str or not data[key] for key in data):
-        raise ValueError(f"{field} fields must be non-empty strings")
-    return KernelDescriptor(
-        data["operation"],
-        data["kernel_id"],
-        data["variant"],
-        data["pybind_name"],
-        data["owning_source"],
-    )
 
 
 def parse_report_header(value: Any) -> ReportHeader:
@@ -565,11 +658,14 @@ def parse_report_header(value: Any) -> ReportHeader:
     fields = frozenset(
         {
             "certificates",
-            "compilation",
+            "compilation_bundle",
             "evidence_schema",
+            "evidence_bindings",
             "header_digest",
+            "oracle_profile",
             "oracle_references",
             "schema_version",
+            "selected_target_profile",
             "tolerance_policies",
             "verification_spec",
         }
@@ -586,38 +682,83 @@ def parse_report_header(value: Any) -> ReportHeader:
     identity = {key: data[key] for key in fields - {"header_digest"}}
     if _digest(identity) != data["header_digest"]:
         raise ValueError("report header digest does not match its contents")
-    compilation = _require_object(
-        data["compilation"],
-        "report header.compilation",
-        frozenset({"kernel_receipts", "manifest"}),
-    )
-    receipt_values = compilation["kernel_receipts"]
-    if type(receipt_values) is not list:
-        raise ValueError("report header.compilation.kernel_receipts must be an array")
-    kernels = []
-    expected_receipts = {}
-    for index, raw_receipt in enumerate(receipt_values):
-        field = f"report header.compilation.kernel_receipts[{index}]"
-        receipt = _require_object(
-            raw_receipt, field, frozenset({"kernel", "receipt_id"})
-        )
-        kernel = _kernel_from_value(receipt["kernel"], f"{field}.kernel")
-        key = (kernel.kernel_id, kernel.variant)
-        if key in expected_receipts:
-            raise ValueError("report header contains a duplicate kernel receipt")
-        kernels.append(kernel)
-        expected_receipts[key] = _require_digest(
-            receipt["receipt_id"], f"{field}.receipt_id"
-        )
-    parsed_compilation = parse_compilation_manifest(
-        compilation["manifest"], kernels=tuple(kernels)
-    )
-    observed_receipts = {
-        (receipt.kernel.kernel_id, receipt.kernel.variant): receipt.receipt_id
-        for receipt in parsed_compilation.receipts
+    profiles = {}
+    registered_profiles = {}
+    for field in ("selected_target_profile", "oracle_profile"):
+        profile_id = data[field]
+        if type(profile_id) is not str or not profile_id:
+            raise ValueError(f"report header.{field} must be a non-empty string")
+        profiles[field] = profile_id
+        registered_profiles[profile_id] = verification_profile(profile_id)
+    compilation_bundle = parse_compilation_bundle(data["compilation_bundle"])
+    allowed_profiles = {
+        profiles["selected_target_profile"],
+        profiles["oracle_profile"],
     }
-    if observed_receipts != expected_receipts:
-        raise ValueError("report header compilation receipt identities do not match")
+    if any(
+        receipt.profile_id not in allowed_profiles
+        for receipt in compilation_bundle.receipts
+    ):
+        raise ValueError("report compilation bundle contains an unexpected profile")
+    for receipt in compilation_bundle.receipts:
+        expected_kind = registered_profiles[receipt.profile_id].provider
+        if receipt.kind != expected_kind:
+            raise ValueError(
+                "report compilation receipt kind does not match its verification profile"
+            )
+    evidence_bindings = []
+    seen_binding_ids = set()
+    seen_requirement_ids = set()
+    for index, item in enumerate(
+        data["evidence_bindings"] if type(data["evidence_bindings"]) is list else ()
+    ):
+        field = f"report header.evidence_bindings[{index}]"
+        binding = _require_object(
+            item,
+            field,
+            frozenset(
+                {
+                    "binding_id",
+                    "compilation_receipt_id",
+                    "consumed_certificate_digest",
+                    "requirement_id",
+                    "supporting_compilation_receipt_ids",
+                }
+            ),
+        )
+        binding_id = _require_digest(binding["binding_id"], f"{field}.binding_id")
+        requirement_id = _require_digest(
+            binding["requirement_id"], f"{field}.requirement_id"
+        )
+        _require_optional_digest(
+            binding["compilation_receipt_id"], f"{field}.compilation_receipt_id"
+        )
+        _require_digests(
+            binding["supporting_compilation_receipt_ids"],
+            f"{field}.supporting_compilation_receipt_ids",
+        )
+        _require_optional_digest(
+            binding["consumed_certificate_digest"],
+            f"{field}.consumed_certificate_digest",
+        )
+        if (
+            _digest(
+                {key: value for key, value in binding.items() if key != "binding_id"}
+            )
+            != binding_id
+        ):
+            raise ValueError(f"{field} identity does not match")
+        if binding_id in seen_binding_ids or requirement_id in seen_requirement_ids:
+            raise ValueError("report header contains a duplicate evidence binding")
+        seen_binding_ids.add(binding_id)
+        seen_requirement_ids.add(requirement_id)
+        evidence_bindings.append(binding)
+    if type(data["evidence_bindings"]) is not list:
+        raise ValueError("report header.evidence_bindings must be an array")
+    if [item["requirement_id"] for item in evidence_bindings] != sorted(
+        item["requirement_id"] for item in evidence_bindings
+    ):
+        raise ValueError("report header.evidence_bindings is not in canonical order")
     verification_spec = _require_object(
         data["verification_spec"],
         "report header.verification_spec",
@@ -639,6 +780,7 @@ def parse_report_header(value: Any) -> ReportHeader:
         if type(collection) is not list:
             raise ValueError(f"report header.{collection_name} must be an array")
         seen = set()
+        observed_order = []
         for index, item in enumerate(collection):
             if type(item) is not dict or id_name not in item:
                 raise ValueError(
@@ -659,12 +801,20 @@ def parse_report_header(value: Any) -> ReportHeader:
                     f"report header.{collection_name} contains a duplicate"
                 )
             seen.add(identifier)
+            observed_order.append(identifier)
+        if observed_order != sorted(observed_order):
+            raise ValueError(
+                f"report header.{collection_name} is not in canonical order"
+            )
     for index, certificate in enumerate(data["certificates"]):
         _certificate_from_value(certificate, f"report header.certificates[{index}]")
     return ReportHeader(
         schema_version=_REPORT_SCHEMA,
         header_digest=_require_digest(data["header_digest"], "header_digest"),
-        compilation=_freeze(compilation),
+        selected_target_profile=profiles["selected_target_profile"],
+        oracle_profile=profiles["oracle_profile"],
+        compilation_bundle=compilation_bundle,
+        evidence_bindings=tuple(_freeze(item) for item in evidence_bindings),
         verification_spec=_freeze(verification_spec),
         tolerance_policies=tuple(_freeze(item) for item in data["tolerance_policies"]),
         oracle_references=tuple(_freeze(item) for item in data["oracle_references"]),
@@ -675,17 +825,25 @@ def parse_report_header(value: Any) -> ReportHeader:
 def validate_report(header: ReportHeader, records: Sequence[EvidenceRecord]) -> None:
     """Validate exact header coverage and every per-case provenance reference."""
 
+    if tuple(records) != tuple(sorted(records, key=_evidence_sort_key)):
+        raise ValueError("report evidence records are not in canonical order")
+    reparsed_header = parse_report_header(report_header_json_object(header))
+    if reparsed_header != header:
+        raise ValueError("report header does not match its canonical facts")
     requirements = {
         item["requirement_id"]: item
         for item in header.verification_spec["requirements"]
     }
     if len(requirements) != len(header.verification_spec["requirements"]):
         raise ValueError("verification specification contains duplicate requirements")
-    receipts_by_kernel = {
-        (item["kernel"]["kernel_id"], item["kernel"]["variant"]): item["receipt_id"]
-        for item in header.compilation["kernel_receipts"]
+    evidence_bindings = {
+        item["requirement_id"]: item for item in header.evidence_bindings
     }
-    receipt_ids = set(receipts_by_kernel.values())
+    if len(evidence_bindings) != len(header.evidence_bindings):
+        raise ValueError("report header contains duplicate evidence bindings")
+    receipts_by_id = {
+        receipt.receipt_id: receipt for receipt in header.compilation_bundle.receipts
+    }
     policy_ids = {item["tolerance_policy_id"] for item in header.tolerance_policies}
     oracle_ids = {item["oracle_reference_id"] for item in header.oracle_references}
     certificates_by_kernel = {
@@ -694,9 +852,18 @@ def validate_report(header: ReportHeader, records: Sequence[EvidenceRecord]) -> 
     }
     if len(certificates_by_kernel) != len(header.certificates):
         raise ValueError("report header contains duplicate certificate kernel/variant")
-    certificate_ids = set(certificates_by_kernel.values())
+    certificates_by_id = {
+        item["certificate_digest"]: item for item in header.certificates
+    }
+    certificate_ids = set(certificates_by_id)
+    oracle_compiled_operations = {
+        receipt.logical_kernel.operation
+        for receipt in header.compilation_bundle.receipts
+        if receipt.profile_id == header.oracle_profile
+    }
     observed_requirements = set()
     for record in records:
+        _validate_evidence_record(record)
         if record.schema_version != _EVIDENCE_SCHEMA:
             raise ValueError(
                 f"unsupported evidence schema version {record.schema_version!r}"
@@ -708,24 +875,71 @@ def validate_report(header: ReportHeader, records: Sequence[EvidenceRecord]) -> 
         if record.requirement_id in observed_requirements:
             raise ValueError("report contains duplicate evidence for one requirement")
         observed_requirements.add(record.requirement_id)
-        if (
-            record.compilation_receipt_id is not None
-            and record.compilation_receipt_id not in receipt_ids
-        ):
-            raise ValueError("evidence references an unknown compilation receipt")
-        if (
-            record.case.kernel_id.startswith("cpu.")
-            and record.compilation_receipt_id is None
-        ):
-            raise ValueError("native CPU evidence has no compilation receipt")
-        expected_receipt = receipts_by_kernel.get(
-            (record.case.kernel_id, record.case.variant)
+        binding = evidence_bindings.get(record.requirement_id)
+        if binding is None or _evidence_binding_value(record) != _thaw(binding):
+            raise ValueError("evidence provenance references do not match its binding")
+        expected_profile = (
+            header.oracle_profile
+            if record.stage is VerificationStage.ORACLE
+            else header.selected_target_profile
         )
-        if (
-            expected_receipt is not None
-            and record.compilation_receipt_id != expected_receipt
-        ):
-            raise ValueError("evidence compilation receipt does not match its kernel")
+        receipt = (
+            None
+            if record.compilation_receipt_id is None
+            else receipts_by_id.get(record.compilation_receipt_id)
+        )
+        if record.compilation_receipt_id is not None and receipt is None:
+            raise ValueError("evidence references an unknown compilation receipt")
+        if record.outcome.value == "blocked" and receipt is not None:
+            raise ValueError("blocked evidence cannot reference an executed receipt")
+        if receipt is None:
+            matches_logical_kernel = any(
+                candidate.profile_id == expected_profile
+                and candidate.logical_kernel.operation == record.case.operation
+                and candidate.logical_kernel.kernel_id == record.case.kernel_id
+                and candidate.logical_kernel.variant == record.case.variant
+                for candidate in receipts_by_id.values()
+            )
+            if matches_logical_kernel and record.outcome.value in {"passed", "failed"}:
+                raise ValueError("compiled evidence has no compilation receipt")
+        else:
+            kernel = receipt.logical_kernel
+            if (
+                receipt.profile_id != expected_profile
+                or kernel.profile_id != expected_profile
+                or kernel.operation != record.case.operation
+                or kernel.kernel_id != record.case.kernel_id
+                or kernel.variant != record.case.variant
+            ):
+                raise ValueError(
+                    "evidence compilation receipt does not match its profile and logical kernel"
+                )
+        manifest_receipts = (
+            set(kernel_manifest(verification_profile(expected_profile)))
+            if record.supporting_compilation_receipt_ids
+            else set()
+        )
+        for supporting_id in record.supporting_compilation_receipt_ids:
+            supporting = receipts_by_id.get(supporting_id)
+            if supporting is None:
+                raise ValueError("evidence references an unknown supporting receipt")
+            if supporting.profile_id != expected_profile:
+                raise ValueError(
+                    "evidence supporting receipt belongs to another profile"
+                )
+            if supporting.kind != "jit-specialization":
+                raise ValueError("evidence supporting receipt must be a JIT receipt")
+            if (
+                receipt is not None
+                and supporting.logical_kernel == receipt.logical_kernel
+            ):
+                raise ValueError(
+                    "evidence supporting receipt names its primary logical kernel"
+                )
+            if supporting.logical_kernel in manifest_receipts:
+                raise ValueError(
+                    "evidence supporting receipt names a primary manifest kernel"
+                )
         if record.tolerance_policy_id not in policy_ids:
             raise ValueError("evidence references an unknown tolerance policy")
         if (
@@ -744,23 +958,29 @@ def validate_report(header: ReportHeader, records: Sequence[EvidenceRecord]) -> 
             raise ValueError("evidence references an unknown Stage One certificate")
         requires_certificate = (
             record.stage is VerificationStage.TARGET
-            and record.case.kernel_id in {"cpu.reduce_sum", "cpu.matmul"}
-            and record.outcome.value != "blocked"
+            and record.case.operation in oracle_compiled_operations
+            and record.outcome.value not in {"blocked", "deferred"}
         )
         if requires_certificate and record.consumed_certificate_digest is None:
             raise ValueError("Stage Two evidence has no consumed Stage One certificate")
-        expected_certificate = certificates_by_kernel.get(
-            (record.case.kernel_id, record.case.variant)
-        )
-        if (
-            record.consumed_certificate_digest is not None
-            and record.consumed_certificate_digest != expected_certificate
-        ):
-            raise ValueError("Stage Two certificate does not match its kernel")
+        if record.consumed_certificate_digest is not None:
+            consumed = certificates_by_id[record.consumed_certificate_digest]
+            certified_operations = {
+                item["plan"]["operation"] for item in consumed["certified_plan_classes"]
+            }
+            if (
+                record.case.operation not in certified_operations
+                or record.test_class.value not in consumed["certified_classes"]
+            ):
+                raise ValueError(
+                    "Stage Two certificate does not cover its operation and class"
+                )
     if observed_requirements != requirements.keys():
         raise ValueError(
             "report evidence does not exactly cover its verification specification"
         )
+    if observed_requirements != evidence_bindings.keys():
+        raise ValueError("report evidence does not exactly cover its bindings")
     certificates = tuple(
         _certificate_from_value(_thaw(item), f"report header.certificates[{index}]")
         for index, item in enumerate(header.certificates)
@@ -813,12 +1033,36 @@ def subset_report(
         for item in report.header.certificates
         if item["certificate_digest"] in certificate_digests
     )
+    receipt_ids = {
+        record.compilation_receipt_id
+        for record in records
+        if record.compilation_receipt_id is not None
+    }
+    receipt_ids.update(
+        receipt_id
+        for record in records
+        for receipt_id in record.supporting_compilation_receipt_ids
+    )
+    compilation_bundle = make_compilation_bundle(
+        tuple(
+            receipt
+            for receipt in report.header.compilation_bundle.receipts
+            if receipt.receipt_id in receipt_ids
+        )
+    )
+    evidence_bindings = sorted(
+        (_evidence_binding_value(record) for record in records),
+        key=lambda value: value["requirement_id"],
+    )
     header_value = {
         "certificates": [_thaw(item) for item in certificate_values],
-        "compilation": _thaw(report.header.compilation),
+        "compilation_bundle": compilation_bundle_json_object(compilation_bundle),
         "evidence_schema": _EVIDENCE_SCHEMA,
+        "evidence_bindings": evidence_bindings,
+        "oracle_profile": report.header.oracle_profile,
         "oracle_references": oracles,
         "schema_version": report.header.schema_version,
+        "selected_target_profile": report.header.selected_target_profile,
         "tolerance_policies": policies,
         "verification_spec": verification_spec,
     }

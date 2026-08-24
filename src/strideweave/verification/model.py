@@ -10,10 +10,13 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-_EVIDENCE_SCHEMA_VERSION = "strideweave.kernel-evidence.v2"
-_REPORT_SCHEMA_VERSION = "strideweave.kernel-verification.v2"
+if TYPE_CHECKING:
+    from .provenance import CompilationBundle
+
+_EVIDENCE_SCHEMA_VERSION = "strideweave.kernel-evidence.v3"
+_REPORT_SCHEMA_VERSION = "strideweave.kernel-verification.v3"
 _NONFINITE_FLOATS = {
     "NaN": math.nan,
     "Infinity": math.inf,
@@ -94,7 +97,13 @@ def _require_optional_integer(value: Any, field: str) -> int | None:
 
 
 def _require_float(value: Any, field: str) -> float:
-    if type(value) in (int, float):
+    if type(value) is float:
+        # Evidence may legitimately describe unbounded deviations.  The wire
+        # encoder represents these values with the canonical string tokens
+        # handled below, so retaining them here is deterministic JSON rather
+        # than a bare non-standard JSON number.
+        return value
+    if type(value) is int:
         try:
             number = float(value)
         except OverflowError as exc:
@@ -103,7 +112,7 @@ def _require_float(value: Any, field: str) -> float:
             ) from exc
         if math.isfinite(number):
             return number
-        raise ValueError(f"{field} must be a finite JSON number")
+        raise ValueError(f"{field} must be representable as a JSON number")
     if type(value) is str and value in _NONFINITE_FLOATS:
         return _NONFINITE_FLOATS[value]
     raise ValueError(
@@ -276,6 +285,7 @@ def _parse_evidence_record(value: Any) -> EvidenceRecord:
                 "diagnostic",
                 "requirement_id",
                 "compilation_receipt_id",
+                "supporting_compilation_receipt_ids",
                 "tolerance_policy_id",
                 "oracle_reference_id",
                 "consumed_certificate_digest",
@@ -314,6 +324,10 @@ def _parse_evidence_record(value: Any) -> EvidenceRecord:
         requirement_id=_require_string(data["requirement_id"], "record.requirement_id"),
         compilation_receipt_id=_require_optional_string(
             data["compilation_receipt_id"], "record.compilation_receipt_id"
+        ),
+        supporting_compilation_receipt_ids=_require_strings(
+            data["supporting_compilation_receipt_ids"],
+            "record.supporting_compilation_receipt_ids",
         ),
         tolerance_policy_id=_require_string(
             data["tolerance_policy_id"], "record.tolerance_policy_id"
@@ -444,6 +458,28 @@ class Tolerance:
     ulps: int = 0
     version: str = "exact-v1"
 
+    def __post_init__(self) -> None:
+        """Normalize numeric inputs before they become canonical report facts."""
+
+        object.__setattr__(
+            self, "absolute", _require_float(self.absolute, "tolerance.absolute")
+        )
+        object.__setattr__(
+            self, "relative", _require_float(self.relative, "tolerance.relative")
+        )
+        _require_integer(self.ulps, "tolerance.ulps")
+        _require_string(self.version, "tolerance.version")
+        for field, value in (
+            ("tolerance.absolute", self.absolute),
+            ("tolerance.relative", self.relative),
+        ):
+            if math.isnan(value) or value < 0.0:
+                raise ValueError(f"{field} must be non-negative and not NaN")
+        if self.ulps < 0:
+            raise ValueError("tolerance.ulps must be non-negative")
+        if not self.version:
+            raise ValueError("tolerance.version must be non-empty")
+
 
 @dataclass(frozen=True, slots=True)
 class Deviations:
@@ -452,6 +488,228 @@ class Deviations:
     maximum_absolute: float | None
     maximum_relative: float | None
     maximum_ulps: int | None
+
+    def __post_init__(self) -> None:
+        """Normalize optional numeric inputs before canonical serialization."""
+
+        object.__setattr__(
+            self,
+            "maximum_absolute",
+            _require_optional_float(
+                self.maximum_absolute, "deviations.maximum_absolute"
+            ),
+        )
+        object.__setattr__(
+            self,
+            "maximum_relative",
+            _require_optional_float(
+                self.maximum_relative, "deviations.maximum_relative"
+            ),
+        )
+        _require_optional_integer(self.maximum_ulps, "deviations.maximum_ulps")
+        for field, value in (
+            ("deviations.maximum_absolute", self.maximum_absolute),
+            ("deviations.maximum_relative", self.maximum_relative),
+        ):
+            if value is not None and (math.isnan(value) or value < 0.0):
+                raise ValueError(f"{field} must be non-negative and not NaN")
+        if self.maximum_ulps is not None and self.maximum_ulps < 0:
+            raise ValueError("deviations.maximum_ulps must be non-negative")
+
+
+def _validate_evidence_record(record: EvidenceRecord) -> None:
+    """Reject structurally or semantically contradictory evidence facts."""
+
+    for field, value, expected in (
+        ("stage", record.stage, VerificationStage),
+        ("test_class", record.test_class, VerificationClass),
+        ("case", record.case, CaseDescriptor),
+        ("tolerance", record.tolerance, Tolerance),
+        ("deviations", record.deviations, Deviations),
+        ("outcome", record.outcome, VerificationOutcome),
+    ):
+        if not isinstance(value, expected):
+            raise ValueError(f"evidence {field} must be a {expected.__name__}")
+    for field, hashes in (
+        ("target_input_bit_hashes", record.target_input_bit_hashes),
+        ("oracle_input_bit_hashes", record.oracle_input_bit_hashes),
+    ):
+        if type(hashes) is not tuple or any(type(item) is not str for item in hashes):
+            raise ValueError(f"evidence {field} must be a tuple of strings")
+    if record.target_input_bit_hashes != record.oracle_input_bit_hashes:
+        raise ValueError("target and oracle input bit hashes must match")
+    if record.schema_version != _EVIDENCE_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported evidence schema version {record.schema_version!r}"
+        )
+    for field, value in (
+        ("requirement_id", record.requirement_id),
+        ("tolerance_policy_id", record.tolerance_policy_id),
+        ("oracle_reference_id", record.oracle_reference_id),
+    ):
+        if type(value) is not str or not value:
+            raise ValueError(f"evidence {field} must be a non-empty string")
+    for field, value in (
+        ("diagnostic", record.diagnostic),
+        ("compilation_receipt_id", record.compilation_receipt_id),
+        ("consumed_certificate_digest", record.consumed_certificate_digest),
+    ):
+        if value is not None and (type(value) is not str or not value):
+            raise ValueError(f"evidence {field} must be a non-empty string or None")
+    supporting_receipts = record.supporting_compilation_receipt_ids
+    if type(supporting_receipts) is not tuple or any(
+        type(value) is not str or not value for value in supporting_receipts
+    ):
+        raise ValueError(
+            "evidence supporting_compilation_receipt_ids must be a tuple of "
+            "non-empty strings"
+        )
+    if supporting_receipts != tuple(sorted(set(supporting_receipts))):
+        raise ValueError(
+            "evidence supporting compilation receipt IDs must be unique and sorted"
+        )
+    if record.compilation_receipt_id in supporting_receipts:
+        raise ValueError(
+            "evidence primary compilation receipt cannot also be supporting"
+        )
+
+    tolerance = record.tolerance
+    for field, value in (
+        ("tolerance.absolute", tolerance.absolute),
+        ("tolerance.relative", tolerance.relative),
+    ):
+        if type(value) is not float or math.isnan(value) or value < 0.0:
+            raise ValueError(f"{field} must be non-negative and not NaN")
+    if type(tolerance.ulps) is not int or tolerance.ulps < 0:
+        raise ValueError("tolerance.ulps must be a non-negative integer")
+    if type(tolerance.version) is not str or not tolerance.version:
+        raise ValueError("tolerance.version must be a non-empty string")
+
+    deviations = record.deviations
+    deviation_values = (
+        deviations.maximum_absolute,
+        deviations.maximum_relative,
+        deviations.maximum_ulps,
+    )
+    measurements_absent = all(value is None for value in deviation_values)
+    measurements_complete = all(value is not None for value in deviation_values)
+    if not measurements_absent and not measurements_complete:
+        raise ValueError("evidence deviations must be either all present or all absent")
+    if measurements_complete:
+        for field, value in (
+            ("deviations.maximum_absolute", deviations.maximum_absolute),
+            ("deviations.maximum_relative", deviations.maximum_relative),
+        ):
+            if type(value) is not float or math.isnan(value) or value < 0.0:
+                raise ValueError(f"{field} must be non-negative and not NaN")
+        if type(deviations.maximum_ulps) is not int or deviations.maximum_ulps < 0:
+            raise ValueError("deviations.maximum_ulps must be a non-negative integer")
+
+    mismatches = record.mismatches
+    if mismatches is not None and (type(mismatches) is not int or mismatches < 0):
+        raise ValueError("evidence mismatches must be a non-negative integer or None")
+    if measurements_absent != (mismatches is None):
+        raise ValueError(
+            "evidence mismatches must be absent exactly when deviations are absent"
+        )
+    if record.diagnostic == "":
+        raise ValueError("evidence diagnostic must be non-empty when present")
+
+    outcome = record.outcome
+    test_class = record.test_class
+    if (test_class is VerificationClass.DEFERRED) != (
+        outcome is VerificationOutcome.DEFERRED
+    ):
+        raise ValueError(
+            "deferred verification class and deferred outcome must appear together"
+        )
+    if record.stage is VerificationStage.ORACLE and (
+        record.consumed_certificate_digest is not None
+    ):
+        raise ValueError("oracle evidence cannot consume a Stage One certificate")
+
+    if outcome is VerificationOutcome.ERROR:
+        if not measurements_absent:
+            raise ValueError("error evidence must have absent comparison measurements")
+        if record.diagnostic is None:
+            raise ValueError("error evidence requires a diagnostic")
+        return
+
+    if not measurements_complete or mismatches is None:
+        raise ValueError("completed evidence requires complete comparison measurements")
+
+    zero_deviations = (
+        deviations.maximum_absolute == 0.0
+        and deviations.maximum_relative == 0.0
+        and deviations.maximum_ulps == 0
+    )
+    if outcome is VerificationOutcome.BLOCKED:
+        if record.stage is not VerificationStage.TARGET:
+            raise ValueError("blocked evidence must belong to the target stage")
+        if mismatches != 0 or not zero_deviations:
+            raise ValueError("blocked evidence must have zero comparison measurements")
+        if record.diagnostic is None:
+            raise ValueError("blocked evidence requires an authorization diagnostic")
+        if (
+            record.compilation_receipt_id is not None
+            or record.supporting_compilation_receipt_ids
+            or record.consumed_certificate_digest is not None
+        ):
+            raise ValueError("blocked evidence cannot reference executed provenance")
+        return
+
+    if outcome is VerificationOutcome.DEFERRED:
+        if mismatches != 0 or not zero_deviations:
+            raise ValueError("deferred evidence must have zero comparison measurements")
+        if record.diagnostic is None:
+            raise ValueError("deferred evidence requires a diagnostic")
+        if (
+            record.compilation_receipt_id is not None
+            or record.supporting_compilation_receipt_ids
+            or record.consumed_certificate_digest is not None
+        ):
+            raise ValueError("deferred evidence cannot reference executed provenance")
+        return
+
+    if outcome is VerificationOutcome.PASSED:
+        if record.diagnostic is not None:
+            raise ValueError("passed evidence cannot carry a diagnostic")
+        exact_classes = {
+            VerificationClass.BIT_EXACT,
+            VerificationClass.EXACT_ARITHMETIC,
+            VerificationClass.STRUCTURAL,
+            VerificationClass.ANALYTIC,
+        }
+        if test_class in exact_classes and (mismatches != 0 or not zero_deviations):
+            raise ValueError(
+                f"passed {test_class.value} evidence must have zero mismatches and deviations"
+            )
+        if test_class is VerificationClass.NUMERICAL:
+            if mismatches == 0 and not zero_deviations:
+                raise ValueError(
+                    "numerical evidence with zero mismatches must have zero deviations"
+                )
+            maximum_absolute = deviations.maximum_absolute
+            if maximum_absolute is None:  # narrowed by complete measurements above.
+                raise ValueError(
+                    "completed numerical evidence requires an absolute deviation"
+                )
+            if maximum_absolute > tolerance.absolute:
+                raise ValueError(
+                    "passed numerical evidence exceeds its absolute tolerance"
+                )
+        return
+
+    if outcome is VerificationOutcome.FAILED:
+        if mismatches == 0 and not (
+            test_class is VerificationClass.ANALYTIC and record.diagnostic is not None
+        ):
+            raise ValueError(
+                "failed evidence requires a mismatch or an analytic diagnostic"
+            )
+        return
+
+    raise ValueError(f"unsupported verification outcome {outcome!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,14 +728,14 @@ class EvidenceRecord:
     diagnostic: str | None = None
     requirement_id: str = "unbound"
     compilation_receipt_id: str | None = None
+    supporting_compilation_receipt_ids: tuple[str, ...] = ()
     tolerance_policy_id: str = "unbound"
     oracle_reference_id: str = "unbound"
     consumed_certificate_digest: str | None = None
     schema_version: str = _EVIDENCE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.target_input_bit_hashes != self.oracle_input_bit_hashes:
-            raise ValueError("target and oracle input bit hashes must match")
+        _validate_evidence_record(self)
 
     def as_json_object(self) -> dict[str, Any]:
         value = asdict(self)
@@ -493,6 +751,17 @@ class EvidenceRecord:
             separators=(",", ":"),
             sort_keys=True,
         )
+
+
+def _evidence_sort_key(record: EvidenceRecord) -> tuple[str, ...]:
+    return (
+        record.case.case_id,
+        record.case.kernel_id,
+        record.case.variant,
+        record.stage.value,
+        record.test_class.value,
+        record.requirement_id,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,7 +864,10 @@ class ReportHeader:
 
     schema_version: str
     header_digest: str
-    compilation: Mapping[str, Any]
+    selected_target_profile: str
+    oracle_profile: str
+    compilation_bundle: CompilationBundle
+    evidence_bindings: tuple[Mapping[str, Any], ...]
     verification_spec: Mapping[str, Any]
     tolerance_policies: tuple[Mapping[str, Any], ...]
     oracle_references: tuple[Mapping[str, Any], ...]
@@ -623,9 +895,9 @@ class VerificationReport:
     Use :meth:`summary` for immutable counts, :meth:`describe` for deterministic
     text, and :meth:`select` or the :attr:`passed`, :attr:`deferred`, and
     :attr:`problems` views to navigate the authoritative ``records`` tuple.
-    JSONL serialization is stable and begins with one strict provenance header,
-    followed by line-numbered evidence objects. Prototype v1 evidence-only files
-    are rejected rather than migrated.
+    JSONL serialization is stable and begins with one strict schema-v3 provenance
+    header, followed by line-numbered evidence objects. Prototype and schema-v2
+    files are rejected rather than migrated.
 
     Args:
         records: Immutable evidence records collected by local verification.
@@ -832,14 +1104,7 @@ class VerificationReport:
             >>> VerificationReport(()).to_jsonl().count("\\n")
             1
         """
-        ordered = sorted(
-            self.records,
-            key=lambda record: (
-                record.case.case_id,
-                record.case.kernel_id,
-                record.case.variant,
-            ),
-        )
+        ordered = sorted(self.records, key=_evidence_sort_key)
         if self.header is None:
             raise RuntimeError("verification report has no provenance header")
         lines = [
@@ -878,6 +1143,10 @@ class VerificationReport:
         """
         if type(text) is not str:
             raise TypeError("text must be a string")
+        if text and (not text.endswith("\n") or "\r" in text):
+            raise ValueError(
+                "JSONL line 1: report must use canonical newline termination"
+            )
         lines = text.splitlines()
         if not lines:
             raise ValueError("JSONL line 1: report header is required")
@@ -892,6 +1161,14 @@ class VerificationReport:
             from .reporting import parse_report_header
 
             header = parse_report_header(header_value)
+            canonical_header = json.dumps(
+                header.as_json_object(),
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            if canonical_header != lines[0]:
+                raise ValueError("report header is not canonical JSON")
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
             raise ValueError(f"JSONL line 1: {exc}") from exc
         records: list[EvidenceRecord] = []
@@ -904,9 +1181,20 @@ class VerificationReport:
                     object_pairs_hook=_reject_duplicate_keys,
                     parse_constant=_reject_json_constant,
                 )
-                records.append(_parse_evidence_record(value))
+                record = _parse_evidence_record(value)
+                if record.to_jsonl() != line:
+                    raise ValueError("evidence record is not canonical JSON")
+                records.append(record)
             except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 raise ValueError(f"JSONL line {line_number}: {exc}") from exc
+        previous_key: tuple[str, ...] | None = None
+        for index, record in enumerate(records):
+            current_key = _evidence_sort_key(record)
+            if previous_key is not None and current_key < previous_key:
+                raise ValueError(
+                    f"JSONL line {index + 2}: evidence records are not in canonical order"
+                )
+            previous_key = current_key
         return cls(tuple(records), header.schema_version, header)
 
     @classmethod
@@ -977,6 +1265,7 @@ class OracleCertificate:
         required_plan_classes: tuple[
             tuple[PlanKey, tuple[VerificationClass, ...]], ...
         ] = (),
+        required_cases: tuple[tuple[PlanKey, VerificationClass, str], ...] = (),
     ) -> OracleCertificate:
         required_plan_classes = tuple(
             sorted(
@@ -989,6 +1278,73 @@ class OracleCertificate:
                 ),
             )
         )
+        declared_plans: set[PlanKey] = set()
+        if required_plan_classes:
+            declared_classes: list[VerificationClass] = []
+            for plan, plan_classes in required_plan_classes:
+                if plan in declared_plans:
+                    raise ValueError(
+                        f"cannot certify {kernel.kernel_id}: duplicate required plan"
+                    )
+                declared_plans.add(plan)
+                if not plan_classes or len(set(plan_classes)) != len(plan_classes):
+                    raise ValueError(
+                        f"cannot certify {kernel.kernel_id}: invalid required plan classes"
+                    )
+                for test_class in plan_classes:
+                    if test_class not in declared_classes:
+                        declared_classes.append(test_class)
+            if tuple(declared_classes) != required_classes:
+                raise ValueError(
+                    f"cannot certify {kernel.kernel_id}: required classes do not "
+                    "match required plan classes"
+                )
+        if required_cases:
+            if len(set(required_cases)) != len(required_cases):
+                raise ValueError(
+                    f"cannot certify {kernel.kernel_id}: duplicate required cases"
+                )
+            plan_classes = {
+                (plan, test_class)
+                for plan, classes in required_plan_classes
+                for test_class in classes
+            }
+            case_plan_classes = {
+                (plan, test_class) for plan, test_class, _ in required_cases
+            }
+            if case_plan_classes != plan_classes:
+                raise ValueError(
+                    f"cannot certify {kernel.kernel_id}: required cases do not "
+                    "cover required plan classes"
+                )
+            expected = set(required_cases)
+            observed_cases = [
+                (record.case.plan, record.test_class, record.case.case_id)
+                for record in records
+                if record.case.kernel_id == kernel.kernel_id
+                and record.case.variant == kernel.variant
+                and record.case.plan in declared_plans
+            ]
+            if any(
+                record.case.operation != kernel.operation
+                or record.stage is not VerificationStage.ORACLE
+                for record in records
+                if record.case.kernel_id == kernel.kernel_id
+                and record.case.variant == kernel.variant
+                and record.case.plan in declared_plans
+            ):
+                raise ValueError(
+                    f"cannot certify {kernel.kernel_id}: required case identity "
+                    "does not match the oracle kernel"
+                )
+            missing_cases = expected - set(observed_cases)
+            unexpected_cases = set(observed_cases) - expected
+            duplicate_cases = len(observed_cases) != len(set(observed_cases))
+            if missing_cases or unexpected_cases or duplicate_cases:
+                raise ValueError(
+                    f"cannot certify {kernel.kernel_id}: required case catalog "
+                    "does not match report evidence"
+                )
         observed = {
             record.test_class
             for record in records
@@ -1058,6 +1414,7 @@ class OracleCertificate:
             value = record.as_json_object()
             for field in (
                 "compilation_receipt_id",
+                "supporting_compilation_receipt_ids",
                 "consumed_certificate_digest",
                 "oracle_reference_id",
                 "requirement_id",

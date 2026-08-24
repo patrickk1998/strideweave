@@ -82,8 +82,11 @@ from .carriers.generic.ternary_ops import (
 )
 from .carriers.move.ops import (
     CpuToFileBackedMoveOperation,
+    CpuToMetalMoveOperation,
     ElementwiseMoveOperation,
     FileBackedToCpuMoveOperation,
+    MetalToCpuMoveOperation,
+    MetalToMetalMoveOperation,
     MoveOperation,
 )
 from .carriers.operation_helpers import Operation
@@ -103,6 +106,7 @@ from .profiling import Profiler, ProfilerAggregate, ProfilerEvent, profile
 _OPERATION_CLASS_EXPORTS = [
     "BroadcastOperation",
     "CpuToFileBackedMoveOperation",
+    "CpuToMetalMoveOperation",
     "ElementwiseMoveOperation",
     "EvictableOperation",
     "FileBackedToCpuMoveOperation",
@@ -164,6 +168,8 @@ _OPERATION_CLASS_EXPORTS = [
     "GenericTopKIndicesOperation",
     "GenericTopKValuesOperation",
     "GenericViewOperation",
+    "MetalToCpuMoveOperation",
+    "MetalToMetalMoveOperation",
     "MoveOperation",
     "Operation",
     "PermuteOperation",

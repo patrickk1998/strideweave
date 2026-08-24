@@ -23,9 +23,16 @@ cd strideweave
 uv sync --group dev
 ```
 
+On Apple silicon, include the pinned TileLang and PyTorch MPS dependencies when
+developing or testing the Metal carrier:
+
+```bash
+uv sync --extra metal --group dev
+```
+
 After changing native C++ sources, rebuild and reinstall StrideWeave in the
 active development environment before running the test suite or
-`sw.test_backend()`:
+`sw.verify_backend(...)`:
 
 ```bash
 uv sync --reinstall-package strideweave --group dev
@@ -33,15 +40,15 @@ uv sync --reinstall-package strideweave --group dev
 
 `uv build` creates a distribution artifact, but it does not reinstall the
 editable native extension imported by the active environment. If that extension
-is older than the Python verification sources, `sw.test_backend()` fails closed
-with the rebuild command instead of skipping native verification.
+is older than the Python verification sources, `sw.verify_backend(...)` fails
+closed with the rebuild command instead of skipping native verification.
 
 ## Verification
 
 Run the complete local verification suite before opening a pull request:
 
 ```bash
-uv run pytest tests -m "not dolt_integration and not dolt_lifecycle"
+uv run pytest tests -m "not dolt_integration and not dolt_lifecycle and not metal"
 uv run pytest tests -m "dolt_integration or dolt_lifecycle"
 uv run pytest --doctest-modules src/strideweave
 uv run ruff format --check .
@@ -55,6 +62,19 @@ find src/strideweave -type f \( -name '*.cpp' -o -name '*.hpp' \) -exec uv run c
 CMAKE_ARGS="-DSTRIDEWEAVE_STRICT_WARNINGS=ON" uv build
 git diff --check
 ```
+
+On supported Apple Metal hardware, also run the hardware-marked suite and the
+backend-neutral local verifier:
+
+```bash
+uv run pytest tests -m metal
+uv run python -c 'import strideweave as sw; assert sw.verify_backend("metal-tilelang").summary().gate_passed'
+```
+
+`sw.verify_backend("cpu-compiled")` preserves the native CPU target path.
+`sw.verify_backend("metal-tilelang")` runs that CPU Stage One oracle followed by
+the complete synchronized Metal Stage Two catalog, and binds compiled CPU plus
+exact TileLang JIT-specialization provenance in one schema-v3 report.
 
 The repository invariant checker is a dependency-free pass over `src`, `tests`, and
 `examples` that uses Python's built-in AST, so it reports StrideWeave-specific source
@@ -88,9 +108,13 @@ concurrently run, several independently owned servers. Both markers skip when no
 Dolt runtime is installed. Select or exclude them with pytest's `-m`:
 
 ```bash
-uv run pytest tests -m "not dolt_integration and not dolt_lifecycle"
+uv run pytest tests -m "not dolt_integration and not dolt_lifecycle and not metal"
 uv run pytest tests -m "dolt_integration or dolt_lifecycle"
 ```
+
+Tests marked `metal` require Apple silicon, an available Metal device, and the
+optional Metal dependencies. The platform-neutral suite and Linux CI deselect
+that marker; run it separately on supported hardware as shown above.
 
 Do not mark a whole test file. `dolt_integration` is derived from each test's
 fixture closure rather than written by hand, so a test leaves the
@@ -105,7 +129,7 @@ Dolt process. See `CPP009` in `INVARIANTS.md` for that deselection and `CPP009a`
 for the guard's exact boundary. The
 promise that makes this exact is that the deselected selection contains no
 native work at all: for the whole of a marked item — fixture setup, call, and teardown
-— `tests/conftest.py` replaces every imported binding of `sw.test_backend`,
+— `tests/conftest.py` replaces every imported binding of `sw.verify_backend`,
 native kernel metadata, the installed compilation manifest, and report binding
 with one that refuses, including module-level aliases that tests or fixtures
 captured before the marked protocol began. This is a pragmatic accidental-use
@@ -139,7 +163,8 @@ suite.
 
 ## Continuous Integration
 
-CI runs five separately visible code checks: `test` (the non-Dolt suite plus
+CI runs five separately visible code checks: `test` (the Linux-capable,
+non-Dolt suite plus
 Python docstring examples, formatting, lint, invariants, native formatting,
 type checking, and the distribution build), `dolt-integration`,
 `native-strict-warnings`, `native-sanitizers`, and `duplication`. A sixth job,
@@ -188,9 +213,10 @@ may concurrently run, several independently owned servers.
 Native sanitizer coverage runs in Linux CI with `STRIDEWEAVE_SANITIZERS=ON`,
 instrumenting the extension modules with AddressSanitizer and
 UndefinedBehaviorSanitizer. It deselects the two Dolt markers for the reason
-given above, so marked tests persist pure-Python evidence while report
-construction, binding, provenance reconciliation, and their rejection paths stay
-instrumented.
+given above and the Apple-silicon-only `metal` marker because that hardware is
+unavailable on the Linux runner. The Dolt-marked tests persist pure-Python
+evidence while report construction, binding, provenance reconciliation, and
+their rejection paths stay instrumented.
 
 That sanitizer job is the only one that runs pytest in parallel, with `-n auto`
 over pytest-xdist; every other job runs serially. Sanitizers cost roughly 6.8x,

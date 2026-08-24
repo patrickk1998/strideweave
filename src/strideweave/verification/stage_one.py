@@ -5,11 +5,14 @@ from __future__ import annotations
 import math
 import random
 from collections.abc import Callable, Iterable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 
 import strideweave as sw
 from strideweave import (
     CPU,
+    Carrier,
     DType,
     FileBacked,
     Generic,
@@ -20,7 +23,14 @@ from strideweave import (
     Tensor,
 )
 
-from .classification import MOVEMENT_CLASSIFICATIONS, classify_cpu_kernel_plans
+from .classification import (
+    LogicalKernel,
+    PlanClassification,
+    VerificationProfile,
+    classify_profile_plans,
+    profile_subjects,
+    verification_profile,
+)
 from .comparison import compare_float32, gamma_bound
 from .model import (
     CaseDescriptor,
@@ -28,7 +38,6 @@ from .model import (
     Deviations,
     EvidenceRecord,
     KernelDescriptor,
-    KernelPlanDescriptor,
     OracleCertificate,
     PlanKey,
     Tolerance,
@@ -56,8 +65,8 @@ Payload = EncodedFloat32Payload | EncodedInt32Payload | EncodedBoolPayload
 
 
 @dataclass(frozen=True, slots=True)
-class StageOneResult:
-    """Stage One evidence report and certificates authorizing Stage Two."""
+class OracleStageResult:
+    """Oracle-stage evidence report and certificates authorizing a target."""
 
     report: VerificationReport
     certificates: tuple[OracleCertificate, ...]
@@ -82,8 +91,32 @@ def _dtype(name: str) -> SimpleDType:
     return dtype
 
 
+type _TargetCarrierFactory = Callable[[int, SimpleDType], Carrier]
+
+_TARGET_CARRIER_FACTORY: ContextVar[_TargetCarrierFactory | None] = ContextVar(
+    "strideweave_verification_target_carrier_factory", default=None
+)
+
+
+@contextmanager
+def _target_carrier_factory(factory: _TargetCarrierFactory):
+    """Select the carrier used by target-side verification allocations."""
+    if not callable(factory):
+        raise TypeError("target carrier factory must be callable")
+    token = _TARGET_CARRIER_FACTORY.set(factory)
+    try:
+        yield
+    finally:
+        _TARGET_CARRIER_FACTORY.reset(token)
+
+
 def _tensor(
-    values: Iterable[float | int], dtype: SimpleDType, layout: Layout, cpu: bool
+    values: Iterable[float | int],
+    dtype: SimpleDType,
+    layout: Layout,
+    cpu: bool,
+    *,
+    allow_target_override: bool = True,
 ) -> Tensor:
     zero: bool | int | float = 0.0
     if dtype is DType.Bool:
@@ -94,7 +127,12 @@ def _tensor(
     for logical_index, value in enumerate(values):
         physical[layout.index(logical_index)] = value
     if cpu:
-        carrier = CPU(layout.cosize, dtype=dtype)
+        factory = _TARGET_CARRIER_FACTORY.get() if allow_target_override else None
+        carrier = (
+            CPU(layout.cosize, dtype=dtype)
+            if factory is None
+            else factory(layout.cosize, dtype)
+        )
         for index, value in enumerate(physical):
             carrier[index] = value
     else:
@@ -144,7 +182,7 @@ def _payloads_for_plan(
 
 
 def _case(
-    kernel: KernelDescriptor,
+    kernel: LogicalKernel | KernelDescriptor,
     test_class: VerificationClass,
     case_id: str,
     payloads: tuple[Payload, ...],
@@ -158,6 +196,7 @@ def _case(
     shapes: tuple[tuple[int, ...], ...] | None = None,
     seed: int | None = 0,
     tolerance: Tolerance | None = None,
+    stage: VerificationStage = VerificationStage.ORACLE,
 ) -> EvidenceRecord:
     hashes = EncodedInputs(payloads).input_hashes
     if plan is None:
@@ -171,7 +210,7 @@ def _case(
     if shapes is None:
         shapes = tuple((len(item.bits),) for item in payloads)
     return EvidenceRecord(
-        stage=VerificationStage.ORACLE,
+        stage=stage,
         test_class=test_class,
         case=CaseDescriptor(
             kernel.operation,
@@ -197,7 +236,7 @@ def _case(
 
 
 def _error_record(
-    kernel: KernelDescriptor,
+    kernel: LogicalKernel | KernelDescriptor,
     test_class: VerificationClass,
     case_id: str,
     error: RuntimeError | ValueError,
@@ -383,12 +422,13 @@ def _dispatched(operation: str, tensors: tuple[Tensor, ...], *arguments: object)
 
 
 def _execute(
-    descriptor: KernelPlanDescriptor,
+    descriptor: PlanClassification,
     payloads: tuple[Payload, ...],
     layout: Layout,
     cpu: bool,
     *,
     operand_layouts: tuple[Layout, ...] | None = None,
+    synchronize: Callable[[], None] | None = None,
 ) -> tuple[float | int, ...]:
     dtypes = _tensor_dtypes(descriptor.plan)
     layouts = operand_layouts or (layout,) * len(dtypes)
@@ -418,6 +458,8 @@ def _execute(
         result = _dispatched(operation, tensors, 1, 1, True)
     else:
         result = getattr(sw, operation)(*_call_arguments(descriptor.plan, tensors))
+    if cpu and synchronize is not None:
+        synchronize()
     return _values(result)
 
 
@@ -437,7 +479,7 @@ def _comparison(
     )
 
 
-def _pinned_payloads(descriptor: KernelPlanDescriptor) -> tuple[Payload, ...]:
+def _pinned_payloads(descriptor: PlanClassification) -> tuple[Payload, ...]:
     """Prepare the small signed witness every exact plan is checked on first."""
     shape = _descriptor_shape(descriptor)
     operation = descriptor.kernel.operation
@@ -452,20 +494,21 @@ def _pinned_payloads(descriptor: KernelPlanDescriptor) -> tuple[Payload, ...]:
     return _payloads_for_plan(descriptor.plan, tuple(values))
 
 
-def _descriptor_shape(descriptor: KernelPlanDescriptor) -> _CaseShape:
+def _descriptor_shape(descriptor: PlanClassification) -> _CaseShape:
     return _case_shape(
         descriptor.kernel.operation, len(_tensor_dtypes(descriptor.plan)), 4
     )
 
 
 def _exact_witness_record(
-    descriptor: KernelPlanDescriptor,
+    descriptor: PlanClassification,
     payloads: tuple[Payload, ...],
     transform: ResultTransform | None,
     *,
     case_suffix: str,
     seed: int | None = 0,
     tolerance: Tolerance | None = None,
+    synchronize: Callable[[], None] | None = None,
 ) -> EvidenceRecord:
     """Run one encoded exact witness against Generic and CPU.
 
@@ -487,6 +530,7 @@ def _exact_witness_record(
         shape.operand_layouts[0],
         True,
         operand_layouts=shape.operand_layouts,
+        synchronize=synchronize,
     )
     if transform is not None:
         actual = transform(descriptor.kernel.kernel_id, actual)
@@ -510,7 +554,10 @@ def _exact_witness_record(
 
 
 def _exact_record(
-    descriptor: KernelPlanDescriptor, transform: ResultTransform | None
+    descriptor: PlanClassification,
+    transform: ResultTransform | None,
+    *,
+    synchronize: Callable[[], None] | None = None,
 ) -> EvidenceRecord:
     """Run the fixed signed exact witness for one active kernel plan."""
     return _exact_witness_record(
@@ -518,11 +565,15 @@ def _exact_record(
         _pinned_payloads(descriptor),
         transform,
         case_suffix="exact",
+        synchronize=synchronize,
     )
 
 
 def _arbitrary_exact_record(
-    descriptor: KernelPlanDescriptor, transform: ResultTransform | None
+    descriptor: PlanClassification,
+    transform: ResultTransform | None,
+    *,
+    synchronize: Callable[[], None] | None = None,
 ) -> EvidenceRecord:
     seed = 1000 + sum(ord(character) for character in _plan_id(descriptor.plan))
     """Run the seeded arbitrary finite exact witness for one active plan."""
@@ -533,11 +584,12 @@ def _arbitrary_exact_record(
         case_suffix="arbitrary-finite",
         seed=seed,
         tolerance=Tolerance(version="bit-exact-arbitrary-finite-v1"),
+        synchronize=synchronize,
     )
 
 
 def _arbitrary_payloads(
-    descriptor: KernelPlanDescriptor, seed: int
+    descriptor: PlanClassification, seed: int
 ) -> tuple[Payload, ...]:
     """Prepare the deterministic arbitrary exact witness before execution."""
     shape = _descriptor_shape(descriptor)
@@ -575,7 +627,7 @@ def _arbitrary_payloads(
 
 
 def _contraction_payloads(
-    descriptor: KernelPlanDescriptor,
+    descriptor: PlanClassification,
     lhs: tuple[float | int, ...],
     rhs: tuple[float | int, ...] | None,
 ) -> tuple[Payload, ...]:
@@ -590,7 +642,7 @@ def _contraction_payloads(
 _EXACT_MAGNITUDES = (1.0, -2.0, 4.0, -8.0, 2.0, -1.0, 8.0, -4.0)
 
 
-def _structural_payloads(descriptor: KernelPlanDescriptor) -> tuple[Payload, ...]:
+def _structural_payloads(descriptor: PlanClassification) -> tuple[Payload, ...]:
     """Prepare payloads whose every legal partial result is exact."""
     operation = descriptor.kernel.operation
     shape = _descriptor_shape(descriptor)
@@ -620,7 +672,10 @@ def _structural_payloads(descriptor: KernelPlanDescriptor) -> tuple[Payload, ...
 
 
 def _structural_record(
-    descriptor: KernelPlanDescriptor, transform: ResultTransform | None
+    descriptor: PlanClassification,
+    transform: ResultTransform | None,
+    *,
+    synchronize: Callable[[], None] | None = None,
 ) -> EvidenceRecord:
     shape = _descriptor_shape(descriptor)
     k = shape.contraction_length
@@ -638,6 +693,7 @@ def _structural_record(
         shape.operand_layouts[0],
         True,
         operand_layouts=shape.operand_layouts,
+        synchronize=synchronize,
     )
     if transform is not None:
         actual = transform(descriptor.kernel.kernel_id, actual)
@@ -687,9 +743,11 @@ def _analytic_cases_for(operation: str) -> tuple[AnalyticCase, ...]:
 
 
 def _analytic_record(
-    descriptor: KernelPlanDescriptor,
+    descriptor: PlanClassification,
     transform: ResultTransform | None,
     case: AnalyticCase,
+    *,
+    synchronize: Callable[[], None] | None = None,
 ) -> EvidenceRecord:
     """Execute one analytic witness so failures do not suppress later witnesses."""
     operation = descriptor.kernel.operation
@@ -707,7 +765,7 @@ def _analytic_record(
         case.inputs[1] if len(case.inputs) == 2 else None,
     )
     expected = _execute(descriptor, payloads, layout, False)
-    actual = _execute(descriptor, payloads, layout, True)
+    actual = _execute(descriptor, payloads, layout, True, synchronize=synchronize)
     if transform is not None:
         actual = transform(descriptor.kernel.kernel_id, actual)
     generic_matches, _, _ = _comparison(case.expected, expected, descriptor.plan.output)
@@ -745,7 +803,7 @@ def _controlled_wide_payload(seed: int, count: int) -> EncodedFloat32Payload:
     return EncodedFloat32Payload.from_values(values)
 
 
-def _numerical_witness(descriptor: KernelPlanDescriptor) -> _NumericalWitness:
+def _numerical_witness(descriptor: PlanClassification) -> _NumericalWitness:
     """Prepare the shared deterministic witness for normal and error evidence."""
     k = 8
     dtypes = _tensor_dtypes(descriptor.plan)
@@ -798,7 +856,10 @@ def _numerical_witness(descriptor: KernelPlanDescriptor) -> _NumericalWitness:
 
 
 def _numerical_record(
-    descriptor: KernelPlanDescriptor, transform: ResultTransform | None
+    descriptor: PlanClassification,
+    transform: ResultTransform | None,
+    *,
+    synchronize: Callable[[], None] | None = None,
 ) -> EvidenceRecord:
     witness = _numerical_witness(descriptor)
     layout = Layout(
@@ -807,7 +868,9 @@ def _numerical_record(
     )
     if all(dtype is DType.Int32 for dtype in _tensor_dtypes(descriptor.plan)):
         expected = _execute(descriptor, witness.payloads, layout, False)
-        actual = _execute(descriptor, witness.payloads, layout, True)
+        actual = _execute(
+            descriptor, witness.payloads, layout, True, synchronize=synchronize
+        )
         if transform is not None:
             actual = transform(descriptor.kernel.kernel_id, actual)
         matches, deviations, mismatches = _comparison(
@@ -829,7 +892,9 @@ def _numerical_record(
             tolerance=witness.tolerance,
         )
     expected = _execute(descriptor, witness.payloads, layout, False)
-    actual = _execute(descriptor, witness.payloads, layout, True)
+    actual = _execute(
+        descriptor, witness.payloads, layout, True, synchronize=synchronize
+    )
     if transform is not None:
         actual = transform(descriptor.kernel.kernel_id, actual)
     comparison = compare_float32(expected, actual)
@@ -857,7 +922,7 @@ def _numerical_record(
 
 
 def _error_context(
-    descriptor: KernelPlanDescriptor,
+    descriptor: PlanClassification,
     label: str,
     *,
     analytic_case: AnalyticCase | None = None,
@@ -874,7 +939,7 @@ def _error_context(
     shape = _descriptor_shape(descriptor)
     if label == "exact":
         return (
-            f"{prefix}-exact-error",
+            f"{prefix}-exact",
             _pinned_payloads(descriptor),
             shape.contraction_length,
             shape.shapes,
@@ -884,7 +949,7 @@ def _error_context(
     if label == "arbitrary":
         seed = 1000 + sum(ord(character) for character in _plan_id(descriptor.plan))
         return (
-            f"{prefix}-arbitrary-finite-error",
+            f"{prefix}-arbitrary-finite",
             _arbitrary_payloads(descriptor, seed),
             shape.contraction_length,
             shape.shapes,
@@ -895,7 +960,7 @@ def _error_context(
         shape = _descriptor_shape(descriptor)
         payloads = _structural_payloads(descriptor)
         return (
-            f"{prefix}-structural-error",
+            f"{prefix}-structural",
             payloads,
             shape.contraction_length,
             shape.shapes,
@@ -905,7 +970,7 @@ def _error_context(
     if label == "numerical":
         witness = _numerical_witness(descriptor)
         return (
-            f"{prefix}-numerical-error",
+            witness.case_id,
             witness.payloads,
             witness.contraction_length,
             witness.shapes,
@@ -920,7 +985,7 @@ def _error_context(
             analytic_case.inputs[1] if len(analytic_case.inputs) == 2 else None,
         )
         return (
-            f"{prefix}-{analytic_case.case_id}-error",
+            f"{prefix}-{analytic_case.case_id}",
             payloads,
             k,
             ((1, k),) * len(payloads),
@@ -931,7 +996,7 @@ def _error_context(
 
 
 def _recoverable_error_record(
-    descriptor: KernelPlanDescriptor,
+    descriptor: PlanClassification,
     test_class: VerificationClass,
     label: str,
     error: RuntimeError | ValueError,
@@ -956,8 +1021,138 @@ def _recoverable_error_record(
     )
 
 
+def _required_case_catalog(
+    descriptor: PlanClassification,
+) -> tuple[tuple[PlanKey, VerificationClass, str], ...]:
+    """Return the exact model-owned witness catalog for one active plan."""
+    prefix = f"{descriptor.kernel.kernel_id}-{_plan_id(descriptor.plan)}"
+    cases: list[tuple[PlanKey, VerificationClass, str]] = []
+    if VerificationClass.EXACT_ARITHMETIC in descriptor.classes:
+        cases.extend(
+            (
+                (
+                    descriptor.plan,
+                    VerificationClass.EXACT_ARITHMETIC,
+                    f"{prefix}-exact",
+                ),
+                (
+                    descriptor.plan,
+                    VerificationClass.EXACT_ARITHMETIC,
+                    f"{prefix}-arbitrary-finite",
+                ),
+            )
+        )
+    if VerificationClass.STRUCTURAL in descriptor.classes:
+        cases.append(
+            (
+                descriptor.plan,
+                VerificationClass.STRUCTURAL,
+                f"{prefix}-structural",
+            )
+        )
+    if VerificationClass.NUMERICAL in descriptor.classes:
+        cases.append(
+            (
+                descriptor.plan,
+                VerificationClass.NUMERICAL,
+                _numerical_witness(descriptor).case_id,
+            )
+        )
+    if VerificationClass.ANALYTIC in descriptor.classes:
+        cases.extend(
+            (
+                descriptor.plan,
+                VerificationClass.ANALYTIC,
+                f"{prefix}-{analytic.case_id}",
+            )
+            for analytic in _analytic_cases_for(descriptor.kernel.operation)
+        )
+    known = {
+        VerificationClass.EXACT_ARITHMETIC,
+        VerificationClass.STRUCTURAL,
+        VerificationClass.NUMERICAL,
+        VerificationClass.ANALYTIC,
+    }
+    unsupported = set(descriptor.classes) - known
+    if unsupported:
+        names = ", ".join(sorted(item.value for item in unsupported))
+        raise ValueError(f"active oracle plan has unsupported classes: {names}")
+    return tuple(cases)
+
+
+def _descriptor_requirement_records(
+    descriptor: PlanClassification,
+) -> tuple[EvidenceRecord, ...]:
+    """Return pure templates for one classified oracle plan's full case graph."""
+
+    if descriptor.disposition is ClassificationDisposition.DEFERRED:
+        return (
+            _case(
+                descriptor.kernel,
+                VerificationClass.DEFERRED,
+                f"{descriptor.kernel.kernel_id}-{_plan_id(descriptor.plan)}-deferred",
+                (),
+                VerificationOutcome.DEFERRED,
+                Deviations(0.0, 0.0, 0),
+                0,
+                diagnostic=descriptor.deferred_reason,
+                plan=descriptor.plan,
+                seed=None,
+            ),
+        )
+
+    cases: list[EvidenceRecord] = []
+
+    def requirement(
+        test_class: VerificationClass,
+        label: str,
+        analytic_case: AnalyticCase | None = None,
+    ) -> EvidenceRecord:
+        case_id, payloads, k, shapes, seed, tolerance = _error_context(
+            descriptor, label, analytic_case=analytic_case
+        )
+        return _case(
+            descriptor.kernel,
+            test_class,
+            case_id,
+            payloads,
+            VerificationOutcome.PASSED,
+            Deviations(0.0, 0.0, 0),
+            0,
+            k=k,
+            plan=descriptor.plan,
+            shapes=shapes,
+            seed=seed,
+            tolerance=tolerance,
+        )
+
+    if VerificationClass.EXACT_ARITHMETIC in descriptor.classes:
+        cases.extend(
+            (
+                requirement(VerificationClass.EXACT_ARITHMETIC, "exact"),
+                requirement(VerificationClass.EXACT_ARITHMETIC, "arbitrary"),
+            )
+        )
+    if VerificationClass.STRUCTURAL in descriptor.classes:
+        cases.append(requirement(VerificationClass.STRUCTURAL, "structural"))
+    if VerificationClass.NUMERICAL in descriptor.classes:
+        cases.append(requirement(VerificationClass.NUMERICAL, "numerical"))
+    if VerificationClass.ANALYTIC in descriptor.classes:
+        cases.extend(
+            requirement(VerificationClass.ANALYTIC, "analytic", analytic_case)
+            for analytic_case in _analytic_cases_for(descriptor.kernel.operation)
+        )
+    expected = _required_case_catalog(descriptor)
+    observed = tuple(
+        (record.case.plan, record.test_class, record.case.case_id) for record in cases
+    )
+    if observed != expected:
+        raise ValueError("oracle requirement templates do not match their case catalog")
+    return tuple(cases)
+
+
 def _required_classes(
-    descriptor: KernelPlanDescriptor,
+    descriptor: PlanClassification,
 ) -> tuple[VerificationClass, ...]:
     return descriptor.classes
 
@@ -969,7 +1164,67 @@ def _movement_comparison(
     return actual.bits == expected.bits
 
 
-def _movement_records() -> tuple[EvidenceRecord, ...]:
+_MOVEMENT_SOURCE_SHAPES = {
+    "broadcast_to": ((1, 10),),
+    "move": ((2, 5),),
+    "view": ((2, 5),),
+    "permute": ((2, 5),),
+    "rearrange": ((2, 5),),
+}
+
+
+def _movement_requirement_records(
+    profile: VerificationProfile,
+) -> tuple[EvidenceRecord, ...]:
+    """Return pure model-owned templates for every movement obligation."""
+    payload = adversarial_float32_payload()
+    return tuple(
+        _case(
+            LogicalKernel(
+                profile.profile_id,
+                subject.operation,
+                f"movement.{subject.operation}",
+                "default",
+            ),
+            VerificationClass.BIT_EXACT,
+            f"movement-{subject.operation}-adversarial-bits",
+            (payload,),
+            VerificationOutcome.PASSED,
+            Deviations(0.0, 0.0, 0),
+            0,
+            shapes=_MOVEMENT_SOURCE_SHAPES[subject.operation],
+        )
+        for subject in profile_subjects(profile)
+    )
+
+
+def _oracle_requirement_records(
+    profile: VerificationProfile,
+) -> tuple[EvidenceRecord, ...]:
+    """Return the complete registered oracle graph without executing a provider."""
+
+    if not isinstance(profile, VerificationProfile):
+        raise TypeError("profile must be a VerificationProfile")
+    registered = verification_profile(profile.profile_id)
+    if profile != registered:
+        raise ValueError("profile does not match its registered descriptor")
+    if VerificationStage.ORACLE not in profile.stages:
+        raise ValueError(
+            f"profile {profile.profile_id!r} does not support oracle verification"
+        )
+    return (
+        *_movement_requirement_records(profile),
+        *(
+            record
+            for descriptor in classify_profile_plans(profile)
+            for record in _descriptor_requirement_records(descriptor)
+        ),
+    )
+
+
+def _movement_records(
+    profile: VerificationProfile, *, synchronize: Callable[[], None] | None = None
+) -> tuple[EvidenceRecord, ...]:
     payload = adversarial_float32_payload()
     base_layout = Layout(Shape([2, 5]), Stride([1, 2]))
 
@@ -1003,28 +1258,23 @@ def _movement_records() -> tuple[EvidenceRecord, ...]:
         ),
     }
     broadcast_source_layout = Layout(Shape([1, 10]), Stride([1, 1]))
-    source_shapes = {
-        "broadcast_to": ((1, 10),),
-        "move": ((2, 5),),
-        "view": ((2, 5),),
-        "permute": ((2, 5),),
-        "rearrange": ((2, 5),),
-    }
-    missing_cases = set(MOVEMENT_CLASSIFICATIONS) - set(operations)
+    subjects = profile_subjects(profile)
+    movement_operations = tuple(subject.operation for subject in subjects)
+    missing_cases = set(movement_operations) - set(operations)
     if missing_cases:
         operation = min(missing_cases)
         raise ValueError(
             f"movement classification {operation!r} has no verification case"
         )
-    if set(operations) != set(MOVEMENT_CLASSIFICATIONS):
+    if set(operations) != set(movement_operations):
         raise ValueError("movement verification cases do not match classifications")
     records = []
-    for operation in MOVEMENT_CLASSIFICATIONS:
+    for operation in movement_operations:
         execute = operations[operation]
-        kernel = KernelDescriptor(
-            operation, f"movement.{operation}", "default", operation
+        kernel = LogicalKernel(
+            profile.profile_id, operation, f"movement.{operation}", "default"
         )
-        source_shape = source_shapes[operation]
+        source_shape = _MOVEMENT_SOURCE_SHAPES[operation]
         prepared_error = _case(
             kernel,
             VerificationClass.BIT_EXACT,
@@ -1033,6 +1283,7 @@ def _movement_records() -> tuple[EvidenceRecord, ...]:
             VerificationOutcome.ERROR,
             Deviations(None, None, None),
             None,
+            diagnostic="movement execution failed before comparison",
             shapes=source_shape,
         )
         try:
@@ -1042,6 +1293,8 @@ def _movement_records() -> tuple[EvidenceRecord, ...]:
                 else source()
             )
             result, expected_values = execute(tensor)
+            if synchronize is not None:
+                synchronize()
             actual = EncodedFloat32Payload.from_values(_values(result))
             expected = EncodedFloat32Payload.from_values(expected_values)
             passed = _movement_comparison(expected, actual)
@@ -1086,26 +1339,29 @@ def _unique_classes(
     return tuple(classes)
 
 
-def run_stage_one(result_transform: ResultTransform | None = None) -> StageOneResult:
-    """Certify the Generic/CPU oracle pair for every active CPU plan.
-
-    Args:
-        result_transform: Optional test hook that mutates CPU results before
-            comparison, allowing failure evidence to be exercised.
-
-    Returns:
-        Stage One evidence report and certificates for plans that passed.
-
-    Examples:
-        >>> result = run_stage_one()
-        >>> bool(result.report.records)
-        True
-    """
-    descriptors = classify_cpu_kernel_plans()
-    records: list[EvidenceRecord] = list(_movement_records())
-    records_by_kernel: dict[KernelDescriptor, list[EvidenceRecord]] = {}
+def _run_oracle_stage(
+    profile: VerificationProfile,
+    *,
+    result_transform: ResultTransform | None = None,
+) -> OracleStageResult:
+    """Implement oracle verification with one private result-alteration seam."""
+    if not isinstance(profile, VerificationProfile):
+        raise TypeError("profile must be a VerificationProfile")
+    registered_profile = verification_profile(profile.profile_id)
+    if profile != registered_profile:
+        raise ValueError("profile does not match its registered descriptor")
+    if VerificationStage.ORACLE not in profile.stages:
+        raise ValueError(
+            f"profile {profile.profile_id!r} does not support oracle verification"
+        )
+    descriptors = classify_profile_plans(profile)
+    records: list[EvidenceRecord] = list(_movement_records(profile))
+    records_by_kernel: dict[LogicalKernel, list[EvidenceRecord]] = {}
     requirements_by_kernel: dict[
-        KernelDescriptor, list[tuple[PlanKey, tuple[VerificationClass, ...]]]
+        LogicalKernel, list[tuple[PlanKey, tuple[VerificationClass, ...]]]
+    ] = {}
+    cases_by_kernel: dict[
+        LogicalKernel, list[tuple[PlanKey, VerificationClass, str]]
     ] = {}
     for descriptor in descriptors:
         kernel_records = records_by_kernel.setdefault(descriptor.kernel, [])
@@ -1169,21 +1425,45 @@ def run_stage_one(result_transform: ResultTransform | None = None) -> StageOneRe
         requirements_by_kernel.setdefault(descriptor.kernel, []).append(
             (descriptor.plan, required)
         )
+        cases_by_kernel.setdefault(descriptor.kernel, []).extend(
+            _required_case_catalog(descriptor)
+        )
 
     certificates = []
     for kernel, requirements in requirements_by_kernel.items():
         try:
             certificates.append(
                 OracleCertificate.from_records(
-                    kernel,
+                    KernelDescriptor(
+                        kernel.operation, kernel.kernel_id, kernel.variant, ""
+                    ),
                     _unique_classes(requirements),
                     tuple(records_by_kernel[kernel]),
                     required_plan_classes=tuple(requirements),
+                    required_cases=tuple(cases_by_kernel[kernel]),
                 )
             )
         except ValueError:
             pass
     certificate_tuple = tuple(certificates)
-    return StageOneResult(
+    return OracleStageResult(
         make_verification_report(tuple(records), certificate_tuple), certificate_tuple
     )
+
+
+def run_oracle_stage(profile: VerificationProfile) -> OracleStageResult:
+    """Certify every classified obligation for one registered oracle profile.
+
+    Args:
+        profile: Exact registered profile declaring the oracle verification role.
+
+    Returns:
+        Immutable oracle evidence and complete certificates for passing plans.
+
+    Examples:
+        >>> from strideweave.verification import run_oracle_stage, verification_profile
+        >>> result = run_oracle_stage(verification_profile("cpu-compiled"))
+        >>> bool(result.report.records)
+        True
+    """
+    return _run_oracle_stage(profile)
