@@ -113,6 +113,35 @@ target_compile_features(_tensor PRIVATE cxx_std_17)
 pybind11_add_module(_move src/strideweave/carriers/move/native/_move.cpp)
 target_compile_features(_move PRIVATE cxx_std_17)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(
+        STRIDEWEAVE_BLOCK_DEVICE_PLATFORM_SOURCE
+        src/strideweave/carriers/block_device/native/_block_device_linux.cpp
+    )
+elseif(APPLE)
+    set(
+        STRIDEWEAVE_BLOCK_DEVICE_PLATFORM_SOURCE
+        src/strideweave/carriers/block_device/native/_block_device_macos.cpp
+    )
+else()
+    set(
+        STRIDEWEAVE_BLOCK_DEVICE_PLATFORM_SOURCE
+        src/strideweave/carriers/block_device/native/_block_device_unsupported.cpp
+    )
+endif()
+
+pybind11_add_module(
+    _block_device
+    src/strideweave/carriers/block_device/native/_block_device_module.cpp
+    src/strideweave/carriers/block_device/native/_block_device_common.cpp
+    ${STRIDEWEAVE_BLOCK_DEVICE_PLATFORM_SOURCE}
+)
+target_compile_features(_block_device PRIVATE cxx_std_17)
+target_include_directories(
+    _block_device
+    PRIVATE src/strideweave/carriers/block_device/native
+)
+
 set(
     STRIDEWEAVE_NATIVE_TARGETS
     _index
@@ -121,6 +150,7 @@ set(
     _operation
     _tensor
     _move
+    _block_device
 )
 
 if(STRIDEWEAVE_STRICT_WARNINGS)
@@ -158,7 +188,10 @@ if(STRIDEWEAVE_SANITIZERS)
     endforeach()
 endif()
 
-install(TARGETS _index _einops _carrier _operation _tensor _move DESTINATION strideweave)
+install(
+    TARGETS _index _einops _carrier _operation _tensor _move _block_device
+    DESTINATION strideweave
+)
 install(
     FILES "${STRIDEWEAVE_PROVENANCE_MANIFEST}"
     DESTINATION strideweave/verification
