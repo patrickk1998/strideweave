@@ -9,6 +9,7 @@ from importlib import import_module
 from typing import Any, ClassVar, cast
 
 from ..base import Carrier
+from ..block_device import BlockDeviceCarrier
 from ..cpu import CPU
 from ..dtype import DType, storage_zero
 from ..file_backed.carrier import FileBacked
@@ -29,6 +30,31 @@ _copy_memory_to_file = cast(Callable[[str, int, int], None], _move.copy_memory_t
 _copy_file_to_memory = cast(
     Callable[[str, int, int, int], None], _move.copy_file_to_memory
 )
+
+
+def _validate_move_inputs(tensor: Any, destination: Any) -> Any:
+    """Apply the inherited move validation through destination dtype."""
+    tensor = _require_live_tensor(tensor, "tensor")
+    if tensor.carrier.is_owned() and not tensor.carrier._has_owner_access():
+        raise RuntimeError(
+            "tensor carrier is owned by another carrier object and cannot be moved "
+            "directly"
+        )
+    if not isinstance(destination, Carrier):
+        raise TypeError("destination must be a Carrier instance")
+    if destination is tensor.carrier:
+        raise ValueError("destination must not be the tensor's own carrier")
+    if destination.is_released():
+        raise RuntimeError("destination carrier is released")
+    if not destination.is_mutable():
+        raise RuntimeError("destination carrier must be mutable")
+    if destination.dtype() is not tensor.carrier.dtype():
+        raise TypeError("destination dtype must match the tensor dtype")
+    return tensor
+
+
+def _involves_block_device(source_class: type, destination_class: type) -> bool:
+    return source_class is BlockDeviceCarrier or destination_class is BlockDeviceCarrier
 
 
 class MoveOperation(Operation):
@@ -53,24 +79,7 @@ class MoveOperation(Operation):
     def _forward(self, tensor: Any, destination: Any) -> Any:
         from ...tensor import Tensor
 
-        tensor = _require_live_tensor(tensor, "tensor")
-        if tensor.carrier.is_released():
-            raise RuntimeError("tensor carrier is released")
-        if tensor.carrier.is_owned() and not tensor.carrier._has_owner_access():
-            raise RuntimeError(
-                "tensor carrier is owned by another carrier object and cannot be moved "
-                "directly"
-            )
-        if not isinstance(destination, Carrier):
-            raise TypeError("destination must be a Carrier instance")
-        if destination is tensor.carrier:
-            raise ValueError("destination must not be the tensor's own carrier")
-        if destination.is_released():
-            raise RuntimeError("destination carrier is released")
-        if not destination.is_mutable():
-            raise RuntimeError("destination carrier must be mutable")
-        if destination.dtype() is not tensor.carrier.dtype():
-            raise TypeError("destination dtype must match the tensor dtype")
+        tensor = _validate_move_inputs(tensor, destination)
         if (
             self.source_class is not None
             and type(tensor.carrier) is not self.source_class
@@ -86,6 +95,8 @@ class MoveOperation(Operation):
                 f"{type(self).__name__} requires a "
                 f"{self.destination_class.__name__} destination"
             )
+
+        _require_supported_block_operation(self, tensor.carrier, destination)
 
         required_size = tensor.layout._cache.cosize
         allocate = getattr(destination, "_allocate", None)
@@ -347,7 +358,85 @@ class MetalToMetalMoveOperation(_MetalMoveOperation):
         destination._storage = staged
 
 
+class CpuToBlockDeviceMoveOperation(MoveOperation):
+    """Move a CPU Float32 physical span directly into block storage."""
+
+    source_class: ClassVar[type | None] = CPU
+    destination_class: ClassVar[type | None] = BlockDeviceCarrier
+
+    def _copy(
+        self, tensor: Any, destination: Any, output: Any, element_count: int
+    ) -> None:
+        cast(BlockDeviceCarrier, destination)._write_from_cpu(
+            tensor.carrier,
+            source_offset=tensor.offset,
+            destination_offset=output.offset,
+            element_count=element_count,
+        )
+
+
+class BlockDeviceToCpuMoveOperation(MoveOperation):
+    """Move a block-storage Float32 physical span directly into CPU memory."""
+
+    source_class: ClassVar[type | None] = BlockDeviceCarrier
+    destination_class: ClassVar[type | None] = CPU
+
+    def _copy(
+        self, tensor: Any, destination: Any, output: Any, element_count: int
+    ) -> None:
+        cast(BlockDeviceCarrier, tensor.carrier)._read_into_cpu(
+            destination,
+            source_offset=tensor.offset,
+            destination_offset=output.offset,
+            element_count=element_count,
+        )
+
+
 _MOVE_OPERATIONS: dict[tuple[type, type], type[MoveOperation]] = {}
+_BLOCK_MOVE_OPERATIONS: dict[tuple[type, type], type[MoveOperation]] = {}
+
+
+def _require_supported_block_operation(
+    operation: MoveOperation, source: Carrier, destination: Carrier
+) -> None:
+    key = (type(source), type(destination))
+    if not _involves_block_device(*key):
+        return
+    expected = _BLOCK_MOVE_OPERATIONS.get(key)
+    if expected is None or type(operation) is not expected:
+        raise NotImplementedError(
+            "block-device movement is supported only by its exact built-in "
+            "CPU/block operation"
+        )
+
+
+def _register_block_move_operation(
+    source_class: type,
+    destination_class: type,
+    operation_class: type[MoveOperation],
+) -> None:
+    """Install one internally owned exact CPU/block move implementation."""
+    key = (source_class, destination_class)
+    if key not in (
+        (CPU, BlockDeviceCarrier),
+        (BlockDeviceCarrier, CPU),
+    ):
+        raise RuntimeError("invalid built-in block-device move pair")
+    if not (
+        isinstance(operation_class, type) and issubclass(operation_class, MoveOperation)
+    ):
+        raise TypeError("operation_class must be a MoveOperation subclass")
+    if (
+        operation_class.source_class is not source_class
+        or operation_class.destination_class is not destination_class
+    ):
+        raise RuntimeError(
+            "built-in block-device move operation must pin its exact carrier pair"
+        )
+    if key in _MOVE_OPERATIONS:
+        raise RuntimeError("built-in block-device move pair is already installed")
+    _MOVE_OPERATIONS[key] = operation_class
+    _BLOCK_MOVE_OPERATIONS[key] = operation_class
 
 
 def register_move_operation(
@@ -355,7 +444,10 @@ def register_move_operation(
     destination_class: type,
     operation_class: type[MoveOperation],
 ) -> None:
-    """Register a concrete move operation for a carrier pair.
+    """Register a concrete move operation for an ordinary carrier pair.
+
+    Pairs whose exact source or destination is ``BlockDeviceCarrier`` are
+    protected built-ins and cannot be registered through this public API.
 
     Args:
         source_class: Carrier class of the tensor being moved.
@@ -388,6 +480,8 @@ def register_move_operation(
     ):
         raise TypeError("operation_class must be a MoveOperation subclass")
     key = (source_class, destination_class)
+    if _involves_block_device(*key):
+        raise ValueError("block-device move registrations are protected built-ins")
     if key in _MOVE_OPERATIONS:
         raise ValueError(
             "a move operation is already registered for "
@@ -399,7 +493,10 @@ def register_move_operation(
 def unregister_move_operation(
     source_class: type, destination_class: type
 ) -> type[MoveOperation]:
-    """Remove the registered move operation for a carrier pair.
+    """Remove the registered move operation for an ordinary carrier pair.
+
+    Every exact pair involving ``BlockDeviceCarrier`` is protected from public
+    unregistration, including unsupported pairs with no registry entry.
 
     Args:
         source_class: Carrier class of the tensor being moved.
@@ -420,8 +517,11 @@ def unregister_move_operation(
         True
     """
 
+    key = (source_class, destination_class)
+    if _involves_block_device(*key):
+        raise ValueError("block-device move registrations are protected built-ins")
     try:
-        return _MOVE_OPERATIONS.pop((source_class, destination_class))
+        return _MOVE_OPERATIONS.pop(key)
     except KeyError:
         raise KeyError(
             "no move operation is registered for "
@@ -435,7 +535,7 @@ def registered_move_operation(
     destination_class: type,
     operation_class: type[MoveOperation],
 ) -> Iterator[type[MoveOperation]]:
-    """Register a move operation for the duration of a ``with`` block.
+    """Register an ordinary move operation for the duration of a ``with`` block.
 
     The operation is registered on entry and unregistered on exit, including
     when the block raises. Useful for tests and temporary carrier overrides.
@@ -474,8 +574,9 @@ def dispatch_move(source_class: type, destination_class: type) -> type[MoveOpera
     """Return the move operation class for a carrier pair.
 
     Dispatch is exact-class: subclasses of a registered source or destination
-    class do not inherit the registration and fall back to
-    ``ElementwiseMoveOperation`` unless registered explicitly.
+    class do not inherit the registration. An unregistered pair falls back to
+    ``ElementwiseMoveOperation`` unless either exact class is
+    ``BlockDeviceCarrier``; an unregistered block pair is unsupported.
 
     Args:
         source_class: Carrier class of the tensor being moved.
@@ -483,7 +584,11 @@ def dispatch_move(source_class: type, destination_class: type) -> type[MoveOpera
 
     Returns:
         The registered ``MoveOperation`` subclass for the exact pair, or
-        ``ElementwiseMoveOperation`` when no operation is registered.
+        ``ElementwiseMoveOperation`` for an ordinary unregistered pair.
+
+    Raises:
+        NotImplementedError: If an unregistered pair contains the exact
+            ``BlockDeviceCarrier`` class.
 
     Examples:
         >>> from strideweave import CPU, FileBacked
@@ -492,9 +597,15 @@ def dispatch_move(source_class: type, destination_class: type) -> type[MoveOpera
         <class '...CpuToFileBackedMoveOperation'>
     """
 
-    return _MOVE_OPERATIONS.get(
-        (source_class, destination_class), ElementwiseMoveOperation
-    )
+    key = (source_class, destination_class)
+    operation_class = _MOVE_OPERATIONS.get(key)
+    if operation_class is not None:
+        return operation_class
+    if _involves_block_device(*key):
+        raise NotImplementedError(
+            "no move operation is registered for this block-device carrier pair"
+        )
+    return ElementwiseMoveOperation
 
 
 def _has_registered_move_operation(source_class: type, destination_class: type) -> bool:
@@ -506,9 +617,13 @@ register_move_operation(FileBacked, CPU, FileBackedToCpuMoveOperation)
 register_move_operation(CPU, Metal, CpuToMetalMoveOperation)
 register_move_operation(Metal, CPU, MetalToCpuMoveOperation)
 register_move_operation(Metal, Metal, MetalToMetalMoveOperation)
+_register_block_move_operation(CPU, BlockDeviceCarrier, CpuToBlockDeviceMoveOperation)
+_register_block_move_operation(BlockDeviceCarrier, CPU, BlockDeviceToCpuMoveOperation)
 
 
 __all__ = [
+    "BlockDeviceToCpuMoveOperation",
+    "CpuToBlockDeviceMoveOperation",
     "CpuToFileBackedMoveOperation",
     "CpuToMetalMoveOperation",
     "ElementwiseMoveOperation",

@@ -7,6 +7,7 @@ from contextlib import ExitStack, contextmanager
 from typing import Any, cast, final
 
 from ..base import Carrier, reject_carrier_subclass
+from ..block_device import BlockDeviceCarrier
 from ..dtype import DType
 from ..operation_capability import DependentCarrier, OperationCapability
 from ..operation_helpers import execute_lowered_operation
@@ -105,6 +106,8 @@ class Evictable(DependentCarrier):
             raise TypeError("primary must be a Carrier instance")
         if not isinstance(secondary, Carrier):
             raise TypeError("secondary must be a Carrier instance")
+        if type(primary) is BlockDeviceCarrier or type(secondary) is BlockDeviceCarrier:
+            raise TypeError("BlockDeviceCarrier is not a supported Evictable tier")
         if primary is secondary:
             raise ValueError("primary and secondary must be distinct carriers")
         if primary.is_released():

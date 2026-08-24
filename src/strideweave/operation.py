@@ -81,6 +81,8 @@ from .carriers.generic.ternary_ops import (
     GenericSelectOperation,
 )
 from .carriers.move.ops import (
+    BlockDeviceToCpuMoveOperation,
+    CpuToBlockDeviceMoveOperation,
     CpuToFileBackedMoveOperation,
     CpuToMetalMoveOperation,
     ElementwiseMoveOperation,
@@ -104,7 +106,9 @@ from .functional import __all__ as _functional_all
 from .profiling import Profiler, ProfilerAggregate, ProfilerEvent, profile
 
 _OPERATION_CLASS_EXPORTS = [
+    "BlockDeviceToCpuMoveOperation",
     "BroadcastOperation",
+    "CpuToBlockDeviceMoveOperation",
     "CpuToFileBackedMoveOperation",
     "CpuToMetalMoveOperation",
     "ElementwiseMoveOperation",
