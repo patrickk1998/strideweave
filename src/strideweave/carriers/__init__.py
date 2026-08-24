@@ -2,6 +2,7 @@
 
 from ._built_in_capabilities import _initialize_built_in_capabilities
 from .base import Carrier
+from .block_device import BlockDevice, BlockDeviceCarrier
 from .cpu import CPU
 from .dtype import (
     BlockScaledDType,
@@ -30,6 +31,8 @@ from .operation_capability import (
 
 __all__ = [
     "CPU",
+    "BlockDevice",
+    "BlockDeviceCarrier",
     "BlockScaledDType",
     "Carrier",
     "CompoundDType",

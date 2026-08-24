@@ -2,14 +2,15 @@
 
 Sealing is framework-internal: a shipped backend's advertised reach must follow
 from its implementation, never from a later call. That holds only if *every*
-shipped class is sealed, so this module names all five of them in one place and
-runs once, at the end of :mod:`strideweave.carriers`' initialization, before any
-carrier can be constructed or any plan executed.
+shipped independent class is sealed, so this module names all five of them in
+one place and runs once, at the end of :mod:`strideweave.carriers`'
+initialization, before any carrier can be constructed or any plan executed.
 
 ``Generic``, ``CPU``, and ``Metal`` declare the plan shapes their implementations
-execute. ``FileBacked`` declares the empty set. An empty declaration is a
-statement, not an omission — it is what makes "this backend executes no planned
-operation" a declared fact rather than one inferred from silence.
+execute. ``FileBacked`` and ``BlockDeviceCarrier`` declare the empty set: they
+are storage carriers that plan no operation of their own. An empty declaration
+is a statement, not an omission — it is what makes "this backend executes no
+planned operation" a declared fact rather than one inferred from silence.
 
 ``Evictable`` is deliberately absent. What a hierarchy executes depends on the
 carriers it was handed, so it is a ``DependentCarrier`` that generates and
@@ -25,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Final
 
+from .block_device import BlockDeviceCarrier
 from .cpu import CPU
 from .cpu.capabilities import cpu_capabilities
 from .file_backed import FileBacked
@@ -57,6 +59,7 @@ _BUILT_INS: Final[
     (CPU, cpu_capabilities),
     (FileBacked, _no_capabilities),
     (Metal, metal_capabilities),
+    (BlockDeviceCarrier, _no_capabilities),
 )
 
 

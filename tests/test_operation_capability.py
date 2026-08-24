@@ -587,8 +587,14 @@ def test_only_an_independent_carrier_implementation_may_declare(target, message)
 # Evictable is shipped too, but it is dependent: it finalizes per instance and
 # has no class declaration to seal, which
 # test_evictable_has_no_class_declaration_to_seal covers.
-SHIPPED_BACKENDS = [sw.Generic, sw.CPU, sw.FileBacked, sw.Metal]
-STORAGE_CARRIERS = [sw.FileBacked]
+SHIPPED_BACKENDS = [
+    sw.Generic,
+    sw.CPU,
+    sw.FileBacked,
+    sw.Metal,
+    sw.BlockDeviceCarrier,
+]
+STORAGE_CARRIERS = [sw.FileBacked, sw.BlockDeviceCarrier]
 
 
 @pytest.mark.parametrize(
@@ -700,6 +706,7 @@ def test_reinitializing_the_built_in_capabilities_changes_nothing():
         "strideweave.carriers.generic.carrier",
         "strideweave.carriers.file_backed",
         "strideweave.carriers.metal",
+        "strideweave.carriers.block_device",
         "strideweave.carriers.operation_capability",
     ],
 )
@@ -724,7 +731,13 @@ assert capabilities_for_carrier_class(sw.Metal)
 assert {{entry.operation for entry in capabilities_for_carrier_class(sw.Metal)}} == {{
     spec.name for spec in registered_operations()
 }}
-for built_in in (sw.Generic, sw.CPU, sw.FileBacked, sw.Metal):
+for built_in in (
+    sw.Generic,
+    sw.CPU,
+    sw.FileBacked,
+    sw.Metal,
+    sw.BlockDeviceCarrier,
+):
     try:
         register_operation_capabilities(built_in, [])
     except TypeError as error:

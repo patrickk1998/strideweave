@@ -1,4 +1,6 @@
 from .base import Carrier as Carrier
+from .block_device import BlockDevice as BlockDevice
+from .block_device import BlockDeviceCarrier as BlockDeviceCarrier
 from .cpu import CPU as CPU
 from .dtype import BlockScaledDType as BlockScaledDType
 from .dtype import CompoundDType as CompoundDType
