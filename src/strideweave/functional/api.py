@@ -1986,9 +1986,11 @@ def move(tensor: Any, destination: Any) -> Any:
     source carrier is released (further access raises), and a tensor backed by
     the destination is returned. Move is not owned by any carrier: the
     concrete move operation is dispatched on the (source, destination) carrier
-    class pair, with bulk-copy operations registered for CPU/FileBacked and
-    CPU/Metal pairs, plus Metal-to-Metal, and an elementwise fallback for every
-    other pair.
+    class pair. Bulk operations handle the exact CPU/FileBacked and CPU/Metal
+    pairs, Metal-to-Metal, and the exact ``(CPU, BlockDeviceCarrier)`` and
+    ``(BlockDeviceCarrier, CPU)`` pairs. Every other exact pair involving
+    ``BlockDeviceCarrier`` raises ``NotImplementedError``; an ordinary
+    unregistered pair that does not involve it uses the elementwise fallback.
     The destination dtype must match the tensor dtype (for example
     ``DType.Float32`` to ``DType.Float32``). Move participates in
     autograd: gradients flowing into the result are moved back into the
@@ -2025,9 +2027,15 @@ def move(tensor: Any, destination: Any) -> Any:
         2.0
     """
 
-    from ..carriers.move.ops import dispatch_move
+    from ..carriers.move.ops import (
+        _involves_block_device,
+        _validate_move_inputs,
+        dispatch_move,
+    )
 
     tensor = _as_tensor(tensor, "tensor")
+    if _involves_block_device(type(tensor.carrier), type(destination)):
+        _validate_move_inputs(tensor, destination)
     operation_class = dispatch_move(type(tensor.carrier), type(destination))
     return operation_class().forward(tensor, destination)
 

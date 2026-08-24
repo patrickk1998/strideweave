@@ -5,6 +5,12 @@ from .carriers import (
     CPU as CPU,
 )
 from .carriers import (
+    BlockDevice as BlockDevice,
+)
+from .carriers import (
+    BlockDeviceCarrier as BlockDeviceCarrier,
+)
+from .carriers import (
     BlockScaledDType as BlockScaledDType,
 )
 from .carriers import (
@@ -109,6 +115,8 @@ from .verification.api import verify_backend as verify_backend
 
 _CORE_EXPORTS = [
     "BlockScaledDType",
+    "BlockDevice",
+    "BlockDeviceCarrier",
     "CPU",
     "Carrier",
     "CompoundDType",

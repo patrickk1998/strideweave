@@ -6,10 +6,13 @@ context: |
   INVARIANTS.md defines cross-cutting implementation constraints. Tests are
   executable evidence. Beads is the durable implementation and review queue.
 
-  OpenSpec sits above the Beads lifecycle. Completed OpenSpec artifacts are
-  handed to a planner, which translates them into Beads work through
-  create-task. Implementers execute Beads work through do-task, and reviewers
-  evaluate the result against the OpenSpec artifacts.
+  OpenSpec sits above the Beads lifecycle. A change contains a concise,
+  non-normative proposal and normative delta specs. The specs are the sole
+  authority for whether observable behavior is a feature or a bug. Beads owns
+  implementation design, threat models, decomposition, dependencies,
+  validation planning, and review work. A planner translates coherent specs
+  into Beads through create-task; implementers use do-task, and reviewers
+  evaluate the result against the effective specs and Beads acceptance criteria.
 
   This is a brownfield specification migration. Behavior absent from the main
   specs may be uncaptured rather than unsupported. Do not infer contractual
@@ -18,11 +21,12 @@ context: |
 
 rules:
   proposal:
+    - "Treat the proposal as a concise non-normative change and capability index; it does not define behavioral correctness."
     - "Identify the exact new or modified capability paths."
     - "Distinguish baseline documentation capture from an actual behavior change."
     - "State whether the proposal captures confirmed behavior, introduces intended behavior, or reconciles conflicting evidence."
     - "Identify affected llms.md sections and relevant INVARIANTS.md IDs."
-    - "Keep implementation mechanics in design.md rather than the proposal."
+    - "Keep implementation design, threat models, validation plans, and task decomposition in Beads rather than the proposal."
 
   specs:
     - "Specify externally observable behavior, inputs, outputs, errors, and compatibility constraints."
@@ -41,19 +45,6 @@ rules:
     - "Assert what is true, not what is false. Write `SHALL be interpreted as a logical coordinate`, not `SHALL NOT be interpreted as a physical offset`; a negative construction never establishes the positive contract."
     - "Use one term per concept, matching the term used in llms.md and the public API, for example `size` rather than `logical cardinality`."
 
-  design:
-    - "Explain how the implementation will satisfy the specs and why the selected approach was chosen."
-    - "Identify every relevant invariant ID and explain how its canonical choice is preserved."
-    - "State whether llms.md or INVARIANTS.md must change."
-    - "Record important alternatives, risks, migration concerns, and explicit non-goals."
-    - "Do not repeat normative requirements already captured in the specs."
-
-  tasks:
-    - "Treat tasks.md as an acceptance-oriented handoff to the planner, not as the executable work queue."
-    - "Describe implementation outcomes and validation obligations that the planner can refine into Beads tasks."
-    - "Do not assign agents, create worktrees, claim issues, or encode Beads dependency mechanics."
-    - "Include required tests, documentation updates, invariant checks, and OpenSpec validation."
-
 operations:
   apply:
     guidance:
@@ -64,5 +55,6 @@ operations:
   archive:
     guidance:
       - "Archive only after the review bead and every implementation or fix bead are closed."
-      - "Confirm the implementation was reviewed against the proposal, specs, design, invariants, and acceptance criteria."
+      - "Resolve the implementation graph through the exact Beads spec id openspec-change:<change-name>; missing, ambiguous, incompletely linked, or open work blocks archive and cannot be waived."
+      - "Confirm the implementation was reviewed against the effective specs, invariants, and Beads acceptance criteria; use the proposal only to verify intended scope."
       - "Confirm required llms.md and INVARIANTS.md updates are present before archiving."

@@ -48,7 +48,7 @@ closed with the rebuild command instead of skipping native verification.
 Run the complete local verification suite before opening a pull request:
 
 ```bash
-uv run pytest tests -m "not dolt_integration and not dolt_lifecycle and not metal"
+uv run pytest tests -m "not dolt_integration and not dolt_lifecycle and not metal and not block_device_integration"
 uv run pytest tests -m "dolt_integration or dolt_lifecycle"
 uv run pytest --doctest-modules src/strideweave
 uv run ruff format --check .
@@ -108,13 +108,21 @@ concurrently run, several independently owned servers. Both markers skip when no
 Dolt runtime is installed. Select or exclude them with pytest's `-m`:
 
 ```bash
-uv run pytest tests -m "not dolt_integration and not dolt_lifecycle and not metal"
+uv run pytest tests -m "not dolt_integration and not dolt_lifecycle and not metal and not block_device_integration"
 uv run pytest tests -m "dolt_integration or dolt_lifecycle"
 ```
 
 Tests marked `metal` require Apple silicon, an available Metal device, and the
 optional Metal dependencies. The platform-neutral suite and Linux CI deselect
 that marker; run it separately on supported hardware as shown above.
+
+The single real block-device test carries `block_device_integration`. It runs
+only when `STRIDEWEAVE_BLOCK_DEVICE` names one explicit disposable Linux block
+node and `STRIDEWEAVE_BLOCK_DEVICE_CAPACITY` gives its verified byte capacity.
+Ordinary and sanitizer selections deselect it; the `block-device-integration`
+CI job owns privileged image/loop setup and cleanup, then runs pytest as the
+unprivileged runner. Deterministic block-device tests use the private
+regular-file handle seam and remain in both ordinary and sanitizer coverage.
 
 Do not mark a whole test file. `dolt_integration` is derived from each test's
 fixture closure rather than written by hand, so a test leaves the
@@ -123,10 +131,10 @@ deselected for; asking for `evidence_store_path` or another session-server
 fixture is what moves a test into that job. Add `dolt_lifecycle` by hand only to
 a test that starts server processes of its own.
 
-A marked test may not run native code at all, because the sanitizer job
-deselects both markers — their work happens inside an uninstrumented external
-Dolt process. See `CPP009` in `INVARIANTS.md` for that deselection and `CPP009a`
-for the guard's exact boundary. The
+A Dolt-marked test may not run native code at all, because the sanitizer job
+deselects both Dolt markers — their work happens inside an uninstrumented
+external Dolt process. See `CPP009` in `INVARIANTS.md` for that deselection and
+`CPP009a` for the guard's exact boundary. The
 promise that makes this exact is that the deselected selection contains no
 native work at all: for the whole of a marked item — fixture setup, call, and teardown
 — `tests/conftest.py` replaces every imported binding of `sw.verify_backend`,
@@ -163,20 +171,21 @@ suite.
 
 ## Continuous Integration
 
-CI runs five separately visible code checks: `test` (the Linux-capable,
-non-Dolt suite plus
+CI runs six separately visible code checks: `test` (the Linux-capable ordinary
+suite plus
 Python docstring examples, formatting, lint, invariants, native formatting,
 type checking, and the distribution build), `dolt-integration`,
-`native-strict-warnings`, `native-sanitizers`, and `duplication`. A sixth job,
-`changes`, gates them. It
-classifies the paths a change touches and the five code checks run only when
-that classification is anything other than a purely non-code change, so a pull
-request that only adds an OpenSpec spec, an agent skill, or repository prose
-does not build the extension three times to prove nothing. The non-code set is
+`block-device-integration`, `native-strict-warnings`, `native-sanitizers`, and
+`duplication`. A seventh job, `changes`, gates them. It classifies the paths a
+change touches into two conservative outputs: the established five checks use
+`code`, while the real-block job uses the narrower `block_device`. A pull request
+that only adds an unrelated OpenSpec spec, agent skill, or repository prose
+therefore does not build the extension repeatedly to prove nothing. The shared
+non-code set is
 `openspec/`, `.agents/`, `.codex/`, `.claude/`, `.beads/`, `docs/`, `assets/`,
 `index.html`, `CNAME`, `.nojekyll`, `properdocs.yml`, `skills-lock.json`, and
 the root prose files other than `README.md` and `LICENSE`, which the
-distribution build consumes. Nothing in that set is read by any of the five;
+distribution build consumes. Nothing in that set is read by any of the six;
 the one script that reads `openspec/specs/` is `scripts/gen_spec_pages.py`,
 which belongs to the specs site workflow and filters its own triggers. Ruff's
 own discovery is kept aligned with that set through `extend-exclude` in
@@ -203,6 +212,16 @@ unexamined. The dependent jobs compare against `false` rather than `true` and
 carry `!cancelled()`, so a gate that crashes or writes no verdict runs the full
 CI instead of silently skipping it.
 
+The `block_device` output runs for block-device source and tests, movement and
+composition policy, public exports, CMake and packaging inputs, and the workflow
+itself. Known unrelated source/test families may skip it, but an unfamiliar path
+or any uncertain comparison runs it. The job creates one exact temporary image,
+attaches and validates one loop node, proves its backing identity, geometry,
+capacity, and unmounted state, grants only the runner access to that node, and
+unconditionally restores metadata, detaches the verified mapping, and removes
+only its exact artifacts. It is intentionally independent of the accepted
+required-check gate behavior.
+
 `dolt-integration` is the only job that installs a Dolt runtime — a pinned,
 checksum-verified release — and it runs both real-Dolt suites. The
 `dolt_integration` suite shares one session server and asserts that exactly one
@@ -213,10 +232,12 @@ may concurrently run, several independently owned servers.
 Native sanitizer coverage runs in Linux CI with `STRIDEWEAVE_SANITIZERS=ON`,
 instrumenting the extension modules with AddressSanitizer and
 UndefinedBehaviorSanitizer. It deselects the two Dolt markers for the reason
-given above and the Apple-silicon-only `metal` marker because that hardware is
-unavailable on the Linux runner. The Dolt-marked tests persist pure-Python
-evidence while report construction, binding, provenance reconciliation, and
-their rejection paths stay instrumented.
+given above, the Apple-silicon-only `metal` marker because that hardware is
+unavailable on the Linux runner, and the real-device marker because privileged
+loop setup belongs to its own job. Deterministic block-device tests remain
+instrumented, while Dolt-marked tests persist pure-Python evidence and report
+construction, binding, provenance reconciliation, and their rejection paths
+stay instrumented.
 
 That sanitizer job is the only one that runs pytest in parallel, with `-n auto`
 over pytest-xdist; every other job runs serially. Sanitizers cost roughly 6.8x,

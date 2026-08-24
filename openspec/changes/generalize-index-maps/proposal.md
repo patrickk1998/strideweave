@@ -25,8 +25,9 @@ used by tensors.
 - Defer callable maps, Tensor-backed dynamic maps, partial carriers, residency
   policy, gather/scatter, and autograd behavior.
 
-This proposal introduces intended behavior. It extends the confirmed `Layout`
-contract without treating uncaptured implementation details as normative.
+This proposal is a non-normative scope index for intended behavior. The effective
+`core-layout` and `index-maps` delta specs are the sole behavioral authority; this
+file does not make uncaptured implementation details normative.
 
 ## Capabilities
 

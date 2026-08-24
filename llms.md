@@ -3,7 +3,9 @@
 StrideWeave is a research tensor and autograd framework built around hierarchical,
 CuTe-style layouts. A tensor combines a carrier, a physical offset, and a
 layout. A carrier owns or references storage and dispatches the operations it
-supports; StrideWeave deliberately has no separate device abstraction.
+supports; StrideWeave deliberately has no global tensor-device abstraction.
+`BlockDevice` is instead a carrier-local storage resource and allocation arena,
+not a second dispatch identity beside its `BlockDeviceCarrier` allocations.
 
 The project is currently a tested prototype rather than a complete PyTorch
 replacement. It provides native CPU kernels, a Python reference carrier, an
@@ -204,25 +206,35 @@ StrideWeave currently provides five carrier implementations:
 - `FileBacked(filename=None, mutable=True, dtype=DType.Floating)` stores raw
   numeric values in a temporary binary file. It is intended for storage and
   movement rather than direct tensor computation.
+- `BlockDevice(path)` owns one synchronous native handle and process-local
+  allocation arena over the exact block-device node the caller supplied. Its
+  `allocate` method returns fixed-size `BlockDeviceCarrier` extents: Float32-only
+  storage intended for scalar access and exact CPU movement, not computation.
+  Allocations sharing the resource are aligned, non-overlapping, and ordered by
+  one arena lock; independently opening the same node creates an uncoordinated
+  arena. Linux uses kernel block-device geometry, macOS uses buffered block-device
+  I/O, and other platforms refuse the resource.
 - `Evictable(primary, secondary)` composes two carriers into a memory
   hierarchy. Computation uses promoted primary storage; `evict()` moves values
   to secondary storage and blocks access until `promote()` restores them. Its
-  constructor takes exclusive ownership of both supplied carriers.
+  constructor takes exclusive ownership of both supplied carriers. Block-device
+  allocations are deliberately not supported as either tier.
 
 [`carrier-storage`](openspec/specs/carrier-storage/spec.md) states what each of
 these carriers accepts, allocates, and reports, and
 [`carrier-composition`](openspec/specs/carrier-composition/spec.md) states
 `Evictable`'s ownership and residency behavior.
 
-These five are closed implementations: `Carrier` is the extension interface and
-stays open, but `Generic`, `CPU`, `Metal`, `FileBacked`, and `Evictable` reject subclass
-creation with a message naming the supported alternative, and each is declared
-`@final` on every import path, so a type checker reports the same closure before
-the program runs. Each states its allocation factories, storage normalization,
-dispatch metadata, and capability declarations in terms of its exact class —
-`Evictable` in terms of its exact instances — so a specialization would inherit
-claims it cannot honor: a `Generic` subclass would advertise every plan
-`Generic` executes while `Generic.new_like` refused to allocate a result for it.
+These six are closed implementations: `Carrier` is the extension interface and
+stays open, but `Generic`, `CPU`, `Metal`, `FileBacked`, `BlockDeviceCarrier`, and
+`Evictable` reject subclass creation with a message naming the supported
+alternative, and each is declared `@final` on every import path, so a type
+checker reports the same closure before the program runs. Each states its
+allocation factories, storage normalization, dispatch metadata, and capability
+declarations in terms of its exact class — `Evictable` in terms of its exact
+instances — so a specialization would inherit claims it cannot honor: a
+`Generic` subclass would advertise every plan `Generic` executes while
+`Generic.new_like` refused to allocate a result for it.
 
 A new backend is therefore a sibling `Carrier`, normally composed from the
 existing ones the way `Evictable` composes a memory hierarchy: it owns the
@@ -361,13 +373,14 @@ descriptor fields, ordering, registration, sealing, and refusal contract.
 
 Capabilities belong to an exact carrier class and are never resolved through its
 bases: a class that declares nothing supports nothing. A class declares once —
-`Generic`, `CPU`, `Metal`, and `FileBacked` during carrier-package initialization,
-`FileBacked` declaring the empty set as a stated fact — and its answer is fixed
-from then on, because publication and sealing happen in the same call and first
-observation seals an undeclared class's empty set. That is what lets one carrier
-snapshot another class's reach without the snapshot going stale; the practical
-rule is to declare a custom carrier's capabilities in its own module, at import
-time, before anything can ask.
+`Generic`, `CPU`, `Metal`, `FileBacked`, and `BlockDeviceCarrier` during carrier-package
+initialization, the two storage-only carriers declaring the empty set as a
+stated fact — and its answer is fixed from then on, because publication and
+sealing happen in the same call and first observation seals an undeclared
+class's empty set. That is what lets one carrier snapshot another class's reach
+without the snapshot going stale; the practical rule is to declare a custom
+carrier's capabilities in its own module, at import time, before anything can
+ask.
 
 ```python
 from strideweave.carriers.operation_capability import (
@@ -588,6 +601,7 @@ set of descriptors:
 | `CPU` | `Float32`, `Int32`, `Bool` |
 | `Metal` | `Float32`, `Int32`, `Bool` |
 | `FileBacked` | `Floating`, `Float32`, `Int32` |
+| `BlockDeviceCarrier` | `Float32` |
 | `Evictable` | Whatever both composed tiers accept, which must match |
 
 Each table row is the exact accepted set: membership is checked by object
@@ -629,6 +643,12 @@ floating encodings have no numerical semantics yet.
 
 Carriers may be mutable or immutable, mutation increments a version counter
 visible through `tensor.version`, and `release()` permanently releases storage.
+Block-device transfers mark the destination version when I/O starts, because a
+short terminal transfer may already have changed storage, and a transfer failure
+faults the shared resource rather than permitting access to uncertain contents.
+Releasing an allocation returns its extent to the arena, but the resource itself
+closes only after every carrier object — including released ones — has been
+destroyed.
 `is_mutable()` reports whether public interfaces may currently write the
 carrier, not only whether its storage was constructed mutable, so a carrier
 owned by a composite reports `False` while its mutable owning composite reports
@@ -774,8 +794,8 @@ kernels that use cached expanded layout keys and release the GIL in hot loops.
 `Metal` lowers every advertised operation to a TileLang specialization keyed by
 its stable logical kernel plus all compilation-affecting plan, dtype, layout,
 shape, and option axes; cached address plans preserve hierarchical and
-noncompact layout semantics. `FileBacked` does not dispatch computational
-operations.
+noncompact layout semantics. `FileBacked` and `BlockDeviceCarrier` do not
+dispatch computational operations.
 
 An Evictable tensor dispatches through a public `EvictableOperation` adapter,
 which is the worked example of the composite lowering described under Core
@@ -1017,21 +1037,26 @@ helpers).
 CPU tensors export DLPack through `__dlpack__` and `__dlpack_device__`, with
 hierarchical shapes and strides flattened for the DLPack representation. Export
 is the interesting boundary: it is zero-copy, same-device, and opt-in per
-carrier through a `dlpack_info` hook, so Generic, FileBacked, and Evictable do
-not participate, and neither does Metal in this initial release. A
-multi-subtensor tensor is refused rather than partially
-described, and there is no import, copy, or cross-device path.
+carrier through a `dlpack_info` hook, so Generic, FileBacked,
+Metal, BlockDeviceCarrier, and Evictable do not participate. A multi-subtensor
+tensor is refused rather than partially described, and there is no import,
+copy, or cross-device path.
 
 `move(tensor, destination)` dispatches on the exact source and destination
 carrier class *pair* against an explicit process-global registry: CPU-to-
 FileBacked and FileBacked-to-CPU use native bulk copies; CPU-to-Metal,
 Metal-to-CPU, and Metal-to-Metal use registered bulk operations over the private
-MPS storage. Every other pair — including a subclass of a registered class and
-`(CPU, CPU)` — falls back to elementwise copying until registered on its own. A new pair is a public
-`MoveOperation` subclass implementing the protected `_copy` hook, registered for
-its exact pair. A successful move releases the source carrier only after that
-hook returns, and Metal synchronizes before CPU-visible decode or source release.
-Autograd moves gradients back into fresh source-class storage.
+MPS storage. Every other ordinary pair — including a subclass of a registered
+class and `(CPU, CPU)` — falls back to elementwise copying until registered on
+its own, except for a pair containing the exact `BlockDeviceCarrier` class. The
+only supported block pairs are the protected built-ins CPU-to-block and
+block-to-CPU; both copy the complete physical span directly between native CPU
+memory and the selected device extent, and public registry mutation cannot
+replace them or add another block pair. A new ordinary pair is a public
+`MoveOperation` subclass implementing the protected `_copy` hook, registered
+for its exact pair. A successful move releases the source carrier only after
+that hook returns, and Metal synchronizes before CPU-visible decode or source
+release. Autograd moves gradients back into fresh source-class storage.
 Moving a broadcast tensor preserves its exact stride-zero layout and copies its
 `cosize` physical span rather than materializing `size` logical elements, so its
 backward consumes an injective same-shape gradient before the broadcast node
@@ -1048,8 +1073,9 @@ ownership valid and retryable.
 
 Ownership guards apply to carrier interfaces, not to memory. Explicit
 external-memory escape hatches — `CPU.pointer()`, direct writes to a
-`FileBacked` path, mutation of the container originally handed to `Generic` —
-remain the caller's responsibility and cannot participate in version tracking.
+`FileBacked` path or an opened block-device node, mutation of the container
+originally handed to `Generic` — remain the caller's responsibility and cannot
+participate in version tracking.
 
 [`interop-movement`](openspec/specs/interop-movement/spec.md) states the export
 structure, versioning, mutability advisory, capsule lifetime, dtype eligibility,
@@ -1101,6 +1127,14 @@ What is deliberately not built yet, and why it is safe to leave undone:
   quantization, requantization, or dispatch eligibility.
 - `FileBacked` supports storage and movement, not computation, and declares that
   as an empty capability set rather than leaving it unstated.
+- `BlockDeviceCarrier` is synchronous Float32 storage, not a general device or
+  filesystem layer. It has no compute, DLPack, scatter, block-to-block movement,
+  direct-I/O, asynchronous-I/O, mounting, formatting, partitioning, or
+  `Evictable` tier support. Transfers deliberately retain the GIL and are
+  serialized per `BlockDevice`; performance beyond correctness-oriented bulk
+  CPU movement is deferred. Real-device CI covers Linux loop nodes, while macOS
+  receives deterministic buffered-I/O coverage without touching a personal
+  block device.
 - Evictable tensors must be promoted before access or computation, and binary
   Evictable operations require matching primary and secondary carrier classes.
 - `strideweave.nn` covers only `Linear`, elementwise activations, `MSELoss`, and

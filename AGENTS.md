@@ -30,22 +30,34 @@ enforcement evidence in the same change.
 ## OpenSpec and Beads Workflow
 
 OpenSpec sits above the Beads implementation lifecycle. OpenSpec artifacts define the
-approved intent, behavioral requirements, design constraints, and acceptance boundary
-that the planner and reviewer use; they do not authorize direct implementation.
+approved intent and behavioral acceptance boundary; they do not authorize direct
+implementation. The project-local `spec-driven` schema contains a concise,
+non-normative `proposal.md` and normative delta specs only. The effective specs are
+the sole authority for whether observable behavior is a feature or a bug.
 
 - Do not use `openspec-apply-change` in this repository, even when that skill is
   installed. The apply phase is owned by the Beads workflow below.
-- Treat an OpenSpec `tasks.md` as planning input and acceptance-oriented decomposition,
-  not as the executable work queue.
-- After the required OpenSpec artifacts are coherent, the planner/reviewer agent uses
+- Do not create `design.md` or `tasks.md` in an OpenSpec change. Record implementation
+  design, threat models, decomposition, dependencies, validation planning, and review
+  work in Beads. If a design choice determines observable correctness, express that
+  behavior normatively in the owning spec instead.
+- OpenSpec 1.8 reports active changes under this taskless schema as `no-tasks`
+  with a `0/0` task count. That is expected, not an incomplete-plan signal. Use
+  `openspec status --change <name>` and strict validation to judge artifact
+  completion.
+- After the proposal and delta specs are coherent, the planner/reviewer agent uses
   `create-task` to translate them into dependency-aware Beads implementation tasks, a
   review bead, and the appropriate worktree.
+- When `create-task` translates an OpenSpec change, set the root implementation task
+  or epic, every implementation or fix child, and the review bead to the canonical
+  Beads specification id `openspec-change:<change-name>`. This structured link is the
+  archive gate; do not rely on matching titles or prose descriptions.
 - An implementer agent uses `do-task` to claim and complete ready Beads work. It does
   not implement directly from the OpenSpec change.
-- The planner/reviewer agent reviews the implementation against the OpenSpec proposal,
-  specs, design, repository invariants, and Beads acceptance criteria. Review findings
-  become Beads fix work through `create-task`, and review remains dependent on every
-  outstanding fix.
+- The planner/reviewer agent reviews scope against the non-normative proposal and
+  behavior against the effective specs, repository invariants, and Beads acceptance
+  criteria. Review findings become Beads fix work through `create-task`, and review
+  remains dependent on every outstanding fix.
 - Repeat implementation and review until the review is approved. Archive the OpenSpec
   change only after the review bead and all implementation or fix beads are closed.
   Use `openspec-sync-specs` before that point only when explicitly requested.

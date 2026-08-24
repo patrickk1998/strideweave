@@ -161,6 +161,18 @@ def test_documentable_top_level_exports_have_docstrings():
             assert_function_doc_contract(value, qualified_name)
 
 
+def test_move_help_describes_exact_block_device_policy(capsys):
+    help(sw.move)
+    help_text = " ".join(capsys.readouterr().out.replace("``", "").split())
+
+    assert "(CPU, BlockDeviceCarrier)" in help_text
+    assert "(BlockDeviceCarrier, CPU)" in help_text
+    assert "Every other exact pair involving BlockDeviceCarrier raises" in help_text
+    assert "NotImplementedError" in help_text
+    assert "ordinary unregistered pair" in help_text
+    assert "elementwise fallback" in help_text
+
+
 def test_verification_public_exports_have_docstrings():
     """Verification exports follow the shared public docstring contract."""
     for name in cast(list[str], verification.__all__):

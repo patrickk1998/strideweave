@@ -9,6 +9,7 @@ import pytest
 import strideweave as sw
 from strideweave import (
     CPU,
+    BlockDeviceCarrier,
     Carrier,
     DType,
     Evictable,
@@ -172,7 +173,7 @@ def test_carrier_dispatch_policy_rejects_cached_dispatched_operation():
 # exact class, so a specialization would inherit claims it cannot honor.
 
 
-CLOSED_CARRIERS = (Generic, CPU, FileBacked, Metal, Evictable)
+CLOSED_CARRIERS = (Generic, CPU, FileBacked, Metal, BlockDeviceCarrier, Evictable)
 
 
 @pytest.mark.parametrize("carrier_class", CLOSED_CARRIERS)
@@ -205,6 +206,7 @@ PUBLIC_CARRIER_MODULES = {
     CPU: "strideweave.carriers.cpu",
     FileBacked: "strideweave.carriers.file_backed",
     Metal: "strideweave.carriers.metal",
+    BlockDeviceCarrier: "strideweave.carriers.block_device",
     Evictable: "strideweave.carriers.evictable",
 }
 

@@ -1,6 +1,8 @@
 """Operations that move tensors between carriers."""
 
 from .ops import (
+    BlockDeviceToCpuMoveOperation,
+    CpuToBlockDeviceMoveOperation,
     CpuToFileBackedMoveOperation,
     CpuToMetalMoveOperation,
     ElementwiseMoveOperation,
@@ -15,6 +17,8 @@ from .ops import (
 )
 
 __all__ = [
+    "BlockDeviceToCpuMoveOperation",
+    "CpuToBlockDeviceMoveOperation",
     "CpuToFileBackedMoveOperation",
     "CpuToMetalMoveOperation",
     "ElementwiseMoveOperation",

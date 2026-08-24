@@ -1,0 +1,75 @@
+name: spec-driven
+version: 1
+description: StrideWeave normative workflow - concise proposal → behavioral delta specs
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Non-normative change index identifying motivation and affected capabilities
+    template: proposal.md
+    instruction: |
+      Create a concise, non-normative proposal that identifies why the change
+      exists, its scope, and the exact capability paths whose requirements
+      change. The proposal is navigation and scope metadata; it does not define
+      whether delivered behavior is a feature or a bug.
+
+      Include:
+      - **Why**: the problem or opportunity in one or two sentences.
+      - **What Changes**: a short behavioral summary. Mark breaking changes.
+      - **Capabilities**: exact new and modified capability paths. Every listed
+        capability must have a corresponding delta spec.
+      - **Impact**: affected public APIs, documentation, invariants, or systems.
+
+      Keep implementation approach, threat-model mechanics, worktrees, agent
+      workflow, validation commands, and task decomposition in Beads. Do not
+      use proposal prose to add requirements that are absent from the specs.
+
+      A change with no spec-level behavior change must set `skip_specs: true`
+      in `.openspec.yaml`; never invent a requirement for a refactor or tooling
+      change merely to satisfy validation.
+    requires: []
+
+  - id: specs
+    generates: "specs/**/*.md"
+    description: Sole normative contract for the behavioral change
+    template: spec.md
+    instruction: |
+      Create one delta spec per capability listed in proposal.md. These specs
+      are the sole normative artifacts in the change: observable behavior,
+      inputs, outputs, errors, compatibility, concurrency, and lifecycle rules
+      must be complete here rather than delegated to proposal or Beads prose.
+
+      Preserve each existing capability's exact path under `openspec/specs/`.
+      Use kebab-case for new path segments and follow the repository's existing
+      capability organization.
+
+      Delta operations use these exact section headings:
+      - `## ADDED Requirements`
+      - `## MODIFIED Requirements`
+      - `## REMOVED Requirements`
+      - `## RENAMED Requirements`
+
+      Each requirement uses `### Requirement: <name>`, normative SHALL or MUST
+      language, and at least one testable `#### Scenario: <name>` with WHEN and
+      THEN clauses. For MODIFIED requirements, copy the entire accepted main-
+      spec requirement block, retain the exact heading, preserve every still-
+      valid scenario, and then apply the behavioral change. REMOVED requirements
+      require both **Reason** and **Migration**. RENAMED requirements use FROM
+      and TO entries.
+
+      A new capability begins with a `## Purpose` of at least 50 characters.
+      An existing capability delta does not include Purpose. If `skip_specs`
+      is set, do not create delta files.
+
+      Exclude private implementation functions, source layout, technology
+      choices, caches, algorithms, worktrees, Beads mechanics, and task plans
+      unless a fact is itself externally observable and therefore contractual.
+      Implementation and validation planning belong in Beads.
+    requires:
+      - proposal
+
+apply:
+  requires: [specs]
+  instruction: |
+    Direct OpenSpec application is disabled in this repository. After proposal
+    and specs are coherent, use create-task to translate the normative contract
+    into Beads implementation and review work.

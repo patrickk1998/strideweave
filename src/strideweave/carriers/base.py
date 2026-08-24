@@ -2,7 +2,8 @@
 
 ``Carrier`` is StrideWeave's extension interface and stays open: a new backend
 implements it directly. The shipped concrete implementations — ``Generic``,
-``CPU``, ``FileBacked``, ``Metal``, and ``Evictable`` — are closed instead. Each owns
+``CPU``, ``FileBacked``, ``Metal``, ``BlockDeviceCarrier``, and ``Evictable`` —
+are closed instead. Each owns
 storage invariants its own factories, capability declarations, and dispatch
 metadata are stated in terms of its exact class, so a specialization inherits
 claims it cannot honor: a ``Generic`` subclass would advertise every plan

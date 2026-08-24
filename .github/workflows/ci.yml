@@ -27,18 +27,18 @@ jobs:
 
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      block_device: ${{ steps.filter.outputs.block_device }}
 
     steps:
-      # Classification is a deny list, so an unrecognised path — a new
-      # top-level directory, a workflow edit, a build-configuration change —
-      # runs the full CI. `README.md`, `LICENSE`, and `.github/**` are
-      # deliberately absent from the non-code set: `pyproject.toml` declares
-      # `readme = "README.md"` and `license-files = ["LICENSE"]` and the
-      # distribution build fails without either, and a workflow edit has to
-      # exercise the workflows. Every uncertain case resolves the same way. A
-      # missing base commit, a failed or unreadable API response, an empty
-      # file list, and a change set large enough for the compare endpoint to
-      # truncate all fall through to running everything.
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # The two outputs are independently classified. Both are conservative:
+      # an unrecognised path, missing base commit, failed or unreadable API
+      # response, empty file list, or possibly truncated comparison runs the
+      # corresponding jobs. The code output retains the existing deny list;
+      # the block-device output adds a narrower set of paths proven unrelated
+      # to that integration surface. Rename entries classify both endpoints.
       - name: Classify the changed paths
         id: filter
         env:
@@ -62,7 +62,8 @@ jobs:
 
           emit() {
             echo "code=$1" >> "$GITHUB_OUTPUT"
-            echo "Changed-path gate: code=$1"
+            echo "block_device=$2" >> "$GITHUB_OUTPUT"
+            echo "Changed-path gate: code=$1 block_device=$2"
             exit 0
           }
 
@@ -70,7 +71,7 @@ jobs:
           zeroes="0000000000000000000000000000000000000000"
           if [ -z "${BASE}" ] || [ "${BASE}" = "${zeroes}" ]; then
             echo "No usable base commit; running the full CI."
-            emit true
+            emit true true
           fi
 
           # The three-dot form of the compare endpoint diffs against the merge
@@ -79,54 +80,33 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/compare/${BASE}...${HEAD}?per_page=300")"
           then
             echo "Could not list the changed files; running the full CI."
-            emit true
+            emit true true
           fi
 
           if [ -z "${payload}" ]; then
             echo "Empty compare response; running the full CI."
-            emit true
+            emit true true
           fi
 
-          total="$(printf '%s' "${payload}" | jq '.files | length')"
-          case "${total}" in
-            '' | *[!0-9]*)
-              echo "Unreadable compare payload; running the full CI."
-              emit true
+          if ! classification="$(printf '%s' "${payload}" \
+            | python3 tools/classify_ci_paths.py)"
+          then
+            echo "Uncertain compare payload; running the full CI."
+            emit true true
+          fi
+
+          code="$(printf '%s' "${classification}" | jq -r '.code')"
+          block_device="$(printf '%s' "${classification}" \
+            | jq -r '.block_device')"
+          case "${code}:${block_device}" in
+            true:true | true:false | false:true | false:false) ;;
+            *)
+              echo "Unreadable classification; running the full CI."
+              emit true true
               ;;
           esac
 
-          # The compare endpoint caps its file list at 300 entries, so a
-          # change at or above that size may be reporting a partial list.
-          if [ "${total}" -eq 0 ] || [ "${total}" -ge 300 ]; then
-            echo "Empty or truncated change set (${total}); running the full CI."
-            emit true
-          fi
-
-          # A rename is one entry whose `filename` is the new path and whose
-          # `previous_filename` is the old one. Both endpoints have to be
-          # classified: moving a source file into a deny-listed directory
-          # would otherwise report only the new, ignorable path and skip the
-          # CI that would have caught the move.
-          files="$(printf '%s' "${payload}" \
-            | jq -r '.files[] | .filename, (.previous_filename // empty)')"
-
-          while IFS= read -r file; do
-            case "${file}" in
-              openspec/* | .agents/* | .codex/* | .claude/* | .beads/*) ;;
-              docs/* | assets/*) ;;
-              index.html | CNAME | .nojekyll | properdocs.yml) ;;
-              skills-lock.json) ;;
-              AGENTS.md | CLAUDE.md | INVARIANTS.md | llms.md) ;;
-              CONTRIBUTING.md | SECURITY.md) ;;
-              *)
-                echo "Code-affecting path: ${file}"
-                emit true
-                ;;
-            esac
-          done <<< "${files}"
-
-          echo "Only non-code paths changed; skipping the code jobs."
-          emit false
+          emit "${code}" "${block_device}"
 
   duplication:
     needs: changes
@@ -177,7 +157,7 @@ jobs:
       - name: Run tests
         run: >-
           uv run pytest tests
-          -m "not dolt_integration and not dolt_lifecycle and not metal"
+          -m "not dolt_integration and not dolt_lifecycle and not metal and not block_device_integration"
 
       # --doctest-modules collects Python modules only. The 25 examples in
       # src/strideweave/core/native/_carrier.cpp remain an explicit native
@@ -250,6 +230,161 @@ jobs:
         run: >-
           uv run pytest tests
           -m "dolt_integration or dolt_lifecycle"
+
+  block-device-integration:
+    needs: changes
+    # Like the required code jobs, a missing classifier output runs fail-open.
+    # This job is intentionally not a required check, so its independent gate
+    # can skip unrelated changes without changing the protected-job contract.
+    if: ${{ !cancelled() && needs.changes.outputs.block_device != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          save-cache: false
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Exercise an exact disposable loop device as the runner user
+        run: |
+          set -euo pipefail
+
+          test_root=""
+          image=""
+          canonical_image=""
+          loop_device=""
+          original_uid=""
+          original_gid=""
+          original_mode=""
+
+          cleanup() {
+            test_status=$?
+            trap - EXIT INT TERM
+            set +e
+            cleanup_status=0
+
+            if [[ -n "${loop_device}" ]]; then
+              if [[ ! "${loop_device}" =~ ^/dev/loop[0-9]+$ ]]; then
+                echo "Refusing cleanup of unexpected loop path: ${loop_device}"
+                cleanup_status=1
+              else
+                bindings="$(sudo losetup -j "${canonical_image}" 2>/dev/null)"
+                binding_count="$(printf '%s\n' "${bindings}" \
+                  | sed '/^[[:space:]]*$/d' | wc -l)"
+
+                # Restore only the exact node whose metadata was captured.
+                if [[ -n "${original_uid}" && -b "${loop_device}" ]]; then
+                  sudo chown "${original_uid}:${original_gid}" "${loop_device}" \
+                    || cleanup_status=1
+                  sudo chmod "${original_mode}" "${loop_device}" \
+                    || cleanup_status=1
+                fi
+
+                if [[ "${binding_count}" -eq 1 \
+                  && "${bindings}" == "${loop_device}:"* ]]; then
+                  if sudo losetup -d "${loop_device}"; then
+                    echo "Detached exact loop mapping: ${loop_device} -> ${canonical_image}"
+                  else
+                    cleanup_status=1
+                  fi
+                elif [[ -n "${bindings}" ]]; then
+                  echo "Refusing to detach a loop mapping not owned by this job."
+                  cleanup_status=1
+                fi
+              fi
+            fi
+
+            if [[ -e "${canonical_image}" ]] \
+              && [[ -n "$(sudo losetup -j "${canonical_image}" 2>/dev/null)" ]]; then
+              echo "Disposable image remains attached after cleanup."
+              cleanup_status=1
+            fi
+
+            if [[ -n "${test_root}" ]]; then
+              case "${test_root}" in
+                "${RUNNER_TEMP}"/strideweave-block-device.*)
+                  if rm -f "${image}" && rmdir "${test_root}"; then
+                    echo "Removed exact disposable artifacts: ${image} ${test_root}"
+                  else
+                    cleanup_status=1
+                  fi
+                  ;;
+                *)
+                  echo "Refusing cleanup of unexpected directory: ${test_root}"
+                  cleanup_status=1
+                  ;;
+              esac
+            fi
+
+            if [[ "${test_status}" -ne 0 ]]; then
+              exit "${test_status}"
+            fi
+            exit "${cleanup_status}"
+          }
+          # Install every cleanup path before creating the first artifact.
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          test_root="$(mktemp -d "${RUNNER_TEMP}/strideweave-block-device.XXXXXX")"
+          image="${test_root}/device.img"
+          canonical_image="${image}"
+          truncate -s 16M "${image}"
+          canonical_image="$(readlink -f "${image}")"
+          # Resolve and validate the exact cleanup target before attaching it.
+          loop_device="$(sudo losetup --find)"
+          [[ "${loop_device}" =~ ^/dev/loop[0-9]+$ ]]
+          test -b "${loop_device}"
+          sudo losetup "${loop_device}" "${canonical_image}"
+
+          bindings="$(sudo losetup -j "${canonical_image}")"
+          binding_count="$(printf '%s\n' "${bindings}" \
+            | sed '/^[[:space:]]*$/d' | wc -l)"
+          [[ "${binding_count}" -eq 1 ]]
+          [[ "${bindings}" == "${loop_device}:"* ]]
+
+          loop_name="${loop_device#/dev/}"
+          sysfs_backing="$(cat "/sys/block/${loop_name}/loop/backing_file")"
+          if [[ "${sysfs_backing}" == /* ]]; then
+            sysfs_image="$(readlink -f "${sysfs_backing}")"
+          else
+            sysfs_image="$(readlink -f "/${sysfs_backing}")"
+          fi
+          [[ "${sysfs_image}" == "${canonical_image}" ]]
+          ! findmnt -rn -S "${loop_device}" >/dev/null
+
+          capacity="$(sudo blockdev --getsize64 "${loop_device}")"
+          logical_block_size="$(sudo blockdev --getss "${loop_device}")"
+          physical_block_size="$(sudo blockdev --getpbsz "${loop_device}")"
+          [[ "${capacity}" -eq "$(stat -c '%s' "${canonical_image}")" ]]
+          [[ "${capacity}" -eq 16777216 ]]
+          [[ "${logical_block_size}" -gt 0 ]]
+          [[ "${physical_block_size}" -ge "${logical_block_size}" ]]
+          [[ $((physical_block_size % logical_block_size)) -eq 0 ]]
+          echo "Verified disposable block device: node=${loop_device}" \
+            "backing=${canonical_image} capacity=${capacity}" \
+            "logical=${logical_block_size} physical=${physical_block_size}" \
+            "unmounted=true"
+
+          read -r original_uid original_gid original_mode \
+            < <(stat -c '%u %g %a' "${loop_device}")
+          sudo chown "$(id -u):$(id -g)" "${loop_device}"
+          sudo chmod 600 "${loop_device}"
+          test -r "${loop_device}"
+          test -w "${loop_device}"
+
+          STRIDEWEAVE_BLOCK_DEVICE="${loop_device}" \
+            STRIDEWEAVE_BLOCK_DEVICE_CAPACITY="${capacity}" \
+            .venv/bin/python -m pytest tests/test_block_device_integration.py -q
 
   native-strict-warnings:
     needs: changes
@@ -339,7 +474,7 @@ jobs:
             ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:halt_on_error=1:symbolize=1:log_path=$reports/sanitizer" \
             UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:log_path=$reports/sanitizer" \
             .venv/bin/python -m pytest -n auto --maxfail=1 tests \
-            -m "not dolt_integration and not dolt_lifecycle and not metal"
+            -m "not dolt_integration and not dolt_lifecycle and not metal and not block_device_integration"
 
       # xdist names the test a crashed worker was running; these files carry the
       # sanitizer diagnosis for it. Printing them keeps the report readable in
