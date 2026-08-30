@@ -19,6 +19,20 @@ from .dtype import (
     WholeExtent,
 )
 from .evictable import Evictable, EvictableOperation
+from .extension import (
+    CarrierDefinition,
+    CarrierFacet,
+    CompositeProvider,
+    KernelExecutionInterface,
+    KernelPack,
+    KernelPattern,
+    KernelProvider,
+    StorageProvider,
+    TransferRoute,
+    Unsupported,
+    register_carrier_definition,
+    register_kernel_pack,
+)
 from .file_backed import FileBacked
 from .generic import Generic
 from .metal import Metal
@@ -28,13 +42,28 @@ from .operation_capability import (
     OperationCapability,
     UnsupportedOperationPlan,
 )
+from .tiled_evictable import (
+    AwaitProjection,
+    AwaitResidency,
+    ResidencyPlan,
+    ResidencyPolicy,
+    TiledEvictable,
+    TiledResidencyFacet,
+    TileSelection,
+    TileSet,
+)
 
 __all__ = [
     "CPU",
+    "AwaitProjection",
+    "AwaitResidency",
     "BlockDevice",
     "BlockDeviceCarrier",
     "BlockScaledDType",
     "Carrier",
+    "CarrierDefinition",
+    "CarrierFacet",
+    "CompositeProvider",
     "CompoundDType",
     "DType",
     "DTypeCategory",
@@ -43,6 +72,10 @@ __all__ = [
     "EvictableOperation",
     "FileBacked",
     "Generic",
+    "KernelExecutionInterface",
+    "KernelPack",
+    "KernelPattern",
+    "KernelProvider",
     "Level",
     "LevelExtent",
     "Metal",
@@ -50,11 +83,22 @@ __all__ = [
     "OperationCapability",
     "RepresentationRule",
     "RepresentationValidationContext",
+    "ResidencyPlan",
+    "ResidencyPolicy",
     "SimpleDType",
+    "StorageProvider",
     "SymbolicBits",
+    "TileSelection",
+    "TileSet",
+    "TiledEvictable",
+    "TiledResidencyFacet",
+    "TransferRoute",
+    "Unsupported",
     "UnsupportedOperationPlan",
     "Whole",
     "WholeExtent",
+    "register_carrier_definition",
+    "register_kernel_pack",
 ]
 
 # Every shipped carrier declares and seals its executable plan shapes here, once
