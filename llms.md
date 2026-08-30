@@ -113,6 +113,20 @@ takes it over.
   autograd node, lowers tensor arguments into the representation the nested
   operation accepts, runs it through sealed lowered execution, and wraps results
   and gradients back into the composite representation.
+- Definition-backed carriers are the public extension path above that dispatch
+  machinery. One exact carrier class registers one immutable
+  `CarrierDefinition`: its storage provider, either an independent kernel
+  provider or a dependent composite provider, exact transfer routes, and
+  immutable facets. Definition and kernel-pack registration are one-shot and
+  exact-class; observing the class freezes the complete set, with no base-class
+  lookup. Legacy shipped carriers remain definition-free and keep their
+  existing capability, dispatch, and movement authorities.
+- `OperationDefinition` is the semantic layer above providers. Built-in and
+  namespaced custom definitions bind an immutable input schema, result and
+  effect descriptions, reference behavior, and an explicit VJP policy. A call
+  resolves these facts into one immutable invocation before capability or
+  provider selection, so a provider chooses how to execute semantics but never
+  redefines them.
 - Python and native operations inherit from the shared native `Operation` base.
   `Operation._forward` is a protected implementation hook and must not be
   invoked directly. Call public `forward`, or use the framework-owned sealed
@@ -173,7 +187,7 @@ zero-copy views and their reverse-mode behavior. Dispatch itself is
 
 ## Carriers
 
-StrideWeave currently provides five carrier implementations:
+StrideWeave currently provides seven carrier implementations:
 
 - `Generic(values, mutable=True, dtype=DType.Floating)` stores Python
   objects. It supports differentiable `Floating` values, non-differentiable
@@ -219,15 +233,30 @@ StrideWeave currently provides five carrier implementations:
   to secondary storage and blocks access until `promote()` restores them. Its
   constructor takes exclusive ownership of both supplied carriers. Block-device
   allocations are deliberately not supported as either tier.
+- `TiledEvictable(primary, secondary, grid_shape, tile_shape, ...)` is the
+  definition-backed composition probe. It owns primary and secondary carrier
+  prototypes and tracks each tile independently as primary-resident,
+  secondary-resident, implicit, or invalid. Residency work promotes and pins
+  only the tiles a request needs, while policy decides what remains afterward;
+  storage-only transitions do not change the visible value version. Projection
+  gathers an ordered `TileSelection` into a compact ordinary tensor on the
+  primary carrier, and functional tiled scatter creates a fresh tiled value.
+  Every full Tensor entering those paths must pass one shared tile-footprint
+  compatibility admission; compatible Layouts may permute coordinates within
+  each carrier-owned footprint, and the Tensor Layout remains the value-address
+  authority. The effective `tiled-carrier-composition` OpenSpec owns that exact
+  compatibility contract.
+  Direct raw-tiled computation is intentionally bounded and described under
+  Operations.
 
 [`carrier-storage`](openspec/specs/carrier-storage/spec.md) states what each of
 these carriers accepts, allocates, and reports, and
 [`carrier-composition`](openspec/specs/carrier-composition/spec.md) states
 `Evictable`'s ownership and residency behavior.
 
-These six are closed implementations: `Carrier` is the extension interface and
+These seven are closed implementations: `Carrier` is the extension interface and
 stays open, but `Generic`, `CPU`, `Metal`, `FileBacked`, `BlockDeviceCarrier`, and
-`Evictable` reject subclass creation with a message naming the supported
+`Evictable`, and `TiledEvictable` reject subclass creation with a message naming the supported
 alternative, and each is declared `@final` on every import path, so a type
 checker reports the same closure before the program runs. Each states its
 allocation factories, storage normalization, dispatch metadata, and capability
@@ -252,6 +281,12 @@ where an exact class declares the plans its own implementation executes. When
 what a backend can execute instead depends on the carrier instances it was
 handed, it implements `DependentCarrier` and generates its capabilities per
 instance, as described under [Backend Capabilities](#backend-capabilities).
+For public extension code, that distinction is represented directly by a
+`CarrierDefinition`: independent definitions use a `KernelProvider` and frozen
+`KernelPack` patterns, while dependent definitions use a `CompositeProvider`
+whose immutable capabilities belong to the constructed instance. Optional
+facets expose narrow behavior such as tiled residency without widening the
+base `Carrier` API.
 
 ### Dtype Descriptors
 
@@ -603,6 +638,7 @@ set of descriptors:
 | `FileBacked` | `Floating`, `Float32`, `Int32` |
 | `BlockDeviceCarrier` | `Float32` |
 | `Evictable` | Whatever both composed tiers accept, which must match |
+| `TiledEvictable` | Whatever both configured tiers can store |
 
 Each table row is the exact accepted set: membership is checked by object
 identity rather than equality, in the native CPU parser as well as in Python,
@@ -623,10 +659,11 @@ sw.CPU(4).supports_storage_dtype(sw.DType.Integer)                         # Fal
 `supports_storage_dtype(dtype)` asks whether the carrier's *implementation* can
 allocate that dtype at all. It is structural rather than a report of state: it
 allocates nothing and is unaffected by size, mutability, ownership, eviction
-residency, release, or the dtype the carrier currently holds. `Evictable`
-reports the intersection of its tiers, because a value it cannot evict is a
-value it cannot hold — which is what lets a composed carrier decide, before any
-work begins, whether it could store an operation's result. `Carrier` owns the
+residency, release, or the dtype the carrier currently holds. `Evictable` and
+`TiledEvictable` report the intersection of their tiers, because a value that
+cannot cross the hierarchy is not a value the composition can hold — which is
+what lets a composed carrier decide, before any work begins, whether it could
+store an operation's result. `Carrier` owns the
 public query and its validation; an implementation states its accepted set
 through the protected `_supports_storage_dtype(dtype)` hook, exactly as
 `_is_mutable()` works, and the conservative default claims only the dtype the
@@ -653,8 +690,9 @@ destroyed.
 carrier, not only whether its storage was constructed mutable, so a carrier
 owned by a composite reports `False` while its mutable owning composite reports
 `True`; ownership is applied centrally by `Carrier` over each implementation's
-`_is_mutable()` hook. Eviction and promotion belong specifically to `Evictable`
-rather than to the base `Carrier` or `Tensor` APIs.
+`_is_mutable()` hook. Eviction and promotion belong to the composition-specific
+`Evictable` API and the `TiledResidencyFacet`, rather than to base `Carrier` or
+`Tensor` APIs.
 [`carrier-storage`](openspec/specs/carrier-storage/spec.md) and
 [`carrier-composition`](openspec/specs/carrier-composition/spec.md) own the
 allocation factories, mutation and versioning rules, and the ownership and
@@ -707,7 +745,15 @@ The public functional API includes the following v0 surface:
   `scatter` and `scatter_add`.
 - selection: `sort` and `topk` return named `(values, indices)` results with
   Float32 values and Int32 indices.
-- storage movement: `move`.
+- storage movement: blocking `move` and eager single-tensor `move_async`.
+
+The central definitions for `add`, `elementwise_mul`, `mul`, `relu`,
+`reduce_sum`, and `matmul` coexist with their legacy operation classes and are
+the initial semantic vocabulary for definition-backed execution. A namespaced
+custom operation can be added through `define_operation`; providers receive its
+resolved invocation, including the central result and VJP contract, through the
+same path as a built-in. Other public operations remain on the legacy operation
+path.
 
 `reduce_sum(..., accumulator_dtype=...)` and
 `matmul(..., accumulator_dtype=...)` select the floating accumulator without
@@ -812,6 +858,20 @@ secondary tier stays empty until the first eviction provisions it.
 [`carrier-composition`](openspec/specs/carrier-composition/spec.md) state the
 adapter, lowering, and residency contract.
 
+Raw `TiledEvictable` tensors use the same outer semantic boundary through their
+`CompositeProvider`, but only for the six central names above. A direct call
+accepts tile-footprint-compatible full-geometry operands with the configured
+primary carrier class, promotes and pins the required tiles, materializes
+ordinary primary-backed inputs while preserving their Layout-defined logical
+values, and uses sealed lowered execution without creating an inner autograd
+node. The published forward result is an ordinary tensor on that primary
+carrier. The outer VJP remains authoritative and returns full-shaped tiled
+gradients, promoting saved tiled operands under the backward residency policy.
+Other operations become available after `project(...)` returns its compact
+ordinary tensor; they are not silently admitted on raw tiled storage. Functional
+tiled scatter accepts an ordered `TileSelection` and produces a fresh full
+geometry tiled value with replace or add semantics.
+
 ### Layout Descriptions
 
 StrideWeave layout descriptions preserve hierarchical modes and therefore do not
@@ -884,6 +944,11 @@ Profiling state is thread-local, so work on another thread requires its own
 context, and a context must exit on the thread that entered it. Timings measure
 the synchronous host boundary only. For Metal that includes host-side JIT
 selection and launch work but is not presented as device-kernel timing.
+Eager movement additionally records correlated `move.submit` and
+`move.complete` external events. Completion may occur after the profiling
+context exits, so the recorder retains the correlation state needed to publish
+that terminal event without turning device or I/O completion into operation
+compute time.
 [`operation-profiling`](openspec/specs/operation-profiling/spec.md)
 states the recorded boundary, event fields, nesting and timing arithmetic,
 thread rules, exclusions, and report determinism exactly.
@@ -922,6 +987,15 @@ Three properties are worth carrying in your head; the rest is contract:
 
 Backward also validates saved input versions, so storage modified in place after
 the forward pass raises instead of silently differentiating the wrong values.
+
+Definition-backed execution keeps that same outer autograd boundary. An
+`OperationDefinition` resolves the saved operands and VJP semantics before a
+provider prepares or runs a kernel; providers own forward execution, not graph
+construction or differentiation. TiledEvictable's bounded direct kernels also
+appear as one outer operation rather than exposing work performed by their
+primary-tier carriers as additional graph nodes. Backward promotes the saved
+tiles it needs and returns full-shaped tiled gradients, while projection and
+scatter remain explicit selection boundaries with their own reverse mappings.
 
 ### Functional gradients
 
@@ -1038,12 +1112,14 @@ CPU tensors export DLPack through `__dlpack__` and `__dlpack_device__`, with
 hierarchical shapes and strides flattened for the DLPack representation. Export
 is the interesting boundary: it is zero-copy, same-device, and opt-in per
 carrier through a `dlpack_info` hook, so Generic, FileBacked,
-Metal, BlockDeviceCarrier, and Evictable do not participate. A multi-subtensor
+Metal, BlockDeviceCarrier, Evictable, and TiledEvictable do not participate. A multi-subtensor
 tensor is refused rather than partially described, and there is no import,
 copy, or cross-device path.
 
-`move(tensor, destination)` dispatches on the exact source and destination
-carrier class *pair* against an explicit process-global registry: CPU-to-
+`move(tensor, destination)` is the blocking facade over
+`move_async(tensor, destination).wait()`. For definition-free classes movement
+still dispatches on the exact source and destination carrier class *pair*
+against an explicit process-global registry: CPU-to-
 FileBacked and FileBacked-to-CPU use native bulk copies; CPU-to-Metal,
 Metal-to-CPU, and Metal-to-Metal use registered bulk operations over the private
 MPS storage. Every other ordinary pair — including a subclass of a registered
@@ -1061,6 +1137,18 @@ Moving a broadcast tensor preserves its exact stride-zero layout and copies its
 `cosize` physical span rather than materializing `size` logical elements, so its
 backward consumes an injective same-shape gradient before the broadcast node
 performs the required summation.
+
+Definition-backed movement instead resolves exact `TransferRoute` providers
+from the registered definitions. A mutually permitted elementwise fallback is
+available only when both storage providers opt in; the legacy registry never
+gains authority over a definition-backed class. `move_async` validates the
+single Tensor, destination, route, allocation, and preparation before
+submission, then retains and protects all resources through one terminal
+outcome. It publishes the destination before releasing the source on success;
+a terminal failure publishes no tensor and keeps the source usable.
+`AwaitResult` and its concrete movement and tiled-operation handles expose only
+thread-safe `done` and identity-stable blocking `wait()`. They deliberately have
+no coroutine protocol, cancellation, or batch form.
 
 Evictable is the framework's own consumer of that registry: it resolves a move
 per residency transition and routes it through the sealed lowered-execution
@@ -1137,6 +1225,16 @@ What is deliberately not built yet, and why it is safe to leave undone:
   block device.
 - Evictable tensors must be promoted before access or computation, and binary
   Evictable operations require matching primary and secondary carrier classes.
+  This is the legacy all-or-nothing hierarchy. `TiledEvictable` permits partial
+  residency: valid secondary and implicit tiles remain readable, while invalid
+  tiles fail. Raw direct dispatch is limited to `add`, `elementwise_mul`, `mul`,
+  `relu`, `reduce_sum`, and `matmul`; broader computation requires an explicit
+  compact projection.
+- Definition registration, kernel-pack registration, transfer selection, and
+  provider completion are deliberately exact-class and frozen. There is no
+  definition inheritance, provider mutation after observation, coroutine or
+  cancellation protocol, transactional batch movement, graph-wide residency
+  scheduler, tiled-kernel fusion, or deep cache optimization in this version.
 - `strideweave.nn` covers only `Linear`, elementwise activations, `MSELoss`, and
   `SGD`; there are no buffers, state dictionaries, training/evaluation modes,
   or hooks. It is a backstop for the examples, not a model library.
