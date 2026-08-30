@@ -4,11 +4,58 @@ from typing import Any, Literal, NamedTuple, Self, overload
 
 from ._operation import Operation as Operation
 from .carriers import Carrier, SimpleDType
+from .carriers.move import AwaitMove as AwaitMove
 from .layout import Shape, Stride, Tree
+from .operation_definition import (
+    NON_DIFFERENTIABLE as NON_DIFFERENTIABLE,
+)
+from .operation_definition import (
+    REQUIRED as REQUIRED,
+)
+from .operation_definition import (
+    BoundOperationCall as BoundOperationCall,
+)
+from .operation_definition import (
+    OperandKind as OperandKind,
+)
+from .operation_definition import (
+    OperandSpec as OperandSpec,
+)
+from .operation_definition import (
+    OperationCall as OperationCall,
+)
+from .operation_definition import (
+    OperationDefinition as OperationDefinition,
+)
+from .operation_definition import (
+    OperationPlan as OperationPlan,
+)
+from .operation_definition import (
+    OperationSchema as OperationSchema,
+)
+from .operation_definition import (
+    OptionSpec as OptionSpec,
+)
+from .operation_definition import (
+    ProviderContractError as ProviderContractError,
+)
+from .operation_definition import (
+    ResolvedInvocation as ResolvedInvocation,
+)
+from .operation_definition import (
+    ResultSpec as ResultSpec,
+)
+from .operation_definition import (
+    VJPContext as VJPContext,
+)
+from .operation_definition import (
+    define_operation as define_operation,
+)
 from .tensor import Tensor
 
-__all__ = [
+__all__ = [  # noqa: RUF022 - must match the runtime's stable sorted export list
     "BlockDeviceToCpuMoveOperation",
+    "BoundOperationCall",
     "BroadcastOperation",
     "CpuToBlockDeviceMoveOperation",
     "CpuToFileBackedMoveOperation",
@@ -77,17 +124,30 @@ __all__ = [
     "MetalToCpuMoveOperation",
     "MetalToMetalMoveOperation",
     "MoveOperation",
+    "NON_DIFFERENTIABLE",
+    "OperandKind",
+    "OperandSpec",
     "Operation",
+    "OperationCall",
+    "OperationDefinition",
+    "OperationPlan",
+    "OperationSchema",
+    "OptionSpec",
     "PermuteOperation",
     "Profiler",
     "ProfilerAggregate",
     "ProfilerEvent",
+    "ProviderContractError",
+    "REQUIRED",
     "RearrangeOperation",
     "ReshapeOperation",
+    "ResolvedInvocation",
+    "ResultSpec",
     "SortResult",
     "SqueezeOperation",
     "TopKResult",
     "UnsqueezeOperation",
+    "VJPContext",
     "abs",
     "add",
     "argmax",
@@ -100,6 +160,7 @@ __all__ = [
     "conv_general",
     "cos",
     "cumsum",
+    "define_operation",
     "div",
     "einsum",
     "elementwise_mul",
@@ -124,6 +185,7 @@ __all__ = [
     "maximum",
     "minimum",
     "move",
+    "move_async",
     "mul",
     "ne",
     "neg",
@@ -555,7 +617,8 @@ def matmul(
     *,
     accumulator_dtype: SimpleDType | None = None,
 ) -> Tensor: ...
-def move(tensor: Tensor, destination: Any) -> Tensor: ...
+def move(tensor: Tensor, destination: Carrier) -> Tensor: ...
+def move_async(tensor: Tensor, destination: Carrier) -> AwaitMove[Tensor]: ...
 def einsum(lhs: Tensor, rhs: Tensor, description: str) -> Tensor: ...
 @overload
 def rearrange(tensor: Tensor, output: str) -> Tensor: ...

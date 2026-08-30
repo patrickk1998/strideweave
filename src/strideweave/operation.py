@@ -10,6 +10,7 @@ operation classes live under ``strideweave.carriers``. This module keeps the his
 
 from __future__ import annotations
 
+from . import builtin_operation_definitions as _builtin_operation_definitions
 from .carriers.evictable import EvictableOperation
 from .carriers.generic.as_strided_ops import GenericAsStridedOperation
 from .carriers.generic.convolution_ops import GenericConvGeneralOperation
@@ -103,7 +104,26 @@ from .carriers.shared_ops import (
 )
 from .functional import *  # noqa: F403
 from .functional import __all__ as _functional_all
+from .operation_definition import (
+    NON_DIFFERENTIABLE,
+    REQUIRED,
+    BoundOperationCall,
+    OperandKind,
+    OperandSpec,
+    OperationCall,
+    OperationDefinition,
+    OperationPlan,
+    OperationSchema,
+    OptionSpec,
+    ProviderContractError,
+    ResolvedInvocation,
+    ResultSpec,
+    VJPContext,
+    define_operation,
+)
 from .profiling import Profiler, ProfilerAggregate, ProfilerEvent, profile
+
+del _builtin_operation_definitions
 
 _OPERATION_CLASS_EXPORTS = [
     "BlockDeviceToCpuMoveOperation",
@@ -186,5 +206,30 @@ _OPERATION_CLASS_EXPORTS = [
     "UnsqueezeOperation",
 ]
 
-_OPERATION_EXPORTS = sorted([*_OPERATION_CLASS_EXPORTS, "profile", *_functional_all])
+_OPERATION_DEFINITION_EXPORTS = [
+    "BoundOperationCall",
+    "NON_DIFFERENTIABLE",
+    "OperandKind",
+    "OperandSpec",
+    "OperationCall",
+    "OperationDefinition",
+    "OperationPlan",
+    "OperationSchema",
+    "OptionSpec",
+    "ProviderContractError",
+    "REQUIRED",
+    "ResolvedInvocation",
+    "ResultSpec",
+    "VJPContext",
+    "define_operation",
+]
+
+_OPERATION_EXPORTS = sorted(
+    [
+        *_OPERATION_CLASS_EXPORTS,
+        *_OPERATION_DEFINITION_EXPORTS,
+        "profile",
+        *_functional_all,
+    ]
+)
 __all__ = _OPERATION_EXPORTS  # pyright: ignore[reportUnsupportedDunderAll]

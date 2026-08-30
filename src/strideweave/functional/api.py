@@ -11,7 +11,7 @@ from typing import Any, NamedTuple, cast, overload
 from ..carriers.dtype import SimpleDType
 from ..carriers.operation_helpers import _as_tensor
 from ..carriers.operation_policy import operation_execution_options
-from ..core.layout import Node, Shape, Stride, Tree
+from ..core.layout import Layout, Node, Shape, Stride, Tree
 
 _operation = import_module("strideweave._operation")
 _is_grad_enabled = cast(Callable[[], bool], _operation.is_grad_enabled)
@@ -263,7 +263,17 @@ def _reduce_description(
 
     options = _accumulator_options(operation_name, accumulator_dtype)
     spec = parse_reduce(description)
-    intermediate = _rearrange_tree(tensor, spec.rearrange_output, spec.selection)
+    tensor = _as_tensor(tensor, "tensor")
+    reduction_layout = Layout.rearrange(
+        tensor.layout,
+        spec.rearrange_output,
+        spec.selection,
+    )
+    intermediate = (
+        tensor
+        if reduction_layout == tensor.layout
+        else _rearrange_tree(tensor, spec.rearrange_output, spec.selection)
+    )
     operation = _dispatch_unary(operation_name, intermediate)
     if options is None:
         return operation.forward(intermediate)
