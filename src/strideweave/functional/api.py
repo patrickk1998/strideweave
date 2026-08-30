@@ -9,6 +9,7 @@ from operator import index as operator_index
 from typing import Any, NamedTuple, cast, overload
 
 from ..carriers.dtype import SimpleDType
+from ..carriers.move.async_move import move_async
 from ..carriers.operation_helpers import _as_tensor
 from ..carriers.operation_policy import operation_execution_options
 from ..core.layout import Layout, Node, Shape, Stride, Tree
@@ -56,6 +57,7 @@ __all__ = [
     "maximum",
     "minimum",
     "move",
+    "move_async",
     "mul",
     "ne",
     "neg",
@@ -1999,9 +2001,11 @@ def move(tensor: Any, destination: Any) -> Any:
 
     The destination carrier object is filled with the tensor's values, the
     source carrier is released (further access raises), and a tensor backed by
-    the destination is returned. Move is not owned by any carrier: the
-    concrete move operation is dispatched on the (source, destination) carrier
-    class pair. Bulk operations handle the exact CPU/FileBacked and CPU/Metal
+    the destination is returned. Blocking move delegates to ``move_async`` and
+    waits for its terminal result. Definition-backed sources select an exact
+    definition-owned transfer route, while definition-free sources dispatch a
+    concrete move operation on the (source, destination) carrier class pair.
+    Bulk operations handle the exact CPU/FileBacked and CPU/Metal
     pairs, Metal-to-Metal, and the exact ``(CPU, BlockDeviceCarrier)`` and
     ``(BlockDeviceCarrier, CPU)`` pairs. Every other exact pair involving
     ``BlockDeviceCarrier`` raises ``NotImplementedError``; an ordinary
@@ -2042,17 +2046,7 @@ def move(tensor: Any, destination: Any) -> Any:
         2.0
     """
 
-    from ..carriers.move.ops import (
-        _involves_block_device,
-        _validate_move_inputs,
-        dispatch_move,
-    )
-
-    tensor = _as_tensor(tensor, "tensor")
-    if _involves_block_device(type(tensor.carrier), type(destination)):
-        _validate_move_inputs(tensor, destination)
-    operation_class = dispatch_move(type(tensor.carrier), type(destination))
-    return operation_class().forward(tensor, destination)
+    return move_async(tensor, destination).wait()
 
 
 def einsum(lhs: Any, rhs: Any, description: str) -> Any:
