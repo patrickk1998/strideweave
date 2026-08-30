@@ -228,7 +228,7 @@ def test_public_block_move_preserves_inherited_validation_precedence(
     with pytest.raises(TypeError, match="tensor must be a Tensor"):
         sw.move(object(), block)  # pyright: ignore[reportArgumentType]
     with pytest.raises(TypeError, match="destination must be a Carrier"):
-        sw.move(tensor_for(block), object())
+        sw.move(tensor_for(block), object())  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="own carrier"):
         sw.move(tensor_for(block), block)
 

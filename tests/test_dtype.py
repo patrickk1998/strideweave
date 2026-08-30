@@ -3098,7 +3098,13 @@ class _MinimalCarrier(sw.Carrier):
     def get_value(self, index: int) -> object:
         raise IndexError(index)
 
-    def new_like(self, values: Iterable[object], *, mutable: bool = True) -> sw.Carrier:
+    def new_like(
+        self,
+        values: Iterable[object],
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
+    ) -> sw.Carrier:
         raise NotImplementedError
 
     def allocate_like(

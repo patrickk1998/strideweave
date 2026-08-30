@@ -125,6 +125,11 @@ public:
         ++version_;
     }
 
+    void restore_definition_state(Version version, bool is_released) {
+        version_ = version;
+        is_released_ = is_released;
+    }
+
     bool is_released() const { return is_released_; }
 
     void release() {

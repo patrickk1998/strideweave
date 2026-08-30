@@ -725,7 +725,12 @@ def mul(lhs: Any, rhs: Any) -> Any:
     if isinstance(lhs, Tensor):
         return lhs.carrier.dispatch_op("mul").forward(lhs, rhs)
     if isinstance(rhs, Tensor):
-        return rhs.carrier.dispatch_op("mul").forward(rhs, lhs)
+        from ..carriers.extension import _definition_for_instance
+
+        operation = rhs.carrier.dispatch_op("mul")
+        if _definition_for_instance(rhs.carrier) is not None:
+            return operation.forward(lhs, rhs)
+        return operation.forward(rhs, lhs)
     raise TypeError("mul requires at least one Tensor operand")
 
 

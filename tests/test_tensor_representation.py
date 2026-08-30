@@ -43,9 +43,13 @@ class PlaneCarrier(sw.Carrier):
         return True
 
     def new_like(
-        self, values: Iterable[object], *, mutable: bool = True
+        self,
+        values: Iterable[object],
+        *,
+        mutable: bool = True,
+        dtype: sw.DType | None = None,
     ) -> PlaneCarrier:
-        return type(self)(values, self._dtype)
+        return type(self)(values, self._dtype if dtype is None else dtype)
 
     def allocate_like(
         self,
@@ -95,7 +99,11 @@ class VirtualPlaneCarrier(sw.Carrier):
         return False
 
     def new_like(
-        self, values: Iterable[object], *, mutable: bool = True
+        self,
+        values: Iterable[object],
+        *,
+        mutable: bool = True,
+        dtype: sw.DType | None = None,
     ) -> VirtualPlaneCarrier:
         raise NotImplementedError
 
