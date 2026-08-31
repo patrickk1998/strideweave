@@ -5,6 +5,12 @@ from .carriers import (
     CPU as CPU,
 )
 from .carriers import (
+    AwaitProjection as AwaitProjection,
+)
+from .carriers import (
+    AwaitResidency as AwaitResidency,
+)
+from .carriers import (
     BlockDevice as BlockDevice,
 )
 from .carriers import (
@@ -15,6 +21,15 @@ from .carriers import (
 )
 from .carriers import (
     Carrier as Carrier,
+)
+from .carriers import (
+    CarrierDefinition as CarrierDefinition,
+)
+from .carriers import (
+    CarrierFacet as CarrierFacet,
+)
+from .carriers import (
+    CompositeProvider as CompositeProvider,
 )
 from .carriers import (
     CompoundDType as CompoundDType,
@@ -38,6 +53,18 @@ from .carriers import (
     Generic as Generic,
 )
 from .carriers import (
+    KernelExecutionInterface as KernelExecutionInterface,
+)
+from .carriers import (
+    KernelPack as KernelPack,
+)
+from .carriers import (
+    KernelPattern as KernelPattern,
+)
+from .carriers import (
+    KernelProvider as KernelProvider,
+)
+from .carriers import (
     Level as Level,
 )
 from .carriers import (
@@ -59,10 +86,37 @@ from .carriers import (
     RepresentationValidationContext as RepresentationValidationContext,
 )
 from .carriers import (
+    ResidencyPlan as ResidencyPlan,
+)
+from .carriers import (
+    ResidencyPolicy as ResidencyPolicy,
+)
+from .carriers import (
     SimpleDType as SimpleDType,
 )
 from .carriers import (
+    StorageProvider as StorageProvider,
+)
+from .carriers import (
     SymbolicBits as SymbolicBits,
+)
+from .carriers import (
+    TiledEvictable as TiledEvictable,
+)
+from .carriers import (
+    TiledResidencyFacet as TiledResidencyFacet,
+)
+from .carriers import (
+    TileSelection as TileSelection,
+)
+from .carriers import (
+    TileSet as TileSet,
+)
+from .carriers import (
+    TransferRoute as TransferRoute,
+)
+from .carriers import (
+    Unsupported as Unsupported,
 )
 from .carriers import (
     UnsupportedOperationPlan as UnsupportedOperationPlan,
@@ -73,6 +127,14 @@ from .carriers import (
 from .carriers import (
     WholeExtent as WholeExtent,
 )
+from .carriers import (
+    register_carrier_definition as register_carrier_definition,
+)
+from .carriers import (
+    register_kernel_pack as register_kernel_pack,
+)
+from .carriers.move import AwaitMove as AwaitMove
+from .carriers.move import AwaitResult as AwaitResult
 from .layout import (
     IndexMap as IndexMap,
 )
@@ -114,12 +176,19 @@ from .tensor import Tensor as Tensor
 from .verification.api import verify_backend as verify_backend
 
 _CORE_EXPORTS = [
+    "AwaitMove",
+    "AwaitProjection",
+    "AwaitResidency",
+    "AwaitResult",
     "BlockScaledDType",
     "BlockDevice",
     "BlockDeviceCarrier",
     "CPU",
     "Carrier",
+    "CarrierDefinition",
+    "CarrierFacet",
     "CompoundDType",
+    "CompositeProvider",
     "DType",
     "DTypeCategory",
     "DependentCarrier",
@@ -131,6 +200,10 @@ _CORE_EXPORTS = [
     "Layout",
     "Level",
     "LevelExtent",
+    "KernelExecutionInterface",
+    "KernelPack",
+    "KernelPattern",
+    "KernelProvider",
     "Metal",
     "Module",
     "Node",
@@ -141,20 +214,42 @@ _CORE_EXPORTS = [
     "Product",
     "RepresentationRule",
     "RepresentationValidationContext",
+    "ResidencyPlan",
+    "ResidencyPolicy",
     "Shape",
     "SimpleDType",
+    "StorageProvider",
     "Stride",
     "SymbolicBits",
     "Swizzle",
     "SwizzleStage",
     "Tensor",
+    "TileSelection",
+    "TileSet",
+    "TiledEvictable",
+    "TiledResidencyFacet",
+    "TransferRoute",
     "verify_backend",
     "Tiler",
     "Tree",
     "UnsupportedOperationPlan",
+    "Unsupported",
     "Whole",
     "WholeExtent",
+    "register_carrier_definition",
+    "register_kernel_pack",
 ]
 
-_TOP_LEVEL_EXPORTS = [*_CORE_EXPORTS, *_operation_all]
+_OPERATION_MODULE_ONLY_EXPORTS = {
+    "BoundOperationCall",
+    "OperationCall",
+    "OperationPlan",
+    "ResolvedInvocation",
+    "VJPContext",
+}
+
+_TOP_LEVEL_EXPORTS = [
+    *_CORE_EXPORTS,
+    *(name for name in _operation_all if name not in _OPERATION_MODULE_ONLY_EXPORTS),
+]
 __all__ = _TOP_LEVEL_EXPORTS  # pyright: ignore[reportUnsupportedDunderAll]

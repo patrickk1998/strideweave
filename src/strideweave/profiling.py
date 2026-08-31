@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import import_module
@@ -50,16 +52,17 @@ _operation = import_module("strideweave._operation")
 _raw_session_factory = cast(
     _RawSessionFactory, getattr(_operation, "_RawProfilerSession")
 )
+_active_profiler = threading.local()
 
 
 @dataclass(frozen=True, slots=True)
 class ProfilerEvent:
-    """Immutable snapshot of one carrier-dispatched operation execution.
+    """Immutable snapshot of one operation or movement profiling event.
 
     Args:
         id: Session-local event identifier in execution-start order.
         parent_id: Identifier of the nearest recorded parent event, if any.
-        name: Canonical dispatched operation name.
+        name: Canonical dispatched operation name or movement phase.
         carrier_type: Exact carrier class that dispatched the operation.
         implementation_type: Exact executed ``Operation`` implementation class.
         input_shapes: Hierarchical tensor shape snapshots by argument position, with
@@ -110,6 +113,107 @@ class ProfilerEvent:
             thread_id=event.thread_id,
             succeeded=event.succeeded,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalEvent:
+    key: tuple[str, int, str]
+    parent_key: tuple[str, int, str] | None
+    name: str
+    carrier_type: type[Carrier]
+    implementation_type: type[Any]
+    input_shapes: InputShapes | None
+    start_time_ns: int
+    duration_ns: int
+    thread_id: int
+    succeeded: bool
+
+
+def _shape_snapshot(level: object) -> ShapeSnapshot:
+    return tuple(
+        child if isinstance(child, int) else _shape_snapshot(child)
+        for child in cast(Iterable[object], level)
+    )
+
+
+class _MoveProfileToken:
+    __slots__ = (
+        "_carrier_type",
+        "_completed",
+        "_implementation_type",
+        "_input_shapes",
+        "_profiler",
+        "_request_id",
+        "_start_time_ns",
+        "_submitted_time_ns",
+    )
+
+    def __init__(
+        self,
+        profiler: Profiler | None,
+        request_id: int = -1,
+        carrier_type: type[Carrier] | None = None,
+        implementation_type: type[Any] | None = None,
+        input_shapes: InputShapes | None = None,
+    ) -> None:
+        self._profiler = profiler
+        self._request_id = request_id
+        self._carrier_type = carrier_type
+        self._implementation_type = implementation_type
+        self._input_shapes = input_shapes
+        self._start_time_ns = time.monotonic_ns()
+        self._submitted_time_ns: int | None = None
+        self._completed = False
+
+    def submitted(self, succeeded: bool) -> None:
+        profiler = self._profiler
+        if profiler is None or self._submitted_time_ns is not None:
+            return
+        finished = time.monotonic_ns()
+        self._submitted_time_ns = finished
+        profiler._record_move_phase(
+            request_id=self._request_id,
+            phase="submit",
+            parent_phase=None,
+            name="move.submit",
+            carrier_type=cast(type[Carrier], self._carrier_type),
+            implementation_type=cast(type[Any], self._implementation_type),
+            input_shapes=self._input_shapes,
+            start_time_ns=self._start_time_ns,
+            duration_ns=finished - self._start_time_ns,
+            succeeded=succeeded,
+        )
+
+    def completed(self, succeeded: bool) -> None:
+        profiler = self._profiler
+        if profiler is None or self._completed:
+            return
+        self._completed = True
+        started = self._submitted_time_ns
+        if started is None:
+            self.submitted(False)
+            started = cast(int, self._submitted_time_ns)
+        finished = time.monotonic_ns()
+        profiler._record_move_phase(
+            request_id=self._request_id,
+            phase="complete",
+            parent_phase="submit",
+            name="move.complete",
+            carrier_type=cast(type[Carrier], self._carrier_type),
+            implementation_type=cast(type[Any], self._implementation_type),
+            input_shapes=self._input_shapes,
+            start_time_ns=started,
+            duration_ns=finished - started,
+            succeeded=succeeded,
+        )
+        profiler._finish_move_profile()
+
+    def abandon(self) -> None:
+        profiler = self._profiler
+        if profiler is None or self._completed:
+            return
+        self._completed = True
+        profiler._finish_move_profile()
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +325,12 @@ class Profiler:
         self._active = False
         self._completed = False
         self._events: tuple[ProfilerEvent, ...] = ()
+        self._native_events: tuple[_RawEvent, ...] = ()
+        self._external_events: list[_ExternalEvent] = []
+        self._events_dirty = False
+        self._external_pending = 0
+        self._next_external_request = 0
+        self._external_lock = threading.RLock()
 
         if not isinstance(record_shapes, bool):
             raise TypeError("record_shapes must be a bool")
@@ -240,12 +350,16 @@ class Profiler:
             ):
                 raise TypeError("carriers must contain only Carrier subclasses")
 
+        self._carrier_types = carrier_types
+        self._record_shapes = record_shapes
         self._session = _raw_session_factory(carrier_types, record_shapes)
 
     def __del__(self) -> None:
         session = self._session
         if self._active and session is not None:
             session._abandon()
+        if getattr(_active_profiler, "current", None) is self:
+            _active_profiler.current = None
 
     def __enter__(self) -> Self:
         if self._entered:
@@ -256,6 +370,7 @@ class Profiler:
             raise RuntimeError("Profiler native session is unavailable")
         session.start()
         self._active = True
+        _active_profiler.current = self
         return self
 
     def __exit__(
@@ -271,11 +386,136 @@ class Profiler:
             raise RuntimeError("Profiler native session is unavailable")
         session.stop()
         self._active = False
+        if getattr(_active_profiler, "current", None) is self:
+            _active_profiler.current = None
         raw_events = session.events()
-        self._events = tuple(ProfilerEvent._from_raw(event) for event in raw_events)
+        with self._external_lock:
+            self._native_events = raw_events
+            self._completed = True
+            self._refresh_events_locked()
+            self._events_dirty = False
         self._session = None
-        self._completed = True
         return False
+
+    def _begin_move_profile(
+        self, tensor: Any, implementation_type: type[Any]
+    ) -> _MoveProfileToken:
+        carrier_type = type(tensor.carrier)
+        carrier_types = self._carrier_types
+        if carrier_types is not None and carrier_type not in carrier_types:
+            return _MoveProfileToken(None)
+        input_shapes = (
+            (_shape_snapshot(tensor.layout.shape.top_level),)
+            if self._record_shapes
+            else None
+        )
+        with self._external_lock:
+            request_id = self._next_external_request
+            self._next_external_request += 1
+            self._external_pending += 1
+        return _MoveProfileToken(
+            self,
+            request_id,
+            carrier_type,
+            implementation_type,
+            input_shapes,
+        )
+
+    def _record_move_phase(
+        self,
+        *,
+        request_id: int,
+        phase: str,
+        parent_phase: str | None,
+        name: str,
+        carrier_type: type[Carrier],
+        implementation_type: type[Any],
+        input_shapes: InputShapes | None,
+        start_time_ns: int,
+        duration_ns: int,
+        succeeded: bool,
+    ) -> None:
+        parent_key = (
+            ("move", request_id, parent_phase) if parent_phase is not None else None
+        )
+        event = _ExternalEvent(
+            key=("move", request_id, phase),
+            parent_key=parent_key,
+            name=name,
+            carrier_type=carrier_type,
+            implementation_type=implementation_type,
+            input_shapes=input_shapes,
+            start_time_ns=start_time_ns,
+            duration_ns=duration_ns,
+            thread_id=threading.get_ident(),
+            succeeded=succeeded,
+        )
+        with self._external_lock:
+            self._external_events.append(event)
+            self._events_dirty = True
+
+    def _finish_move_profile(self) -> None:
+        with self._external_lock:
+            if self._external_pending > 0:
+                self._external_pending -= 1
+            if self._completed and self._external_pending == 0 and self._events_dirty:
+                self._refresh_events_locked()
+                self._events_dirty = False
+
+    def _refresh_events_locked(self) -> None:
+        combined: list[
+            tuple[
+                tuple[str, int, str],
+                tuple[str, int, str] | None,
+                ProfilerEvent,
+            ]
+        ] = []
+        for event in self._native_events:
+            key = ("native", event.id, "event")
+            parent_key = (
+                ("native", event.parent_id, "event")
+                if event.parent_id is not None
+                else None
+            )
+            combined.append((key, parent_key, ProfilerEvent._from_raw(event)))
+        for event in self._external_events:
+            combined.append(
+                (
+                    event.key,
+                    event.parent_key,
+                    ProfilerEvent(
+                        id=-1,
+                        parent_id=None,
+                        name=event.name,
+                        carrier_type=event.carrier_type,
+                        implementation_type=event.implementation_type,
+                        input_shapes=event.input_shapes,
+                        start_time_ns=event.start_time_ns,
+                        duration_ns=event.duration_ns,
+                        self_time_ns=event.duration_ns,
+                        thread_id=event.thread_id,
+                        succeeded=event.succeeded,
+                    ),
+                )
+            )
+        combined.sort(key=lambda entry: (entry[2].start_time_ns, entry[0]))
+        ids = {key: index for index, (key, _parent, _event) in enumerate(combined)}
+        self._events = tuple(
+            ProfilerEvent(
+                id=index,
+                parent_id=(ids.get(parent_key) if parent_key is not None else None),
+                name=event.name,
+                carrier_type=event.carrier_type,
+                implementation_type=event.implementation_type,
+                input_shapes=event.input_shapes,
+                start_time_ns=event.start_time_ns,
+                duration_ns=event.duration_ns,
+                self_time_ns=event.self_time_ns,
+                thread_id=event.thread_id,
+                succeeded=event.succeeded,
+            )
+            for index, (_key, parent_key, event) in enumerate(combined)
+        )
 
     def _require_completed(self) -> None:
         if not self._completed:
@@ -302,7 +542,8 @@ class Profiler:
         """
 
         self._require_completed()
-        return self._events
+        with self._external_lock:
+            return self._events
 
     def key_averages(
         self, *, group_by_input_shape: bool = False
@@ -335,7 +576,7 @@ class Profiler:
         grouped: dict[
             tuple[str, type[Carrier], InputShapes | None], _AggregateAccumulator
         ] = {}
-        for event in self._events:
+        for event in self.events():
             input_shapes = event.input_shapes if group_by_input_shape else None
             key = (event.name, event.carrier_type, input_shapes)
             accumulator = grouped.get(key)
@@ -508,6 +749,17 @@ def profile(
     """
 
     return Profiler(carriers=carriers, record_shapes=record_shapes)
+
+
+def _begin_move_profile(
+    tensor: Any, implementation_type: type[Any]
+) -> _MoveProfileToken:
+    """Capture the active caller-thread profiler for one logical move."""
+
+    profiler = getattr(_active_profiler, "current", None)
+    if not isinstance(profiler, Profiler) or not profiler._active:
+        return _MoveProfileToken(None)
+    return profiler._begin_move_profile(tensor, implementation_type)
 
 
 __all__ = [

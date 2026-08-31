@@ -254,6 +254,8 @@ PYBIND11_MODULE(_carrier, module) {
         .def("dlpack_info", &Carrier::dlpack_info)
         .def_property_readonly("version", &Carrier::version)
         .def("_increment_version", &Carrier::increment_version)
+        .def("_restore_definition_state", &Carrier::restore_definition_state,
+             py::arg("version"), py::arg("is_released"))
         .def("is_released", &Carrier::is_released)
         .def("release", &Carrier::release,
              "Release the carrier's storage; further element access raises.\n\n"

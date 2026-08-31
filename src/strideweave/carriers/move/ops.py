@@ -75,6 +75,8 @@ class MoveOperation(Operation):
 
     source_class: ClassVar[type | None] = None
     destination_class: ClassVar[type | None] = None
+    _async_reverse_route: Any | None = None
+    _async_destination_prototype: Any | None = None
 
     def _forward(self, tensor: Any, destination: Any) -> Any:
         from ...tensor import Tensor
@@ -117,12 +119,21 @@ class MoveOperation(Operation):
         raise NotImplementedError
 
     def backward(self, gradient: Any) -> tuple[Any]:
+        if self._async_reverse_route is not None:
+            from .async_move import _move_backward
+
+            return _move_backward(self, gradient)
         (tensor,) = self.inputs()
         gradient = _require_live_tensor(gradient, "gradient")
         _require_same_shape(tensor, gradient)
         if not gradient.layout.is_injective:
             raise ValueError("Move backward requires an injective gradient layout")
         return (_detached_tensor_like(tensor, _logical_values(gradient)),)
+
+    def _release_autograd_state(self) -> None:
+        Operation._release_autograd_state(self)
+        self._async_reverse_route = None
+        self._async_destination_prototype = None
 
 
 class ElementwiseMoveOperation(MoveOperation):
@@ -209,6 +220,8 @@ class _MetalMoveOperation(MoveOperation):
         return output
 
     def backward(self, gradient: Any) -> tuple[Any]:
+        if self._async_reverse_route is not None:
+            return super().backward(gradient)
         from ...tensor import Tensor
 
         (tensor,) = self.inputs()
@@ -439,6 +452,29 @@ def _register_block_move_operation(
     _BLOCK_MOVE_OPERATIONS[key] = operation_class
 
 
+def _require_carrier_class(value: object, name: str) -> type[Carrier]:
+    if not isinstance(value, type) or not issubclass(value, Carrier):
+        raise TypeError(f"{name} must be a Carrier subclass")
+    return value
+
+
+def _require_legacy_pair(
+    source_class: object, destination_class: object
+) -> tuple[type[Carrier], type[Carrier]]:
+    from ..extension import _observe_carrier_definition
+
+    source = _require_carrier_class(source_class, "source_class")
+    destination = _require_carrier_class(destination_class, "destination_class")
+    source_definition = _observe_carrier_definition(source)
+    destination_definition = _observe_carrier_definition(destination)
+    if source_definition is not None or destination_definition is not None:
+        raise RuntimeError(
+            "legacy move registry APIs cannot name a definition-backed carrier; "
+            "express movement with an exact TransferRoute"
+        )
+    return source, destination
+
+
 def register_move_operation(
     source_class: type,
     destination_class: type,
@@ -469,12 +505,9 @@ def register_move_operation(
         True
     """
 
-    if not (isinstance(source_class, type) and issubclass(source_class, Carrier)):
-        raise TypeError("source_class must be a Carrier subclass")
-    if not (
-        isinstance(destination_class, type) and issubclass(destination_class, Carrier)
-    ):
-        raise TypeError("destination_class must be a Carrier subclass")
+    source_class, destination_class = _require_legacy_pair(
+        source_class, destination_class
+    )
     if not (
         isinstance(operation_class, type) and issubclass(operation_class, MoveOperation)
     ):
@@ -517,6 +550,9 @@ def unregister_move_operation(
         True
     """
 
+    source_class, destination_class = _require_legacy_pair(
+        source_class, destination_class
+    )
     key = (source_class, destination_class)
     if _involves_block_device(*key):
         raise ValueError("block-device move registrations are protected built-ins")
@@ -597,6 +633,9 @@ def dispatch_move(source_class: type, destination_class: type) -> type[MoveOpera
         <class '...CpuToFileBackedMoveOperation'>
     """
 
+    source_class, destination_class = _require_legacy_pair(
+        source_class, destination_class
+    )
     key = (source_class, destination_class)
     operation_class = _MOVE_OPERATIONS.get(key)
     if operation_class is not None:

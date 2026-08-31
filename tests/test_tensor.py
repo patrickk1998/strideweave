@@ -51,7 +51,11 @@ class UnsupportedData(Carrier):
         return self.values[index]
 
     def new_like(
-        self, values: Iterable[Any], *, mutable: bool = True
+        self,
+        values: Iterable[Any],
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
     ) -> "UnsupportedData":
         return UnsupportedData(list(values))
 

@@ -428,9 +428,17 @@ class CpuBackedCarrier(Carrier):
     def set_value(self, index: int, value: Any) -> None:
         self._inner[index] = value
 
-    def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> Any:
+    def new_like(
+        self,
+        values: Iterable[Any],
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
+    ) -> Any:
         materialized = list(values)
-        result = type(self)(len(materialized), dtype=self.dtype())
+        result = type(self)(
+            len(materialized), dtype=self.dtype() if dtype is None else dtype
+        )
         for index, value in enumerate(materialized):
             result[index] = value
         return result

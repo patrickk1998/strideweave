@@ -49,7 +49,13 @@ class GenericBackedCarrier(Carrier):
     def set_value(self, index: int, value: Any) -> None:
         self._inner[index] = value
 
-    def new_like(self, values: Iterable[Any], *, mutable: bool = True) -> Any:
+    def new_like(
+        self,
+        values: Iterable[Any],
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
+    ) -> Any:
         return type(self)(list(values))
 
     def allocate_like(

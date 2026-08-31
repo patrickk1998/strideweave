@@ -189,7 +189,7 @@ def test_move_rejects_non_data_destination():
     tensor = make_cpu_tensor([1.0])
 
     with pytest.raises(TypeError, match="Carrier instance"):
-        sw.move(tensor, CPU)
+        sw.move(tensor, CPU)  # pyright: ignore[reportArgumentType]
     assert not tensor.carrier.is_released()
 
 

@@ -1,5 +1,7 @@
 """Operations that move tensors between carriers."""
 
+from .async_move import move_async
+from .await_result import AwaitMove, AwaitResult
 from .ops import (
     BlockDeviceToCpuMoveOperation,
     CpuToBlockDeviceMoveOperation,
@@ -17,6 +19,8 @@ from .ops import (
 )
 
 __all__ = [
+    "AwaitMove",
+    "AwaitResult",
     "BlockDeviceToCpuMoveOperation",
     "CpuToBlockDeviceMoveOperation",
     "CpuToFileBackedMoveOperation",
@@ -27,6 +31,7 @@ __all__ = [
     "MetalToMetalMoveOperation",
     "MoveOperation",
     "dispatch_move",
+    "move_async",
     "register_move_operation",
     "registered_move_operation",
     "unregister_move_operation",

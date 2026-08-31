@@ -414,10 +414,27 @@ def _require_extensible_carrier_class(carrier_class: object) -> type:
     has had its answer fixed.
     """
     _require_declarable_carrier_class(carrier_class)
+    from .extension import (
+        _has_carrier_definition,
+        _is_carrier_definition_observed,
+    )
+
+    if _has_carrier_definition(cast(type, carrier_class)):
+        raise TypeError(
+            f"{cast(type, carrier_class).__name__} has a CarrierDefinition; "
+            "its capabilities derive from that definition rather than a manual "
+            "class declaration"
+        )
     if _DECLARED.get(cast(type, carrier_class)) is not None:
-        # Reported here so an ineligible class is refused before its entries are
-        # examined; the check is repeated under the lock, which is authoritative.
+        # Preserve the established capability-sealing diagnostic when a
+        # capability observation (rather than construction alone) fixed the
+        # exact class's answer.
         raise _declaration_closed_error(cast(type, carrier_class))
+    if _is_carrier_definition_observed(cast(type, carrier_class)):
+        raise TypeError(
+            f"{cast(type, carrier_class).__name__} was already observed; its exact "
+            "extension and capability authority is sealed"
+        )
     return cast(type, carrier_class)
 
 
@@ -443,17 +460,32 @@ def _observed_capabilities(
     The seal is taken under the lock, but only once — a class already sealed is
     read without one, which keeps the execution gate lock-free.
     """
-    declared = _DECLARED.get(carrier_class)
-    if declared is not None:
-        return declared
-    if not _is_independent_carrier_class(carrier_class):
-        return _EMPTY
-    with _LOCK:
+    from .extension import _LOCK as definition_lock
+    from .extension import (
+        _definition_kernel_capabilities,
+        _observe_carrier_definition,
+    )
+
+    # Hold the definition registry across capability sealing. Definition and
+    # manual capability registration use the same definition-then-capability
+    # lock order, making first observation one atomic authority decision.
+    with definition_lock:
+        definition = _observe_carrier_definition(carrier_class)
+        if definition is not None:
+            capabilities = _definition_kernel_capabilities(carrier_class)
+            return {_capability_key(entry): entry for entry in capabilities}
+
         declared = _DECLARED.get(carrier_class)
-        if declared is None:
-            declared = _EMPTY
-            _DECLARED[carrier_class] = declared
-        return declared
+        if declared is not None:
+            return declared
+        if not _is_independent_carrier_class(carrier_class):
+            return _EMPTY
+        with _LOCK:
+            declared = _DECLARED.get(carrier_class)
+            if declared is None:
+                declared = _EMPTY
+                _DECLARED[carrier_class] = declared
+            return declared
 
 
 def _validated_entries(
@@ -616,17 +648,26 @@ def register_operation_capabilities(
         >>> supports_operation_plan(TinyCarrier, plan)
         True
     """
-    _require_extensible_carrier_class(carrier_class)
+    from .extension import _LOCK as definition_lock
+    from .extension import _has_carrier_definition
+
+    # Materialize before either lock; invalid input publishes no authority.
+    _require_declarable_carrier_class(carrier_class)
     entries = _validated_entries(capabilities)
     declaration = _complete_declaration(carrier_class, entries)
-    with _LOCK:
-        # The authoritative check: every path that fixes a class's answer —
-        # another declaration, the built-in bootstrap, or a first observation —
-        # publishes under this same lock, so no registration can slip between
-        # one of them and its seal.
-        if _DECLARED.get(carrier_class) is not None:
-            raise _declaration_closed_error(carrier_class)
-        _DECLARED[carrier_class] = declaration
+    with definition_lock:
+        _require_extensible_carrier_class(carrier_class)
+        with _LOCK:
+            # The authoritative check: every path that fixes a class's answer
+            # publishes under the same definition-then-capability lock order.
+            if _has_carrier_definition(carrier_class):
+                raise TypeError(
+                    f"{carrier_class.__name__} has a CarrierDefinition; its "
+                    "capabilities derive from that definition"
+                )
+            if _DECLARED.get(carrier_class) is not None:
+                raise _declaration_closed_error(carrier_class)
+            _DECLARED[carrier_class] = declaration
 
 
 # --- Carriers whose capabilities depend on the carriers they compose ---------
@@ -711,7 +752,19 @@ def _freeze_instance_capabilities(carrier: DependentCarrier) -> None:
     name = type(carrier).__name__
     if _frozen_instance_snapshot(carrier) is not None:
         raise _already_finalized_error(name)
-    entries = _validated_entries(carrier._generate_operation_capabilities())
+    from .extension import _observe_carrier_definition
+
+    definition = _observe_carrier_definition(type(carrier))
+    if definition is None:
+        generated = carrier._generate_operation_capabilities()
+    else:
+        if definition.composite is None:
+            raise TypeError(
+                f"{type(carrier).__name__} is a definition-backed "
+                "DependentCarrier without a CompositeProvider"
+            )
+        generated = definition.composite.capabilities(carrier)
+    entries = _validated_entries(generated)
     frozen: dict[_CapabilityKey, OperationCapability] = {}
     for entry in sorted(entries, key=_sort_key):
         key = _capability_key(entry)

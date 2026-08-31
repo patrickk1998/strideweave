@@ -19,6 +19,7 @@ from strideweave import (
     Metal,
     Shape,
     Stride,
+    TiledEvictable,
 )
 from strideweave.carriers.base import CLOSED_CARRIER_MESSAGE
 from strideweave.tensor import Tensor
@@ -46,7 +47,11 @@ class PythonCarrier(Carrier):
         return self.values[index]
 
     def new_like(
-        self, values: Iterable[Any], *, mutable: bool = True
+        self,
+        values: Iterable[Any],
+        *,
+        mutable: bool = True,
+        dtype: DType | None = None,
     ) -> "PythonCarrier":
         return type(self)(list(values))
 
@@ -173,7 +178,15 @@ def test_carrier_dispatch_policy_rejects_cached_dispatched_operation():
 # exact class, so a specialization would inherit claims it cannot honor.
 
 
-CLOSED_CARRIERS = (Generic, CPU, FileBacked, Metal, BlockDeviceCarrier, Evictable)
+CLOSED_CARRIERS = (
+    Generic,
+    CPU,
+    FileBacked,
+    Metal,
+    BlockDeviceCarrier,
+    Evictable,
+    TiledEvictable,
+)
 
 
 @pytest.mark.parametrize("carrier_class", CLOSED_CARRIERS)
@@ -208,6 +221,7 @@ PUBLIC_CARRIER_MODULES = {
     Metal: "strideweave.carriers.metal",
     BlockDeviceCarrier: "strideweave.carriers.block_device",
     Evictable: "strideweave.carriers.evictable",
+    TiledEvictable: "strideweave.carriers.tiled_evictable",
 }
 
 

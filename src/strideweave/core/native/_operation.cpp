@@ -263,6 +263,18 @@ public:
     py::object backward(py::object gradient) override {
         PYBIND11_OVERRIDE_PURE(py::object, Operation, backward, gradient);
     }
+
+    bool _accepts_multiple_results() const override {
+        PYBIND11_OVERRIDE(bool, Operation, _accepts_multiple_results);
+    }
+
+    bool _allows_autograd() const override {
+        PYBIND11_OVERRIDE(bool, Operation, _allows_autograd);
+    }
+
+    py::object _autograd_context_for_result(std::size_t index) override {
+        PYBIND11_OVERRIDE(py::object, Operation, _autograd_context_for_result, index);
+    }
 };
 
 }  // namespace
@@ -272,18 +284,14 @@ py::object strideweave::operation::Operation::execute(py::args inputs) {
     RawProfilerSession* profiler = active_profiler;
     if (profiler == nullptr || profiler->is_abandoned() || !is_dispatched()) {
         py::object result = _forward(inputs);
-        if (!py::isinstance(result, tensor_type())) {
-            throw py::type_error("Operation._forward must return a Tensor");
-        }
+        validated_results(result);
         return result;
     }
 
     profiler->begin(*this, inputs);
     try {
         py::object result = _forward(inputs);
-        if (!py::isinstance(result, tensor_type())) {
-            throw py::type_error("Operation._forward must return a Tensor");
-        }
+        validated_results(result);
         profiler->finish(true);
         return result;
     } catch (...) {

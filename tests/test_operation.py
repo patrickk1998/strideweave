@@ -1,4 +1,6 @@
+import gc
 import threading
+import weakref
 from typing import Any
 
 import pytest
@@ -22,6 +24,15 @@ class EchoOperation(Operation):
 class NonTensorForwardOperation(Operation):
     def _forward(self, *inputs: Any) -> tuple[Any, ...]:
         return inputs
+
+    def backward(self, gradient: Any) -> tuple[Any, ...]:
+        return tuple(gradient for _ in self.inputs())
+
+
+class RaisingForwardOperation(Operation):
+    def _forward(self, *inputs: Any) -> Tensor:
+        del inputs
+        raise RuntimeError("forward failed")
 
     def backward(self, gradient: Any) -> tuple[Any, ...]:
         return tuple(gradient for _ in self.inputs())
@@ -277,6 +288,37 @@ def test_operation_forward_requires_tensor_result():
     with pytest.raises(TypeError):
         operation.forward(tensor)
 
+    assert operation.inputs() == ()
+    assert operation.input_versions() == ()
+
+
+def test_operation_forward_exception_clears_saved_input_references():
+    operation = RaisingForwardOperation()
+    tensor = make_tensor([1, 2])
+    tensor_reference = weakref.ref(tensor)
+
+    with pytest.raises(RuntimeError, match="forward failed"):
+        operation.forward(tensor)
+
+    assert operation.inputs() == ()
+    assert operation.input_versions() == ()
+    del tensor
+    gc.collect()
+    assert tensor_reference() is None
+
+
+def test_successful_forward_retains_inputs_until_backward_releases_graph():
+    operation = EchoOperation()
+    tensor = make_tensor([1, 2])
+
+    result = operation.forward(tensor)
+
+    assert operation.inputs() == (tensor,)
+    assert operation.input_versions() == (tensor._version_token(),)
+    result.backward(make_tensor([1, 1]))
+    assert operation.inputs() == ()
+    assert operation.input_versions() == ()
+
 
 def test_lowered_execution_requires_tensor_result():
     operation = NonTensorForwardOperation()
@@ -299,6 +341,21 @@ def test_lowered_execution_preserves_delegated_state_without_attaching_graph():
     assert result.autograd_ctx is None
     assert operation.inputs() == (saved,)
     assert operation.ctx["input_count"] == 1
+
+
+def test_lowered_execution_failure_preserves_delegated_state():
+    operation = RaisingForwardOperation()
+    saved = make_tensor([1, 2])
+    operation.store_inputs(saved)
+    saved_versions = operation.input_versions()
+
+    with pytest.raises(RuntimeError, match="forward failed"):
+        operation._execute_lowered(  # strideweave-lint: ignore=RT011
+            make_tensor([3, 4])
+        )
+
+    assert operation.inputs() == (saved,)
+    assert operation.input_versions() == saved_versions
 
 
 def test_operation_subclass_missing_forward_raises():

@@ -61,16 +61,28 @@ public:
             clear_inputs();
         }
 
-        py::object result = execute(inputs);
-        const bool build_autograd_graph =
-            should_store_inputs && is_differentiable_tensor(result);
-        if (build_autograd_graph) {
-            result.attr("autograd_ctx") =
-                py::cast(this, py::return_value_policy::reference);
-        } else {
+        try {
+            py::object result = execute(inputs);
+            std::vector<py::object> results = validated_results(result);
+            bool built_autograd_graph = false;
+            if (should_store_inputs && _allows_autograd()) {
+                for (std::size_t index = 0; index < results.size(); ++index) {
+                    if (!is_differentiable_tensor(results[index])) {
+                        continue;
+                    }
+                    results[index].attr("autograd_ctx") =
+                        _autograd_context_for_result(index);
+                    built_autograd_graph = true;
+                }
+            }
+            if (!built_autograd_graph) {
+                clear_inputs();
+            }
+            return result;
+        } catch (...) {
             clear_inputs();
+            throw;
         }
-        return result;
     }
 
     py::object execute_lowered(py::args inputs, py::kwargs kwargs) {
@@ -81,6 +93,17 @@ public:
 
     virtual py::object _forward(py::args inputs) = 0;
     virtual py::object backward(py::object gradient) = 0;
+
+    virtual bool _accepts_multiple_results() const { return false; }
+
+    virtual bool _allows_autograd() const { return true; }
+
+    virtual py::object _autograd_context_for_result(std::size_t index) {
+        if (index != 0U) {
+            throw std::out_of_range("single-result Operation context index is invalid");
+        }
+        return py::cast(this, py::return_value_policy::reference);
+    }
 
     py::dict ctx() const { return ctx_; }
 
@@ -139,6 +162,31 @@ protected:
 
 private:
     py::object execute(py::args inputs);
+
+    std::vector<py::object> validated_results(py::handle result) {
+        py::object tensor = tensor_type();
+        if (py::isinstance(result, tensor)) {
+            return {py::reinterpret_borrow<py::object>(result)};
+        }
+        if (!_accepts_multiple_results() || !py::isinstance<py::tuple>(result)) {
+            throw py::type_error("Operation._forward must return a Tensor");
+        }
+        py::tuple results = py::reinterpret_borrow<py::tuple>(result);
+        if (results.empty()) {
+            throw py::type_error(
+                "multi-result Operation._forward must return a non-empty Tensor tuple");
+        }
+        std::vector<py::object> tensors;
+        tensors.reserve(results.size());
+        for (py::handle item : results) {
+            if (!py::isinstance(item, tensor)) {
+                throw py::type_error(
+                    "multi-result Operation._forward must return only Tensors");
+            }
+            tensors.push_back(py::reinterpret_borrow<py::object>(item));
+        }
+        return tensors;
+    }
 
     py::object validated_execution_options(py::kwargs kwargs) const {
         if (kwargs.empty()) {
