@@ -22,9 +22,7 @@ dispatching implementation, and composes operations across carrier boundaries.
 | dispatch hook | The protected carrier-extension factory `_dispatch_op(operation_name)`, which supplies a fresh carrier-specific `Operation` while public dispatch retains validation, freshness enforcement, and metadata ownership. |
 | lowered execution | The framework-controlled path for running a nested operation while preserving ordinary preflight, execution-option validation, result validation, profiling and computation hooks, and delegated backward state, but creating no nested visible autograd node. |
 | composite adapter | A fresh outer-carrier `Operation` that is the sole visible dispatch and autograd boundary for delegated work, owns one fresh nested operation, enforces the outer capability gate for planned operations, translates outer operands into the nested representation, and restores results and gradients to the outer representation. |
-
 ## Requirements
-
 ### Requirement: Dispatch is an instance operation
 
 `carrier.dispatch_op(operation_name)` SHALL require a `Carrier` instance and a
@@ -186,24 +184,32 @@ every computational dispatch name.
 
 ### Requirement: Planned execution passes the backend capability gate
 
-Before a planned simple-dtype operation allocates output or performs backend
+Before a registered dtype-planned operation allocates output or performs backend
 work, the implementation SHALL resolve the central `OperationPlan` and require
-an exact matching backend capability as defined by `backend-capabilities`.
-The implementation SHALL execute operand conversions, arithmetic,
-accumulation, and output dtype from that accepted plan rather than deriving a
-local policy.
+an exact matching backend capability as defined by `backend-capabilities`. The
+implementation SHALL execute operand conversions, arithmetic, accumulation,
+and output dtype from that accepted plan rather than deriving a local policy.
 
-Generic, CPU, and Metal SHALL apply this preflight to their planned operations.
-An unsupported plan SHALL raise `UnsupportedOperationPlan` before result
-allocation, compilation, or kernel entry. An operation name absent from the
-policy and a legacy opaque Generic operation MAY retain their documented
-unplanned path.
+Generic, CPU, Metal, and a composite adapter for a registered operation SHALL
+apply this preflight. An unsupported resolved plan SHALL raise
+`UnsupportedOperationPlan` before result allocation, compilation, or kernel
+entry. An operand dtype that central planning rejects SHALL propagate that
+planning failure before capability lookup or backend work. Only an operation
+name absent from the dtype-policy registry MAY retain a documented unplanned
+path; no category-backed Generic operation receives an exception.
 
 #### Scenario: Refuse a plan before backend work
 
 - **WHEN** dispatch reaches a resolved plan the carrier does not advertise
 - **THEN** execution raises `UnsupportedOperationPlan` before allocating,
   compiling, or entering the implementation
+
+#### Scenario: Reject a category before backend work
+
+- **WHEN** a registered Generic operation is presented with an abstract dtype
+  category
+- **THEN** central planning fails with `TypeError` before result allocation,
+  capability execution, or kernel entry
 
 ### Requirement: Execution options are validated at the dispatched boundary
 
@@ -286,13 +292,17 @@ class. A missing Tensor input or wrong Tensor carrier SHALL fail with
 `TypeError`; mismatched hierarchy classes SHALL fail with `TypeError`; an
 evicted input SHALL fail with `RuntimeError` requiring promotion.
 
-For a registered simple-dtype operation, the adapter SHALL resolve the plan
-from the outer operands and validated options and require it against the outer
-hierarchy's snapshot before lowering. The adapter SHALL wrap newly allocated
-primary results into a fresh hierarchy of the same tier classes, leaving its
-secondary empty until first eviction. A representation-preserving operation
-whose primary result reuses the same primary carrier SHALL reuse the same
-Evictable carrier.
+For every operation registered in the dtype policy, the adapter SHALL resolve
+the plan from the outer operands and validated options and require it against
+the outer hierarchy's snapshot before lowering. A planning failure, including
+the `TypeError` for an abstract dtype category, SHALL propagate before nested
+allocation, lowering, or execution. The adapter SHALL have no category-backed
+planning or capability bypass.
+
+The adapter SHALL wrap newly allocated primary results into a fresh hierarchy
+of the same tier classes, leaving its secondary empty until first eviction. A
+representation-preserving operation whose primary result reuses the same
+primary carrier SHALL reuse the same Evictable carrier.
 
 #### Scenario: Refuse mismatched hierarchies
 
@@ -305,6 +315,13 @@ Evictable carrier.
 - **WHEN** compatible promoted hierarchies advertise the resolved outer plan
 - **THEN** the adapter lowers to the primary, executes once, and restores an
   Evictable result using the same hierarchy kinds
+
+#### Scenario: Reject an abstract category before lowering
+
+- **WHEN** a registered operation receives an Evictable operand whose logical
+  dtype is an abstract category
+- **THEN** central planning fails with `TypeError` before nested allocation,
+  lowering, or execution
 
 ### Requirement: Evictable backward restores outer gradients
 

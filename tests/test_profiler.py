@@ -32,7 +32,7 @@ class GenericBackedCarrier(Carrier):
 
     def __init__(self, values: list[float]):
         super().__init__()
-        self._inner = Generic(values)
+        self._inner = Generic(values, dtype=DType.Float32)
 
     def size(self) -> int:
         return self._inner.size()
@@ -85,7 +85,7 @@ class GenericBackedCarrier(Carrier):
 
 def tensor(values: list[float]) -> Tensor:
     return Tensor(
-        Generic(values),
+        Generic(values, dtype=DType.Float32),
         0,
         Layout(Shape(len(values)), Stride(1)),
     )
@@ -93,7 +93,9 @@ def tensor(values: list[float]) -> Tensor:
 
 def evictable_tensor(values: list[float]) -> Tensor:
     return Tensor(
-        Evictable(Generic(values), Generic([])),
+        Evictable(
+            Generic(values, dtype=DType.Float32), Generic([], dtype=DType.Float32)
+        ),
         0,
         Layout(Shape(len(values)), Stride(1)),
     )
@@ -147,7 +149,12 @@ def test_profiler_carrier_filter_uses_exact_classes():
 
 @pytest.mark.parametrize(
     "carriers",
-    [Generic([1.0]), [Generic([1.0])], [str], 1],
+    [
+        Generic([1.0], dtype=DType.Float32),
+        [Generic([1.0], dtype=DType.Float32)],
+        [str],
+        1,
+    ],
 )
 def test_profiler_rejects_invalid_carrier_filters(carriers):
     with pytest.raises(TypeError, match="Carrier"):

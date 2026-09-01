@@ -173,8 +173,7 @@ py::object dtype_object(const char* name) {
 }
 
 bool is_differentiable_dtype(py::handle dtype) {
-    return objects_equal(dtype, dtype_object("Float32")) ||
-           objects_equal(dtype, dtype_object("Floating"));
+    return dtype.is(dtype_object("Float32"));
 }
 
 DLPackDTypeInfo dlpack_dtype_info(py::handle dtype) {

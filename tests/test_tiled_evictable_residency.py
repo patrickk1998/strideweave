@@ -94,13 +94,7 @@ def test_construction_exposes_flat_extent_and_canonical_geometry() -> None:
         (
             lambda: sw.Generic([0.0], dtype=DType.Float32),
             lambda: sw.Generic([], dtype=DType.Float32),
-            (
-                DType.Any,
-                DType.Floating,
-                DType.Float32,
-                DType.Int32,
-                DType.Bool,
-            ),
+            (DType.Float32, DType.Int32, DType.Bool),
         ),
         (
             lambda: sw.CPU(1, dtype=DType.Float32),
@@ -110,7 +104,7 @@ def test_construction_exposes_flat_extent_and_canonical_geometry() -> None:
         (
             lambda: sw.Generic([0.0], dtype=DType.Float32),
             lambda: sw.FileBacked(dtype=DType.Float32),
-            (DType.Floating, DType.Float32, DType.Int32),
+            (DType.Float32, DType.Int32),
         ),
     ],
     ids=("generic-generic", "cpu-file-backed", "generic-file-backed"),
@@ -200,7 +194,7 @@ def test_tile_state_reports_location_validity_and_dirty_metadata() -> None:
     [
         (object(), _carrier(), GRID, TILE, TypeError),
         (_carrier(), object(), GRID, TILE, TypeError),
-        (_carrier([1.0]), Generic([0], dtype=DType.Any), GRID, TILE, TypeError),
+        (_carrier([1.0]), Generic([0], dtype=DType.Int32), GRID, TILE, TypeError),
         (_carrier([1.0]), _carrier(), GRID, TILE, ValueError),
         (_carrier(), _carrier(), (2,), TILE, ValueError),
         (_carrier(), _carrier(), GRID, (0, 2), ValueError),
@@ -423,8 +417,8 @@ def test_many_tile_residency_uses_bounded_workers_and_survives_dropped_handle(
     async_move = import_module("strideweave.carriers.move.async_move")
     tile_count = 32
     carrier = TiledEvictable(
-        Generic([float(index) for index in range(tile_count)]),
-        Generic([]),
+        Generic([float(index) for index in range(tile_count)], dtype=DType.Float32),
+        Generic([], dtype=DType.Float32),
         (tile_count,),
         (1,),
     )

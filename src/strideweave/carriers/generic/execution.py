@@ -1,18 +1,8 @@
 """Plan-driven arithmetic execution for the Generic reference carrier.
 
-Generic runs one code path per operation. What differs between a legacy opaque
-tensor and a concrete simple-dtype tensor is the *arithmetic* the path executes,
-so the operation resolves an arithmetic here and expresses its formula in terms
-of that object's primitives.
-
 Concrete operands resolve a plan from
 :mod:`strideweave.carriers.operation_policy` and execute it faithfully:
 ``Float32`` in IEEE-754 binary32, ``Int32`` exactly with checked narrowing.
-Operands that are not concrete simple dtypes — the legacy ``DType.Any`` and
-``DType.Floating`` storage — keep Generic's historical Python arithmetic, and a
-tensor mixing legacy and concrete storage stays on that legacy path rather than
-silently selecting a concrete plan for it.
-
 Which plan shapes Generic executes is a single decision recorded in the backend
 capability registry and declared in
 :mod:`strideweave.carriers.generic.capabilities`. The primitives below —
@@ -25,13 +15,13 @@ everything else before converting a value.
 from __future__ import annotations
 
 import math
+from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, nullcontext
 from typing import Any, Final
 
 from ..dtype import DType
 from ..operation_capability import require_capability
-from ..operation_helpers import _require_number
 from ..operation_policy import Accumulation as AccumulationKind
 from ..operation_policy import Arithmetic as ArithmeticKind
 from ..operation_policy import (
@@ -45,7 +35,6 @@ from .numerics import (
     checked_int32,
     float32_errstate,
     float32_scalar,
-    is_concrete_simple_dtype,
 )
 
 __all__ = [
@@ -61,45 +50,38 @@ __all__ = [
 ]
 
 
-class GenericArithmetic:
-    """The arithmetic one Generic operation executes, plus its result dtype.
+class GenericArithmetic(ABC):
+    """Base for one centrally planned Generic arithmetic implementation.
 
     Args:
-        result_dtype: Dtype the operation's result carrier reports, or ``None``
-            to preserve the operand's dtype the way Generic historically does.
-        plan: The resolved plan this arithmetic executes, or ``None`` on the
-            legacy path.
+        result_dtype: Concrete dtype the operation's result carrier reports.
+        plan: Resolved forward plan, or ``None`` for fixed Float32 backward
+            arithmetic.
     """
 
-    def __init__(
-        self, result_dtype: DType | None, plan: OperationPlan | None = None
-    ) -> None:
+    def __init__(self, result_dtype: DType, plan: OperationPlan | None = None) -> None:
         self.result_dtype = result_dtype
         self.plan = plan
 
-    @property
-    def is_planned(self) -> bool:
-        """Whether this arithmetic executes a resolved plan."""
-        return self.plan is not None
-
+    @abstractmethod
     def scope(self) -> Any:
         """Return the context an operation loop runs inside."""
-        return nullcontext()
+        raise NotImplementedError
 
+    @abstractmethod
     def convert(self, value: Any) -> Any:
         """Materialize one operand value into the compute representation."""
-        return value
+        raise NotImplementedError
 
+    @abstractmethod
     def total(self, values: Iterable[Any]) -> Any:
         """Combine many terms in the plan's accumulation order."""
-        result: Any = None
-        for value in values:
-            result = value if result is None else result + value
-        return 0 if result is None else result
+        raise NotImplementedError
 
+    @abstractmethod
     def store(self, value: Any) -> Any:
         """Narrow a computed value into the result's stored representation."""
-        return value
+        raise NotImplementedError
 
 
 def _float32_binary32(value: Any) -> Any:
@@ -625,9 +607,9 @@ def arithmetic_for_plan(plan: OperationPlan, carrier_class: type) -> GenericArit
     return _PlannedArithmetic(plan)
 
 
-def _concrete_dtype(tensor: Any) -> DType | None:
-    dtype = tensor.carrier.dtype()
-    return dtype if is_concrete_simple_dtype(dtype) else None
+def _tensor_dtype(tensor: Any) -> DType:
+    """Return the tensor operand dtype for central policy resolution."""
+    return tensor.carrier.dtype()
 
 
 def _executing_class(tensor: Any) -> type:
@@ -640,27 +622,10 @@ def _executing_class(tensor: Any) -> type:
     return type(tensor.carrier)
 
 
-def _planned(
-    operation: str,
-    *operands: Any,
-    options: OperationExecutionOptions | None = None,
-) -> OperationPlan | None:
-    """Resolve a plan, or return ``None`` when any operand is legacy storage."""
-    if any(operand is None for operand in operands):
-        if options is not None and options.accumulator_dtype is not None:
-            raise TypeError(
-                "accumulator_dtype requires concrete simple-dtype operands; "
-                "legacy Generic storage has no planned accumulation"
-            )
-        return None
-    return resolve_operation_plan(operation, *operands, options=options)
-
-
 def binary_arithmetic(
     operation: str,
     lhs: Any,
     rhs: Any,
-    legacy_dtype: DType,
     *,
     options: OperationExecutionOptions | None = None,
 ) -> GenericArithmetic:
@@ -670,30 +635,25 @@ def binary_arithmetic(
         operation: Registered operation name.
         lhs: Left tensor operand.
         rhs: Right tensor operand.
-        legacy_dtype: Result dtype Generic reports on its legacy path.
-
     Returns:
-        The arithmetic to execute, planned when both operands are concrete.
+        Arithmetic for the accepted central plan.
 
     Raises:
         UnsupportedOperationPlan: If the operands' carrier class declares no
             capability for the resolved plan.
     """
-    plan = _planned(
+    plan = resolve_operation_plan(
         operation,
-        _concrete_dtype(lhs),
-        _concrete_dtype(rhs),
+        _tensor_dtype(lhs),
+        _tensor_dtype(rhs),
         options=options,
     )
-    if plan is None:
-        return GenericArithmetic(legacy_dtype)
     return arithmetic_for_plan(plan, _executing_class(lhs))
 
 
 def unary_arithmetic(
     operation: str,
     tensor: Any,
-    legacy_dtype: DType | None,
     *,
     options: OperationExecutionOptions | None = None,
 ) -> GenericArithmetic:
@@ -702,19 +662,14 @@ def unary_arithmetic(
     Args:
         operation: Registered operation name.
         tensor: The tensor operand.
-        legacy_dtype: Result dtype Generic reports on its legacy path, or
-            ``None`` to preserve the operand's dtype.
-
     Returns:
-        The arithmetic to execute, planned when the operand is concrete.
+        Arithmetic for the accepted central plan.
 
     Raises:
         UnsupportedOperationPlan: If the operand's carrier class declares no
             capability for the resolved plan.
     """
-    plan = _planned(operation, _concrete_dtype(tensor), options=options)
-    if plan is None:
-        return GenericArithmetic(legacy_dtype)
+    plan = resolve_operation_plan(operation, _tensor_dtype(tensor), options=options)
     return arithmetic_for_plan(plan, _executing_class(tensor))
 
 
@@ -722,37 +677,24 @@ def scalar_arithmetic(
     operation: str,
     tensor: Any,
     scalar: Any,
-    legacy_dtype: DType,
-    scalar_name: str = "scalar",
 ) -> GenericArithmetic:
     """Resolve the arithmetic for a tensor-and-weak-scalar operation.
-
-    The scalar is validated by whichever rule governs the path taken. A
-    concrete tensor lets the shared policy reject the scalar, so every backend
-    refuses the same values with the same diagnostic; legacy opaque storage has
-    no plan and keeps its own historical check, which admits any
-    ``numbers.Number`` rather than only a real one.
 
     Args:
         operation: Registered operation name.
         tensor: The tensor operand.
         scalar: The weak Python scalar operand.
-        legacy_dtype: Result dtype Generic reports on its legacy path.
-        scalar_name: Operand name used in the legacy path's diagnostic.
 
     Returns:
-        The arithmetic to execute, planned when the tensor is concrete.
+        Arithmetic for the accepted central plan.
 
     Raises:
         UnsupportedOperationPlan: If the tensor's carrier class declares no
             capability for the resolved plan.
     """
-    dtype = _concrete_dtype(tensor)
-    if dtype is None:
-        _require_number(scalar, scalar_name)
-        return GenericArithmetic(legacy_dtype)
     return arithmetic_for_plan(
-        resolve_operation_plan(operation, dtype, scalar), _executing_class(tensor)
+        resolve_operation_plan(operation, _tensor_dtype(tensor), scalar),
+        _executing_class(tensor),
     )
 
 
@@ -769,10 +711,8 @@ def gradient_arithmetic(
         tensor: The forward operand a gradient is being produced for.
 
     Returns:
-        Binary32 arithmetic for a concrete operand, legacy arithmetic otherwise.
+        Fixed Float32 backward arithmetic.
     """
-    if _concrete_dtype(tensor) is None:
-        return GenericArithmetic(None)
     return _GradientArithmetic(accumulator_dtype)
 
 
@@ -789,14 +729,6 @@ def executing(arithmetic: GenericArithmetic) -> Iterator[GenericArithmetic]:
     Yields:
         The same arithmetic, for convenient ``with`` binding.
 
-    Examples:
-        >>> from strideweave.carriers.generic.execution import (
-        ...     GenericArithmetic,
-        ...     executing,
-        ... )
-        >>> with executing(GenericArithmetic(None)) as arithmetic:
-        ...     arithmetic.store(2)
-        2
     """
     with arithmetic.scope():
         yield arithmetic

@@ -250,7 +250,9 @@ def test_projection_destination_validation_is_preflight() -> None:
         )
     with pytest.raises(RuntimeError):
         carrier.project(
-            source, selection, destination=sw.Generic([0.0] * 4, mutable=False)
+            source,
+            selection,
+            destination=sw.Generic([0.0] * 4, mutable=False, dtype=sw.DType.Float32),
         )
 
     assert (carrier.primary_tiles, carrier.secondary_tiles, carrier.version) == before
@@ -445,7 +447,9 @@ def test_projection_backward_scatter_adds_full_shaped_implicit_zero_gradient() -
     carrier = _tiled()
     source = _tensor(carrier)
     result = carrier.project(source, TileSelection(([1], [0]))).wait()
-    gradient = sw.Tensor(sw.Generic([1.0] * result.size()), 0, result.layout)
+    gradient = sw.Tensor(
+        sw.Generic([1.0] * result.size(), dtype=sw.DType.Float32), 0, result.layout
+    )
     result.backward(gradient)
 
     assert source.grad is not None
@@ -471,7 +475,11 @@ def test_projection_then_ordinary_operation_has_one_visible_gather_node() -> Non
     assert type(projected.autograd_ctx).__name__ == "_ProjectionOperation"
     assert cast(Any, projected.autograd_ctx).inputs() == (source,)
     result = sw.add(projected, projected)
-    result.backward(sw.Tensor(sw.Generic([1.0] * result.size()), 0, result.layout))
+    result.backward(
+        sw.Tensor(
+            sw.Generic([1.0] * result.size(), dtype=sw.DType.Float32), 0, result.layout
+        )
+    )
 
     assert source.grad is not None
     assert [source.grad[index] for index in (0, 1, 4, 5)] == [2.0] * 4
@@ -484,7 +492,13 @@ def test_projection_saved_version_rejects_later_source_mutation() -> None:
     source[0] = 99.0
 
     with pytest.raises(RuntimeError, match=r"modified in-place|version"):
-        result.backward(sw.Tensor(sw.Generic([1.0] * result.size()), 0, result.layout))
+        result.backward(
+            sw.Tensor(
+                sw.Generic([1.0] * result.size(), dtype=sw.DType.Float32),
+                0,
+                result.layout,
+            )
+        )
 
 
 def test_overlapping_projection_gradients_accumulate() -> None:
@@ -492,8 +506,16 @@ def test_overlapping_projection_gradients_accumulate() -> None:
     source = _tensor(carrier)
     first = carrier.project(source, TileSelection(([0], [0]))).wait()
     second = carrier.project(source, TileSelection(([0], [0]))).wait()
-    first.backward(sw.Tensor(sw.Generic([1.0] * first.size()), 0, first.layout))
-    second.backward(sw.Tensor(sw.Generic([2.0] * second.size()), 0, second.layout))
+    first.backward(
+        sw.Tensor(
+            sw.Generic([1.0] * first.size(), dtype=sw.DType.Float32), 0, first.layout
+        )
+    )
+    second.backward(
+        sw.Tensor(
+            sw.Generic([2.0] * second.size(), dtype=sw.DType.Float32), 0, second.layout
+        )
+    )
 
     assert source.grad is not None
     assert source.grad[0] == 3.0

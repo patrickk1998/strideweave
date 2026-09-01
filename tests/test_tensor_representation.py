@@ -258,7 +258,6 @@ def multi_float_tensor(
 @pytest.mark.parametrize(
     "carrier",
     [
-        sw.Generic([1.0, 2.0], dtype=sw.DType.Floating),
         sw.Generic([1.0, 2.0], dtype=sw.DType.Float32),
         sw.Generic([1, 2], dtype=sw.DType.Int32),
         sw.CPU(2, dtype=sw.DType.Float32),
@@ -601,39 +600,68 @@ def test_autograd_saves_the_complete_representation_version_token():
     assert operation.input_versions() == (tensor._version_token(),)
 
 
-def test_simple_and_legacy_opaque_storage_have_one_plane():
+def test_simple_storage_has_one_identical_plane():
     layout = placement(sw.Shape(3), sw.Stride(1))
     concrete = PlaneCarrier([1.0, 2.0, 3.0], sw.DType.Float32)
-    opaque = PlaneCarrier([1.0, 2.0, 3.0], sw.DType.Floating)
 
     concrete_representation = TensorRepresentation(
         sw.DType.Float32,
         (Subtensor(sw.DType.Float32, concrete, 0, layout),),
     )
-    opaque_representation = TensorRepresentation(
-        sw.DType.Floating,
-        (Subtensor(sw.DType.Floating, opaque, 0, layout),),
-    )
 
     assert concrete_representation.is_single_subtensor
     assert concrete_representation.primary is concrete_representation.subtensors[0]
-    assert opaque_representation.primary.carrier is opaque
 
 
-def test_abstract_non_opaque_categories_have_no_storage_schema():
-    carrier = PlaneCarrier([1], sw.DType.Integer)
+@pytest.mark.parametrize(
+    "category", [sw.DType.Any, sw.DType.Floating, sw.DType.Integer]
+)
+def test_every_category_has_no_storage_schema_and_fails_without_side_effects(category):
+    carrier = PlaneCarrier([1], category)
+    version = carrier.version
     with pytest.raises(ValueError, match="abstract dtype category"):
         TensorRepresentation(
-            sw.DType.Integer,
+            category,
             (
                 Subtensor(
-                    sw.DType.Integer,
+                    category,
                     carrier,
                     0,
                     placement(sw.Shape(1), sw.Stride(1)),
                 ),
             ),
         )
+    assert carrier.version == version
+    assert not carrier.is_released()
+    assert carrier.get_value(0) == 1
+
+
+def test_category_schema_rejection_precedes_representation_rules():
+    class RuleBearingCategory(sw.DTypeCategory, abstract=False):
+        __slots__ = ()
+
+        def __init__(self, name: str) -> None:
+            super().__init__(name, supertype=sw.DType.Any)
+            self._representation_rules = (RuleReached(),)
+
+    category = RuleBearingCategory("TestRuleBearingCategory")
+    carrier = PlaneCarrier([1], category)
+
+    with pytest.raises(ValueError, match="abstract dtype category"):
+        TensorRepresentation(
+            category,
+            (
+                Subtensor(
+                    category,
+                    carrier,
+                    0,
+                    placement(sw.Shape(1), sw.Stride(1)),
+                ),
+            ),
+        )
+
+    assert carrier.version == 0
+    assert not carrier.is_released()
 
 
 def test_compound_schema_requires_ordered_planes_and_adjacent_cardinality():

@@ -321,11 +321,11 @@ def rearrange(tensor: Any, description: str) -> Any:
         Tensor view with the rearranged layout.
 
     Examples:
-        >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
+        >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
         >>> from strideweave.einops import rearrange
-        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6], dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> rearrange(x, "a b -> b a")[2, 1]
-        6
+        6.0
     """
 
     if not isinstance(description, str):
@@ -374,11 +374,11 @@ def reduce(
         Tensor containing the kept dimensions after summing omitted dimensions.
 
     Examples:
-        >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
+        >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
         >>> from strideweave.einops import reduce
-        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6], dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> reduce(x, "a b -> a")[1]
-        12
+        12.0
     """
 
     if not isinstance(description, str):
@@ -428,12 +428,12 @@ def einsum(lhs: Any, rhs: Any, description: str) -> Any:
         Tensor with the requested output layout and contracted values.
 
     Examples:
-        >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
+        >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
         >>> from strideweave.einops import einsum
-        >>> lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
-        >>> rhs = Tensor(Generic([1, 1, 1, 2, 2, 2]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> lhs = Tensor(Generic([1, 2, 3, 4, 5, 6], dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> rhs = Tensor(Generic([1, 1, 1, 2, 2, 2], dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> einsum(lhs, rhs, "a b, c b -> a c")[1, 1]
-        22
+        22.0
     """
 
     if not isinstance(description, str):

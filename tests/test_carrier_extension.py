@@ -322,7 +322,7 @@ def test_facet_lookup_is_exact_typed_and_absent_on_legacy_carriers() -> None:
     class DerivedMetricsFacet(MetricsFacet):
         pass
 
-    carrier = sw.Generic([1.0])
+    carrier = sw.Generic([1.0], dtype=sw.DType.Float32)
     assert carrier.facet(MetricsFacet) is None
     with pytest.raises(NotImplementedError, match="MetricsFacet"):
         carrier.require_facet(MetricsFacet)
@@ -539,7 +539,11 @@ def test_prepared_values_validate_callbacks_and_provider_result_tensors() -> Non
     with pytest.raises(TypeError, match="Tensor values"):
         extension.ProviderResult((object(),))  # type: ignore[arg-type]
 
-    tensor = sw.Tensor(sw.Generic([1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1)))
+    tensor = sw.Tensor(
+        sw.Generic([1.0], dtype=sw.DType.Float32),
+        0,
+        sw.Layout(sw.Shape(1), sw.Stride(1)),
+    )
     assert extension.ProviderResult((tensor,)).outputs == (tensor,)
 
 

@@ -190,7 +190,7 @@ def _role_ordinal(
 
 def _conv_arithmetic(lhs: Any, kernel: Any) -> Any:
     """Resolve the policy-owned Float32 arithmetic for convolution."""
-    return binary_arithmetic("conv_general", lhs, kernel, DType.Float32)
+    return binary_arithmetic("conv_general", lhs, kernel)
 
 
 class GenericConvGeneralOperation(Operation):

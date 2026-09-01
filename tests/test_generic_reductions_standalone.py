@@ -31,7 +31,7 @@ def tensor(values, shape):
     )
     storage = [*values, *([0.0] * (layout.cosize - len(values)))]
     return Tensor(
-        Generic(storage, dtype=DType.Floating),
+        Generic(storage, dtype=DType.Float32),
         0,
         layout,
     )
@@ -45,13 +45,17 @@ def test_sum_and_product_use_first_mode_fast_fibers_and_vjps():
     summed = tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
     sum_result = GenericReduceSumOperation().forward(summed)
     assert values_of(sum_result) == [9.0, 12.0]
-    sum_result.backward(Tensor(Generic([10.0, 20.0]), 0, sum_result.layout))
+    sum_result.backward(
+        Tensor(Generic([10.0, 20.0], dtype=DType.Float32), 0, sum_result.layout)
+    )
     assert values_of(summed.grad) == [10.0, 20.0, 10.0, 20.0, 10.0, 20.0]
 
     product = tensor([0.0, 2.0, 3.0], [1, 3])
     product_result = GenericReduceProdOperation().forward(product)
     assert values_of(product_result) == [0.0]
-    product_result.backward(Tensor(Generic([1.0]), 0, product_result.layout))
+    product_result.backward(
+        Tensor(Generic([1.0], dtype=DType.Float32), 0, product_result.layout)
+    )
     # Direct products of the other members define zero behavior without division.
     assert values_of(product.grad) == [6.0, 0.0, 0.0]
 
@@ -60,7 +64,9 @@ def test_extreme_reductions_propagate_nan_and_choose_signed_zero():
     maximum = tensor([0.0, -0.0], [1, 2])
     max_result = GenericReduceMaxOperation().forward(maximum)
     assert not math.copysign(1.0, max_result[0]) < 0
-    max_result.backward(Tensor(Generic([2.0]), 0, max_result.layout))
+    max_result.backward(
+        Tensor(Generic([2.0], dtype=DType.Float32), 0, max_result.layout)
+    )
     assert values_of(maximum.grad) == [1.0, 1.0]
 
     minimum = tensor([0.0, -0.0], [1, 2])
@@ -72,7 +78,9 @@ def test_extreme_reductions_propagate_nan_and_choose_signed_zero():
 
     nan_input = tensor([float("nan"), 1.0], [1, 2])
     nan_result = GenericReduceMaxOperation().forward(nan_input)
-    nan_result.backward(Tensor(Generic([3.0]), 0, nan_result.layout))
+    nan_result.backward(
+        Tensor(Generic([3.0], dtype=DType.Float32), 0, nan_result.layout)
+    )
     assert all(math.isnan(value) for value in values_of(nan_input.grad))
 
 
@@ -93,7 +101,7 @@ def test_cumsum_is_inclusive_and_backward_is_reverse_inclusive():
     assert result.layout == Layout(Shape([2, 3]), Stride([1, 2]))
     assert values_of(result) == [1.0, 2.0, 4.0, 6.0, 9.0, 12.0]
 
-    result.backward(Tensor(Generic([1.0] * 6), 0, result.layout))
+    result.backward(Tensor(Generic([1.0] * 6, dtype=DType.Float32), 0, result.layout))
     assert values_of(source.grad) == [3.0, 3.0, 2.0, 2.0, 1.0, 1.0]
 
 

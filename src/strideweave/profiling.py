@@ -77,7 +77,7 @@ class ProfilerEvent:
     Examples:
         >>> import strideweave as sw
         >>> tensor = sw.Tensor(
-        ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ...     sw.Generic([-1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
         ... )
         >>> with sw.profile() as prof:
         ...     result = sw.relu(tensor)
@@ -235,7 +235,7 @@ class ProfilerAggregate:
     Examples:
         >>> import strideweave as sw
         >>> tensor = sw.Tensor(
-        ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ...     sw.Generic([-1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
         ... )
         >>> with sw.profile() as prof:
         ...     result = sw.relu(tensor)
@@ -306,7 +306,7 @@ class Profiler:
     Examples:
         >>> import strideweave as sw
         >>> tensor = sw.Tensor(
-        ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ...     sw.Generic([-1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
         ... )
         >>> with sw.Profiler(carriers={sw.Generic}, record_shapes=True) as prof:
         ...     result = sw.relu(tensor)
@@ -533,7 +533,7 @@ class Profiler:
         Examples:
             >>> import strideweave as sw
             >>> tensor = sw.Tensor(
-            ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+            ...     sw.Generic([-1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
             ... )
             >>> with sw.profile() as prof:
             ...     result = sw.relu(tensor)
@@ -561,7 +561,7 @@ class Profiler:
         Examples:
             >>> import strideweave as sw
             >>> tensor = sw.Tensor(
-            ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+            ...     sw.Generic([-1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
             ... )
             >>> with sw.profile(record_shapes=True) as prof:
             ...     result = sw.relu(tensor)
@@ -629,7 +629,7 @@ class Profiler:
         Examples:
             >>> import strideweave as sw
             >>> tensor = sw.Tensor(
-            ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+            ...     sw.Generic([-1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
             ... )
             >>> with sw.profile() as prof:
             ...     result = sw.relu(tensor)
@@ -740,7 +740,7 @@ def profile(
     Examples:
         >>> import strideweave as sw
         >>> tensor = sw.Tensor(
-        ...     sw.Generic([-1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ...     sw.Generic([-1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
         ... )
         >>> with sw.profile(carriers={sw.Generic}, record_shapes=True) as prof:
         ...     result = sw.relu(tensor)

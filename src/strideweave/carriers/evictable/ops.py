@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..dtype import SimpleDType
 from ..operation_helpers import Operation, execute_lowered_operation
 from ..operation_policy import (
     OperationPlan,
@@ -54,7 +53,7 @@ class EvictableOperation(Operation):
         Examples:
             >>> import strideweave as sw
             >>> adapter = sw.EvictableOperation(
-            ...     sw.Generic([0.0]).dispatch_op("relu")
+            ...     sw.Generic([0.0], dtype=sw.DType.Float32).dispatch_op("relu")
             ... )
             >>> adapter.primary_operation is not None
             True
@@ -75,12 +74,12 @@ class EvictableOperation(Operation):
         Examples:
             >>> import strideweave as sw
             >>> layout = sw.Layout(sw.Shape(1), sw.Stride(1))
-            >>> carrier = sw.Evictable(sw.Generic([-1.0]), sw.Generic([0.0]))
+            >>> carrier = sw.Evictable(sw.Generic([-1.0], dtype=sw.DType.Float32), sw.Generic([0.0], dtype=sw.DType.Float32))
             >>> tensor = sw.Tensor(carrier, 0, layout)
             >>> adapter = carrier.dispatch_op("relu")
             >>> result = adapter.forward(tensor)
             >>> result[0]
-            0
+            0.0
         """
 
         if self._forward_complete:
@@ -133,20 +132,15 @@ class EvictableOperation(Operation):
         return tuple(value for value in inputs if isinstance(value, Tensor))
 
     def _planned_operation(self, inputs: tuple[Any, ...]) -> OperationPlan | None:
-        """Resolve the logical plan this call runs, or ``None`` for legacy storage.
+        """Resolve the logical plan this registered call runs.
 
         The plan is the one the central policy resolves from this operation's
         name and the *outer* operands, which is what the hierarchy must be able
         to execute and keep.
 
-        Exactly two things are outside simple-dtype planning and keep their
-        documented behavior: an operation the policy registry does not describe,
-        and legacy opaque operand storage. Everything else is planned, so an
-        operand list the operation's own shape does not accept — the wrong
-        count, a tensor where a weak scalar belongs, a scalar where a tensor
-        belongs — is refused by the central resolver here rather than passed
-        down to be diagnosed by whichever primary operation happens to receive
-        it.
+        Only an operation the policy registry does not describe remains outside
+        planning. Every registered call is resolved centrally, so abstract
+        categories and invalid operand shapes fail before lowering.
         """
         from ...core.tensor import Tensor
 
@@ -175,10 +169,7 @@ class EvictableOperation(Operation):
             if not isinstance(value, Tensor):
                 operands.append(value)
                 continue
-            dtype = value.carrier.dtype()
-            if not isinstance(dtype, SimpleDType):
-                return None
-            operands.append(dtype)
+            operands.append(value.carrier.dtype())
         return resolve_operation_plan(
             operation, *operands, options=self._execution_options
         )
@@ -222,11 +213,11 @@ class EvictableOperation(Operation):
         Examples:
             >>> import strideweave as sw
             >>> layout = sw.Layout(sw.Shape(1), sw.Stride(1))
-            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
+            >>> carrier = sw.Evictable(sw.Generic([1.0], dtype=sw.DType.Float32), sw.Generic([0.0], dtype=sw.DType.Float32))
             >>> tensor = sw.Tensor(carrier, 0, layout)
             >>> adapter = carrier.dispatch_op("relu")
             >>> result = adapter.forward(tensor)
-            >>> output_gradient = sw.Tensor(sw.Generic([1.0]), 0, layout)
+            >>> output_gradient = sw.Tensor(sw.Generic([1.0], dtype=sw.DType.Float32), 0, layout)
             >>> (input_gradient,) = adapter.backward(output_gradient)
             >>> input_gradient[0]
             1.0

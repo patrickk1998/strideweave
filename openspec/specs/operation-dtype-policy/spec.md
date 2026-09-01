@@ -25,22 +25,20 @@ stored.
 | compute arithmetic | The numerical semantics applied to each computed term before any multi-term combination, including precision, rounding, overflow behavior, and permitted contraction, and distinct from accumulation. |
 | accumulation | The numerical and ordering semantics for combining multiple computed terms, including combination precision, order or association, narrowing behavior, and extrema or argument tie behavior; `None` means that no terms are combined. |
 | accumulator dtype | The concrete `SimpleDType` in which floating accumulation combines already encoded terms, independently of operand storage or conversion and result storage; it is an arithmetic choice and does not imply carrier storage support. |
-
 ## Requirements
-
 ### Requirement: One immutable plan carries the complete dtype decision
 
 `OperandPlan(role, dtype, convert_to)` SHALL describe one positional operand.
 `role` names whether the operand is a tensor or weak scalar and SHALL be an
 `OperandRole`. `dtype` names the operand's source storage dtype; for a tensor
 role, `dtype` SHALL be its source `SimpleDType`, and for a weak-scalar role,
-`dtype` SHALL be `None`. `convert_to` names the materialization dtype and SHALL
-be the `SimpleDType` into which that operand is materialized.
+`dtype` SHALL be `None`. `convert_to` names the simple dtype used for
+computation and SHALL be a `SimpleDType`.
 
 `OperationPlan(operation, operands, compute, accumulation,
-accumulator_dtype, output)` SHALL describe one complete dtype decision.
-`operation` names the dispatch operation and SHALL be a string. `operands`
-names the ordered positional policy operands and SHALL be a tuple of
+accumulator_dtype, output)` SHALL describe the complete dtype decision for one
+operation. `operation` names the registered operation and SHALL be a string;
+`operands` names the ordered positional policy operands and SHALL be a tuple of
 `OperandPlan` values. `compute` names the per-element arithmetic and SHALL be an
 `Arithmetic`. `accumulation` names the term-combination rule and SHALL be an
 `Accumulation` or `None` when no terms are combined. `accumulator_dtype` names
@@ -51,7 +49,7 @@ the public enum values they contain SHALL be immutable and hashable.
 
 An operation plan SHALL carry no duplicated autograd field. Autograd
 eligibility SHALL follow from the result dtype under the framework-wide rule
-that only `DType.Floating` and `DType.Float32` participate.
+that only exact `DType.Float32` participates.
 
 #### Scenario: Inspect a mixed add plan
 
@@ -190,32 +188,6 @@ branch, and `options`; it SHALL read no tensor element.
 - **WHEN** `resolve_operation_plan` receives a name absent from the registry
 - **THEN** it fails with `NotImplementedError`
 
-### Requirement: Unsupported dtype dispositions are explicit
-
-Simple-dtype planning SHALL accept the implemented tensor dtypes Float32 and
-Int32, plus Bool only in the exact operand positions whose overload domain
-requires Bool. The legacy opaque categories `Any` and `Floating` SHALL fail
-with `TypeError` and remain on Generic's separate legacy execution path. An
-abstract non-opaque category SHALL fail with `TypeError`. A compound dtype SHALL
-fail with `NotImplementedError` identifying deferred representation-aware
-planning. A registered but unimplemented simple dtype SHALL fail with
-`NotImplementedError` rather than widening to an implemented dtype.
-
-Dtype matching SHALL use descriptor identity. An object that merely compares
-equal to a supported descriptor SHALL not select its plan.
-
-#### Scenario: Refuse an unimplemented simple encoding
-
-- **WHEN** a tensor operand is represented by a registered narrow simple dtype
-  with no operation implementation
-- **THEN** resolution fails with `NotImplementedError` and does not substitute
-  Float32 or Int32
-
-#### Scenario: Keep legacy opaque arithmetic separate
-
-- **WHEN** a Generic operation contains an Any or Floating storage operand
-- **THEN** it uses the documented legacy path rather than a simple-dtype plan
-
 ### Requirement: Weak scalars select branches without acquiring a dtype
 
 A weak scalar SHALL be a real Python number. Integral values other than `bool`
@@ -348,3 +320,47 @@ variants for `reduce_sum` and `matmul` while retaining Float32 result storage.
 - **WHEN** Generic and CPU execute the same supported concrete plan on the same
   logical values
 - **THEN** their result dtype and numerical behavior agree with that plan
+
+### Requirement: Central planning rejects abstract and unsupported dtypes explicitly
+
+Simple-dtype planning SHALL accept the implemented tensor dtypes Float32 and
+Int32, plus Bool only in the exact operand positions whose overload domain
+requires Bool. Every `DTypeCategory`, including `DType.Any`,
+`DType.Floating`, `DType.Integer`, and extension categories, SHALL fail with
+`TypeError` identifying that an abstract category is not an operation storage
+dtype. No category SHALL enter an alternate Generic execution path. A compound
+dtype SHALL fail with `NotImplementedError` identifying deferred
+representation-aware planning. A registered but unimplemented simple dtype
+SHALL fail with `NotImplementedError` rather than widening to an implemented
+dtype.
+
+Dtype matching SHALL use descriptor identity. An object that merely compares
+equal to a supported descriptor SHALL not select its plan. Every failure SHALL
+occur before a backend allocates result storage or performs computation.
+
+#### Scenario: Refuse an abstract category uniformly
+
+- **WHEN** any registered operation receives `DType.Any`, `DType.Floating`,
+  `DType.Integer`, or an extension category in a tensor-operand position
+- **THEN** resolution fails with `TypeError` identifying the abstract category
+  before backend allocation or computation
+
+#### Scenario: Reject Generic category operands through central planning
+
+- **WHEN** a Generic operation is presented with `DType.Any` or
+  `DType.Floating` in a tensor-operand position
+- **THEN** central resolution fails with `TypeError` before Generic allocation
+  or execution, and no separate opaque arithmetic path runs
+
+#### Scenario: Refuse an unimplemented simple encoding
+
+- **WHEN** a tensor operand is represented by a registered narrow simple dtype
+  with no operation implementation
+- **THEN** resolution fails with `NotImplementedError` and does not substitute
+  Float32 or Int32
+
+#### Scenario: Refuse compound planning separately
+
+- **WHEN** a tensor operand is represented by a `CompoundDType`
+- **THEN** resolution fails with `NotImplementedError` identifying deferred
+  representation-aware planning

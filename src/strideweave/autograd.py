@@ -37,8 +37,8 @@ def grad(
     Examples:
         >>> import strideweave as sw
         >>> layout = sw.Layout(sw.Shape(2), sw.Stride(1))
-        >>> x = sw.Tensor(sw.Generic([2.0, 3.0]), 0, layout)
-        >>> cotangent = sw.Tensor(sw.Generic([1.0, 1.0]), 0, layout)
+        >>> x = sw.Tensor(sw.Generic([2.0, 3.0], dtype=sw.DType.Float32), 0, layout)
+        >>> cotangent = sw.Tensor(sw.Generic([1.0, 1.0], dtype=sw.DType.Float32), 0, layout)
         >>> (gradient,) = sw.grad(x * 2.0, (x,), cotangent)
         >>> [gradient[i] for i in range(gradient.size())]
         [2.0, 2.0]

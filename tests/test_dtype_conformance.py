@@ -1278,15 +1278,12 @@ def test_values_survive_a_round_trip_between_the_backends(dtype, values):
 # --- The documented boundaries ----------------------------------------------
 
 
-def test_legacy_generic_storage_is_outside_simple_promotion():
-    # Legacy opaque categories keep Generic's historical Python arithmetic and
-    # are deliberately not planned; the resolver says so rather than guessing.
-    with pytest.raises(TypeError, match="legacy opaque storage category"):
+def test_category_is_rejected_by_storage_and_central_planning():
+    with pytest.raises(TypeError, match=r"abstract category.*operation storage dtype"):
         resolve_operation_plan("add", DType.Floating, DType.Float32)
 
-    legacy = Tensor(Generic([0.1, 0.1, 0.1, 0.1], dtype=DType.Floating), 0, ONE_MODE)
-
-    assert (legacy + legacy).dtype() is DType.Floating
+    with pytest.raises(ValueError, match="Generic dtype must be"):
+        Generic([0.1, 0.1, 0.1, 0.1], dtype=DType.Floating)
 
 
 def test_compound_operands_report_a_deferred_capability_on_both_backends():

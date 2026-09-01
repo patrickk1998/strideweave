@@ -41,11 +41,11 @@ class Parameter(Tensor):
         mutable ``name`` metadata.
 
     Examples:
-        >>> from strideweave import Generic, Layout, Parameter, Shape, Stride, Tensor
-        >>> tensor = Tensor(Generic([1]), 0, Layout(Shape(1), Stride(1)))
+        >>> from strideweave import DType, Generic, Layout, Parameter, Shape, Stride, Tensor
+        >>> tensor = Tensor(Generic([1], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1)))
         >>> parameter = Parameter(tensor, name="weight")
         >>> parameter[0]
-        1
+        1.0
         >>> parameter.name
         'weight'
     """
@@ -104,7 +104,7 @@ class Module:
         ...         super().__init__(name="scale")
         ...         self.weight = sw.Parameter(
         ...             sw.Tensor(
-        ...                 sw.Generic([2]),
+        ...                 sw.Generic([2], dtype=sw.DType.Float32),
         ...                 0,
         ...                 sw.Layout(sw.Shape(1), sw.Stride(1)),
         ...             ),
@@ -238,7 +238,7 @@ class Module:
             >>> root = sw.Module()
             >>> root.weight = sw.Parameter(
             ...     sw.Tensor(
-            ...         sw.Generic([1]),
+            ...         sw.Generic([1], dtype=sw.DType.Float32),
             ...         0,
             ...         sw.Layout(sw.Shape(1), sw.Stride(1)),
             ...     )
@@ -270,7 +270,7 @@ class Module:
             >>> root.child = sw.Module()
             >>> root.child.weight = sw.Parameter(
             ...     sw.Tensor(
-            ...         sw.Generic([1]),
+            ...         sw.Generic([1], dtype=sw.DType.Float32),
             ...         0,
             ...         sw.Layout(sw.Shape(1), sw.Stride(1)),
             ...     )

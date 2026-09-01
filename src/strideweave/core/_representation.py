@@ -10,6 +10,7 @@ from ..carriers import (
     CompoundDType,
     DType,
     RepresentationValidationContext,
+    SimpleDType,
 )
 from .layout import Layout, Shape
 
@@ -177,7 +178,7 @@ def _storage_schema(dtype: DType) -> tuple[DType, ...]:
     """Return the exact ordered carrier dtypes required by ``dtype``."""
     if isinstance(dtype, CompoundDType):
         return dtype.simple_types
-    if dtype.is_simple() or dtype.is_opaque_storage():
+    if isinstance(dtype, SimpleDType):
         return (dtype,)
     raise ValueError(
         f"{dtype.name} is an abstract dtype category with no Tensor storage schema"

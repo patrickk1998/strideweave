@@ -32,15 +32,15 @@ tensor's `.grad`.
 | canonical injective layout | The compact injective layout for a shape whose strides advance fastest in the first mode at every hierarchy depth. |
 | graph release | Discarding an autograd node's saved Tensor inputs, saved input versions, and context so it can no longer run backward, while leaving the node attached to its result Tensor. |
 | broadcast aliasing | Layout aliasing that remains only because one or more modes have stride zero, so every remaining collision maps a group of logical coordinates onto one storage slot. |
-
 ## Requirements
-
 ### Requirement: Gradient participation follows the logical dtype
 
-`tensor.is_differentiable()` SHALL return `True` when the Tensor's logical
-dtype is `Float32` or `Floating`, and `False` for every other logical dtype,
-including `Any`, `Int32`, and `Bool`. Differentiability SHALL depend on the
-logical dtype alone and SHALL be identical across carrier implementations.
+`tensor.is_differentiable()` SHALL return `True` only when the Tensor's logical
+dtype is the exact descriptor `DType.Float32`, and SHALL return `False` for
+every other logical dtype, including `Int32`, `Bool`, every `DTypeCategory`,
+every other `SimpleDType`, and every `CompoundDType`. Differentiability SHALL
+depend on the logical dtype alone and SHALL be identical across carrier
+implementations.
 
 Reading `tensor.grad`, calling `tensor.retain_grad(retain)`, calling
 `tensor.backward(gradient, retain_graph)`, and assigning a value other than
@@ -53,15 +53,14 @@ when the Tensor is not differentiable. Assigning `None` to `tensor.grad` or
 
 #### Scenario: Report differentiability from the logical dtype
 
-- **WHEN** a caller reads `is_differentiable()` on a `Float32` Tensor and on a
-  `Floating` Tensor
-- **THEN** both report `True`
-- **AND** an `Any`, `Int32`, or `Bool` Tensor reports `False`
+- **WHEN** a caller reads `is_differentiable()` on a Float32 Tensor and on
+  constructible Tensors of other logical dtypes
+- **THEN** only the Float32 Tensor reports `True`
 
 #### Scenario: Reject gradient APIs on a non-differentiable Tensor
 
 - **WHEN** a caller reads `grad`, calls `retain_grad()`, calls `backward()`, or
-  assigns a non-`None` `autograd_ctx` on an `Int32` or `Any` Tensor
+  assigns a non-`None` `autograd_ctx` on an Int32 or Bool Tensor
 - **THEN** each call fails with `RuntimeError`
 - **AND** no gradient is recorded for that Tensor
 
@@ -80,21 +79,21 @@ Tensor inputs or saved input versions.
 
 The saved Tensor inputs SHALL consist exactly of the call's positional Tensor
 arguments in argument order, so a Tensor supplied several times SHALL be saved
-once per positional occurrence, while a positional argument that is not a Tensor
-and the `options` execution-option keyword SHALL remain outside them.
+once per positional occurrence, while a positional argument that is not a
+Tensor and the `options` execution-option keyword SHALL remain outside them.
 
 #### Scenario: Record a node for a differentiable result
 
 - **WHEN** a caller invokes an operation whose positional arguments include a
-  differentiable Tensor, a non-Tensor value, and an `options` keyword, and
-  whose result is differentiable
+  Float32 Tensor, a non-Tensor value, and an `options` keyword, and whose result
+  is Float32
 - **THEN** the result's `autograd_ctx` is that operation
 - **AND** the saved Tensor inputs contain only the positional Tensor arguments
   in argument order, each with its saved input version
 
 #### Scenario: Record no node for a non-differentiable result
 
-- **WHEN** an operation on `Any` or `Int32` Tensors produces a
+- **WHEN** an operation on Int32 or Bool Tensors produces a
   non-differentiable result
 - **THEN** the result's `autograd_ctx` is `None`
 - **AND** the operation retains no saved Tensor inputs

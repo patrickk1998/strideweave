@@ -208,18 +208,23 @@ def test_is_subtype_of_rejects_non_dtype_arguments():
 
 
 @pytest.mark.parametrize(
-    ("dtype", "simple", "opaque"),
+    ("dtype", "simple"),
     [
-        (DType.Any, False, True),
-        (DType.Floating, False, True),
-        (DType.Integer, False, False),
-        (DType.Float32, True, False),
-        (DType.Int32, True, False),
+        (DType.Any, False),
+        (DType.Floating, False),
+        (DType.Integer, False),
+        (DType.Float32, True),
+        (DType.Int32, True),
     ],
 )
-def test_storage_predicates(dtype, simple, opaque):
+def test_representation_kind_predicates(dtype, simple):
     assert dtype.is_simple() is simple
-    assert dtype.is_opaque_storage() is opaque
+
+
+@pytest.mark.parametrize("dtype", BUILT_IN_DTYPES)
+def test_descriptors_expose_no_opaque_storage_query(dtype):
+    with pytest.raises(AttributeError, match="is_opaque_storage"):
+        getattr(dtype, "is_opaque_storage")
 
 
 def test_is_simple_classifies_the_representation_not_carrier_support():
@@ -339,9 +344,9 @@ def test_value_is_the_read_only_compatibility_alias_for_name():
 def test_carrier_dtype_tags_expose_the_value_alias():
     assert CPU(4).dtype().value == "Float32"
     assert CPU(4, dtype=DType.Int32).dtype().value == "Int32"
-    assert Generic([1.0]).dtype().value == "Floating"
-    assert Generic([1], dtype=DType.Any).dtype().value == "Any"
-    assert FileBacked().dtype().value == "Floating"
+    assert Generic([1.0], dtype=DType.Float32).dtype().value == "Float32"
+    assert Generic([1], dtype=DType.Int32).dtype().value == "Int32"
+    assert FileBacked(dtype=DType.Float32).dtype().value == "Float32"
 
 
 def test_registry_lookup_rejects_unknown_and_mistyped_names():
@@ -589,25 +594,6 @@ _GRAPH_SUBSTITUTION_CASES = [
         id="scale-category",
     ),
     pytest.param(
-        lambda: SimpleDType(
-            "TestGraphTagged",
-            bits=11,
-            supertype=DTypeCategory(
-                "TestGraphCategory", supertype=DType.Any, opaque_storage=True
-            ),
-        ),
-        "\n".join(
-            (
-                "category = sw.DTypeCategory(",
-                "    'TestGraphCategory', supertype=sw.DType.Any, opaque_storage=False",
-                ")",
-                "sw.SimpleDType('TestGraphTagged', bits=11, supertype=category)",
-            )
-        ),
-        ("False", "True"),
-        id="category-opaque-storage",
-    ),
-    pytest.param(
         lambda: PlanarDType("TestGraphPlanes", planes=(DType.Float32, DType.Int32)),
         "\n".join(
             (
@@ -643,6 +629,33 @@ def test_unpickling_checks_every_referenced_descriptor(build, prelude, fragments
     assert "never substituted" in outcome, outcome
     for fragment in fragments:
         assert fragment in outcome, outcome
+
+
+def test_a_legacy_category_pickle_structure_is_rejected():
+    class LegacyCategoryPayload:
+        def __reduce__(self):
+            legacy_any = (
+                "str:DType",
+                "none",
+                "str:DTypeCategory",
+                "bool:True",
+                (),
+            )
+            legacy_floating = (
+                "str:DType",
+                ("str:Any", *legacy_any),
+                "str:DTypeCategory",
+                "bool:True",
+                (),
+            )
+            return dtype_module._unpickle_dtype, ("Floating", legacy_floating)
+
+    payload = pickle.dumps(LegacyCategoryPayload())
+    outcome = _load_in_fresh_process(payload)
+
+    assert outcome.startswith("ValueError: "), outcome
+    assert "Floating" in outcome
+    assert "never substituted" in outcome
 
 
 def test_a_matching_referenced_graph_still_resolves_to_the_receiver_identity():
@@ -722,10 +735,22 @@ def test_simple_dtype_construction_validates_width_and_category():
 
 
 def test_category_construction_validates_name_and_supertype():
+    signature = inspect.signature(DTypeCategory.__init__)
+    assert tuple(signature.parameters) == ("self", "name", "supertype")
+    assert signature.parameters["supertype"].kind is inspect.Parameter.KEYWORD_ONLY
+
     with pytest.raises(ValueError, match="non-empty string"):
         DTypeCategory("")
     with pytest.raises(TypeError, match="supertype must be a DTypeCategory"):
         DTypeCategory("BadParent", supertype=DType.Float32)  # type: ignore[arg-type]
+
+
+def test_category_rejects_the_removed_storage_disposition_atomically():
+    name = "TestRemovedOpaqueStorage"
+    with pytest.raises(TypeError, match="unexpected keyword argument 'opaque_storage'"):
+        DTypeCategory(name, opaque_storage=True)  # type: ignore[call-arg]
+    with pytest.raises(LookupError, match="No StrideWeave dtype named"):
+        DType.from_name(name)
 
 
 def test_registered_extension_dtypes_join_the_hierarchy():
@@ -747,21 +772,15 @@ def test_registered_extension_dtypes_join_the_hierarchy():
         Generic([1], dtype=complex64)
 
 
-def test_the_opaque_disposition_does_not_extend_any_accepted_set():
-    # ``opaque_storage`` records what a legacy category means, not a permission:
-    # Generic and FileBacked accept the exact built-in descriptors they
-    # document, so an extension declaring the disposition is still rejected.
-    opaque = DTypeCategory(
-        "TestOpaqueExtension", supertype=DType.Any, opaque_storage=True
-    )
+def test_an_extension_category_does_not_extend_any_accepted_set():
+    category = DTypeCategory("TestStorageCategory", supertype=DType.Any)
 
-    assert opaque.is_opaque_storage()
     with pytest.raises(ValueError, match="Generic dtype must be"):
-        Generic([1], dtype=opaque)
+        Generic([1], dtype=category)
     with pytest.raises(ValueError, match="FileBacked dtype must be"):
-        FileBacked(dtype=opaque)
+        FileBacked(dtype=category)
     with pytest.raises(ValueError, match="CPU dtype must be"):
-        CPU(4, dtype=opaque)
+        CPU(4, dtype=category)
 
 
 def test_extensions_are_reached_through_the_registry_not_the_class_namespace():
@@ -802,10 +821,12 @@ def test_carriers_reject_the_integer_category_as_storage():
         CPU(4, dtype=DType.Integer)
 
 
-def test_legacy_opaque_storage_dtypes_remain_supported():
-    assert Generic([1.0], dtype=DType.Floating).dtype() is DType.Floating
-    assert Generic(["alpha"], dtype=DType.Any).dtype() is DType.Any
-    assert FileBacked(dtype=DType.Floating).dtype() is DType.Floating
+@pytest.mark.parametrize("dtype", [DType.Any, DType.Floating, DType.Integer])
+def test_categories_are_not_shipped_carrier_storage(dtype):
+    with pytest.raises(ValueError, match="Generic dtype must be"):
+        Generic([1.0], dtype=dtype)
+    with pytest.raises(ValueError, match="FileBacked dtype must be"):
+        FileBacked(dtype=dtype)
 
 
 def test_compound_dtypes_are_not_carrier_storage():
@@ -814,7 +835,6 @@ def test_compound_dtypes_are_not_carrier_storage():
         assert dtype.is_compound()
         assert not dtype.is_simple()
         assert not dtype.is_category()
-        assert not dtype.is_opaque_storage()
 
 
 def test_abstract_descriptor_classes_cannot_be_constructed():
@@ -907,7 +927,7 @@ def test_a_subclass_cannot_shadow_the_state_the_model_owns():
 
     # The kind predicates are owned by whichever contract class fixes them, so
     # no implementation can claim to be a kind it is not.
-    for member in ("is_category", "is_compound", "is_opaque_storage", "is_simple"):
+    for member in ("is_category", "is_compound", "is_simple"):
         for base in (DTypeCategory, SimpleDType, BlockScaledDType):
             with pytest.raises(TypeError, match=f"must not redefine {member}"):
                 type(
@@ -916,6 +936,39 @@ def test_a_subclass_cannot_shadow_the_state_the_model_owns():
                     {"__slots__": (), member: lambda self: True},
                     abstract=False,
                 )
+
+
+def test_the_retired_storage_query_stays_reserved_across_descriptor_kinds():
+    recorded = tuple(dtype.structure() for dtype in BUILT_IN_DTYPES)
+
+    for base in (DTypeCategory, SimpleDType, CompoundDType):
+        with pytest.raises(TypeError, match="must not redefine is_opaque_storage"):
+            type(
+                f"RevivingStorageQuery{base.__name__}",
+                (base,),
+                {
+                    "__slots__": (),
+                    "is_opaque_storage": lambda self: True,
+                },
+                abstract=False,
+            )
+
+        with pytest.raises(AttributeError, match="owned by the dtype model"):
+            setattr(base, "is_opaque_storage", lambda self: True)
+
+    assert tuple(dtype.structure() for dtype in BUILT_IN_DTYPES) == recorded
+
+
+def test_valid_extension_descriptors_expose_no_retired_storage_query():
+    category = DTypeCategory("TestRetiredQueryCategory", supertype=DType.Any)
+    simple = SimpleDType("TestRetiredQuerySimple", bits=8, supertype=category)
+    compound = PlanarDType(
+        "TestRetiredQueryCompound", planes=(DType.Float32, DType.Int32)
+    )
+
+    for dtype in (category, simple, compound):
+        with pytest.raises(AttributeError, match="is_opaque_storage"):
+            getattr(dtype, "is_opaque_storage")
 
 
 def test_owned_state_cannot_be_patched_onto_a_class_after_it_is_created():
@@ -996,7 +1049,7 @@ def test_ownership_is_layered_over_the_contract_classes():
             "representation_rules",
             "value",
         ),
-        DTypeCategory: ("_opaque_storage", "is_category", "is_opaque_storage"),
+        DTypeCategory: ("is_category",),
         SimpleDType: ("_bits", "bits", "is_simple"),
         CompoundDType: (
             "_simple_types",
@@ -1106,6 +1159,7 @@ def _reject_shadowed_instance_member(member: str, contract: int, label: str) -> 
         "_name",
         "_representation_rules",
         "_structure",
+        "is_opaque_storage",
         "name",
         "representation_rules",
         "value",
@@ -1126,7 +1180,7 @@ def test_layer_owned_state_reaching_the_instance_dictionary_is_refused():
     # Below the root, each contract owns what it defines, so the members a
     # descriptor may not shadow are exactly the ones its own layer contributes.
     layers = (
-        ("_opaque_storage", "is_opaque_storage"),
+        ("is_category",),
         ("_bits", "bits"),
         (
             "_simple_types",
@@ -1362,7 +1416,6 @@ def test_the_canonical_structure_layers_follow_the_contract_mro():
         "str:DType",
         ("str:Any", *DType.Any.structure()),
         "str:DTypeCategory",
-        "bool:True",
         (),
     )
     assert DType.E2M1.structure() == (
@@ -1457,7 +1510,7 @@ def test_a_descriptor_class_cannot_inherit_owned_members_from_a_mixin(member):
 def test_an_inherited_owned_member_is_refused_at_the_layer_that_owns_it():
     # Below the root, a mixin collides with the contract the class is built on.
     for member, base in (
-        ("is_opaque_storage", DTypeCategory),
+        ("is_category", DTypeCategory),
         ("bits", SimpleDType),
         ("simple_types", CompoundDType),
         ("levels", BlockScaledDType),
@@ -1866,11 +1919,11 @@ def test_registered_block_scaled_extension_joins_the_hierarchy():
 
 
 def test_supported_carrier_construction_remains_compatible():
-    assert Generic([1.0]).dtype() is DType.Floating
-    assert Generic([1.0], dtype=DType.Any).dtype() is DType.Any
+    assert Generic([1.0], dtype=DType.Float32).dtype() is DType.Float32
+    assert Generic([1], dtype=DType.Int32).dtype() is DType.Int32
+    assert Generic([True], dtype=DType.Bool).dtype() is DType.Bool
     assert CPU(4).dtype() is DType.Float32
     assert CPU(4, dtype=DType.Int32).dtype() is DType.Int32
-    assert FileBacked().dtype() is DType.Floating
     assert FileBacked(dtype=DType.Float32).dtype() is DType.Float32
     assert FileBacked(dtype=DType.Int32).dtype() is DType.Int32
 
@@ -1925,14 +1978,12 @@ def test_every_carrier_explains_deferred_compound_storage_the_same_way():
 
 def test_each_carrier_accepts_exactly_its_documented_dtype_set():
     # RT012 states each accepted set exactly, so it is checked exhaustively
-    # against every built-in descriptor rather than by sampling. Note that the
-    # sets are not "the simple dtypes": Generic accepts the two legacy opaque
-    # categories alongside the concrete simple dtypes it is the reference for,
-    # and the narrow simple encodings are accepted nowhere.
+    # against every built-in descriptor rather than by sampling. The narrow
+    # simple encodings and every abstract category are accepted nowhere.
     accepted_sets = {
-        "Generic": (DType.Any, DType.Floating, DType.Float32, DType.Int32, DType.Bool),
+        "Generic": (DType.Float32, DType.Int32, DType.Bool),
         "CPU": (DType.Float32, DType.Int32, DType.Bool),
-        "FileBacked": (DType.Floating, DType.Float32, DType.Int32),
+        "FileBacked": (DType.Float32, DType.Int32),
     }
     builders = {
         "Generic": lambda dtype: Generic(
@@ -2088,14 +2139,14 @@ def test_evictable_composition_preserves_dtype_matching():
         sw.Evictable(CPU(2, dtype=DType.Int32), FileBacked(dtype=DType.Float32))
 
 
-def test_autograd_participation_is_the_documented_floating_pair():
+def test_autograd_participation_remains_available_for_float32_storage():
     layout = sw.Layout(sw.Shape(1), sw.Stride(1))
-    for carrier in (Generic([1.0]), CPU(1)):
+    for carrier in (Generic([1.0], dtype=DType.Float32), CPU(1)):
         tensor = sw.Tensor(carrier, 0, layout)
-        assert tensor.dtype() in (DType.Floating, DType.Float32)
+        assert tensor.dtype() is DType.Float32
         assert tensor.is_differentiable() is True
 
-    for carrier in (Generic([1], dtype=DType.Any), CPU(1, dtype=DType.Int32)):
+    for carrier in (Generic([1], dtype=DType.Int32), CPU(1, dtype=DType.Int32)):
         assert sw.Tensor(carrier, 0, layout).is_differentiable() is False
 
 
@@ -2940,10 +2991,7 @@ def test_registry_lookups_keep_their_subclass_type_without_a_cast():
     assert all(
         dtype.simple_types[0].bits > 0 for dtype in BlockScaledDType.registered()
     )
-    assert all(
-        dtype.is_opaque_storage() in (True, False)
-        for dtype in DTypeCategory.registered()
-    )
+    assert all(dtype.is_category() for dtype in DTypeCategory.registered())
 
 
 # --- Structural storage-dtype support ----------------------------------------
@@ -2954,14 +3002,14 @@ def test_registry_lookups_keep_their_subclass_type_without_a_cast():
 
 
 STORAGE_SUPPORT_SETS = {
-    "Generic": (DType.Any, DType.Floating, DType.Float32, DType.Int32, DType.Bool),
+    "Generic": (DType.Float32, DType.Int32, DType.Bool),
     "CPU": (DType.Float32, DType.Int32, DType.Bool),
-    "FileBacked": (DType.Floating, DType.Float32, DType.Int32),
+    "FileBacked": (DType.Float32, DType.Int32),
 }
 STORAGE_CARRIERS = {
-    "Generic": lambda: Generic([1.0]),
+    "Generic": lambda: Generic([1.0], dtype=DType.Float32),
     "CPU": lambda: CPU(4),
-    "FileBacked": lambda: FileBacked(),
+    "FileBacked": lambda: FileBacked(dtype=DType.Float32),
 }
 
 
@@ -3054,16 +3102,17 @@ def test_storage_support_is_allocation_free_and_survives_state_changes():
 
 def test_an_evictable_hierarchy_reports_what_both_tiers_can_store():
     narrow = Evictable(CPU(1), Generic([0.0], dtype=DType.Float32))
-    wide = Evictable(Generic([0.0]), Generic([0.0]))
+    wide = Evictable(
+        Generic([0.0], dtype=DType.Float32), Generic([0.0], dtype=DType.Float32)
+    )
 
-    # CPU cannot allocate the legacy opaque descriptors, so the hierarchy that
-    # composes it cannot either, even though its secondary tier could.
+    # Both hierarchy shapes expose only the concrete intersection of their tiers.
     assert narrow.supports_storage_dtype(DType.Float32)
     assert narrow.supports_storage_dtype(DType.Int32)
     assert not narrow.supports_storage_dtype(DType.Floating)
     assert not narrow.supports_storage_dtype(DType.Any)
-    assert wide.supports_storage_dtype(DType.Any)
-    assert wide.supports_storage_dtype(DType.Floating)
+    assert not wide.supports_storage_dtype(DType.Any)
+    assert not wide.supports_storage_dtype(DType.Floating)
 
 
 def test_an_evictable_answer_is_unchanged_by_residency():
@@ -3157,7 +3206,7 @@ def test_a_custom_carrier_widens_support_through_the_protected_hook():
     ids=["name", "none", "width", "object"],
 )
 def test_storage_support_requires_a_dtype(invalid):
-    for carrier in (CPU(1), Generic([1.0]), _MinimalCarrier()):
+    for carrier in (CPU(1), Generic([1.0], dtype=DType.Float32), _MinimalCarrier()):
         with pytest.raises(TypeError, match="storage dtype must be a DType"):
             carrier.supports_storage_dtype(invalid)
 
@@ -3165,10 +3214,20 @@ def test_storage_support_requires_a_dtype(invalid):
 def test_a_dtype_lookalike_cannot_claim_storage_support():
     spoofed = _SpoofedDType()
 
-    for carrier in (CPU(1), Generic([1.0]), FileBacked(), _MinimalCarrier()):
+    for carrier in (
+        CPU(1),
+        Generic([1.0], dtype=DType.Float32),
+        FileBacked(dtype=DType.Float32),
+        _MinimalCarrier(),
+    ):
         with pytest.raises(TypeError, match="storage dtype must be a DType"):
             carrier.supports_storage_dtype(cast(DType, spoofed))
     assert spoofed.compared == []
-    for carrier in (CPU(1), Generic([1.0]), FileBacked(), _MinimalCarrier()):
+    for carrier in (
+        CPU(1),
+        Generic([1.0], dtype=DType.Float32),
+        FileBacked(dtype=DType.Float32),
+        _MinimalCarrier(),
+    ):
         with pytest.raises(TypeError, match="storage dtype must be a DType"):
             carrier.supports_storage_dtype(cast(DType, _ExplodingDType()))

@@ -90,13 +90,23 @@ def test_evictable_constructor_exposes_promoted_hierarchy():
 @pytest.mark.parametrize(
     ("primary", "secondary", "error", "message"),
     [
-        (object(), FileBacked(), TypeError, "primary"),
-        (Generic([1.0]), object(), TypeError, "secondary"),
-        (Generic([1.0]), Generic([0.0], dtype=DType.Any), TypeError, "dtypes"),
-        (Generic([]), Generic([]), ValueError, "at least one"),
+        (object(), FileBacked(dtype=DType.Float32), TypeError, "primary"),
+        (Generic([1.0], dtype=DType.Float32), object(), TypeError, "secondary"),
         (
-            Generic([1.0]),
-            Generic([0.0], mutable=False),
+            Generic([1.0], dtype=DType.Float32),
+            Generic([0], dtype=DType.Int32),
+            TypeError,
+            "dtypes",
+        ),
+        (
+            Generic([], dtype=DType.Float32),
+            Generic([], dtype=DType.Float32),
+            ValueError,
+            "at least one",
+        ),
+        (
+            Generic([1.0], dtype=DType.Float32),
+            Generic([0.0], mutable=False, dtype=DType.Float32),
             RuntimeError,
             "mutable",
         ),
@@ -108,35 +118,35 @@ def test_evictable_constructor_validation(primary, secondary, error, message):
 
 
 def test_evictable_constructor_rejects_identical_and_released_tiers():
-    same = Generic([1.0])
+    same = Generic([1.0], dtype=DType.Float32)
     with pytest.raises(ValueError, match="distinct"):
         Evictable(same, same)
 
-    released_primary = Generic([1.0])
+    released_primary = Generic([1.0], dtype=DType.Float32)
     released_primary.release()
     with pytest.raises(RuntimeError, match=r"primary.*released"):
-        Evictable(released_primary, Generic([0.0]))
+        Evictable(released_primary, Generic([0.0], dtype=DType.Float32))
 
-    released_secondary = Generic([0.0])
+    released_secondary = Generic([0.0], dtype=DType.Float32)
     released_secondary.release()
     with pytest.raises(RuntimeError, match=r"secondary.*released"):
-        Evictable(Generic([1.0]), released_secondary)
+        Evictable(Generic([1.0], dtype=DType.Float32), released_secondary)
 
 
 def test_evictable_constructor_rejects_data_owned_by_another_composition():
-    primary = Generic([1.0])
-    first = Evictable(primary, Generic([0.0]))
+    primary = Generic([1.0], dtype=DType.Float32)
+    first = Evictable(primary, Generic([0.0], dtype=DType.Float32))
 
     with pytest.raises(RuntimeError, match="already owned"):
-        Evictable(primary, Generic([0.0]))
+        Evictable(primary, Generic([0.0], dtype=DType.Float32))
 
     assert first[0] == 1.0
 
 
 def test_rejected_owned_secondary_leaves_primary_unclaimed():
-    owned_secondary = Generic([0.0])
-    existing = Evictable(Generic([1.0]), owned_secondary)
-    unclaimed_primary = Generic([2.0])
+    owned_secondary = Generic([0.0], dtype=DType.Float32)
+    existing = Evictable(Generic([1.0], dtype=DType.Float32), owned_secondary)
+    unclaimed_primary = Generic([2.0], dtype=DType.Float32)
 
     with pytest.raises(RuntimeError, match="already owned"):
         Evictable(unclaimed_primary, owned_secondary)
@@ -147,8 +157,8 @@ def test_rejected_owned_secondary_leaves_primary_unclaimed():
 
 
 def test_destroying_evictable_returns_unreleased_tiers_to_the_caller():
-    primary = Generic([1.0])
-    secondary = Generic([0.0])
+    primary = Generic([1.0], dtype=DType.Float32)
+    secondary = Generic([0.0], dtype=DType.Float32)
     carrier = Evictable(primary, secondary)
 
     del carrier
@@ -161,8 +171,8 @@ def test_destroying_evictable_returns_unreleased_tiers_to_the_caller():
 
 
 def test_owned_tier_aliases_are_read_only_and_cannot_be_released():
-    primary = Generic([1.0])
-    secondary = Generic([0.0])
+    primary = Generic([1.0], dtype=DType.Float32)
+    secondary = Generic([0.0], dtype=DType.Float32)
     carrier = Evictable(primary, secondary)
 
     with pytest.raises(RuntimeError, match="not mutable"):
@@ -182,9 +192,9 @@ def test_owned_tier_aliases_are_read_only_and_cannot_be_released():
 
 
 def test_owned_tier_cannot_be_moved_directly():
-    primary = Generic([1.0])
-    carrier = Evictable(primary, Generic([0.0]))
-    destination = Generic([0.0])
+    primary = Generic([1.0], dtype=DType.Float32)
+    carrier = Evictable(primary, Generic([0.0], dtype=DType.Float32))
+    destination = Generic([0.0], dtype=DType.Float32)
 
     with pytest.raises(RuntimeError, match="cannot be moved directly"):
         sw.move(make_tensor(primary), destination)
@@ -194,8 +204,10 @@ def test_owned_tier_cannot_be_moved_directly():
 
 
 def test_ownership_guards_compose_for_nested_evictable_carrier():
-    inner = Evictable(Generic([1.0]), Generic([0.0]))
-    outer = Evictable(inner, Generic([0.0]))
+    inner = Evictable(
+        Generic([1.0], dtype=DType.Float32), Generic([0.0], dtype=DType.Float32)
+    )
+    outer = Evictable(inner, Generic([0.0], dtype=DType.Float32))
 
     with pytest.raises(RuntimeError, match="cannot be modified directly"):
         inner.evict()
@@ -208,8 +220,8 @@ def test_ownership_guards_compose_for_nested_evictable_carrier():
 
 
 def test_wrapper_mutation_remains_available_and_updates_its_version_once():
-    primary = Generic([1.0])
-    carrier = Evictable(primary, Generic([0.0]))
+    primary = Generic([1.0], dtype=DType.Float32)
+    carrier = Evictable(primary, Generic([0.0], dtype=DType.Float32))
 
     carrier[0] = 2.0
 
@@ -264,18 +276,20 @@ def test_evict_and_promote_are_idempotent():
 
 def test_elementwise_fallback_moves_generic_hierarchy():
     carrier = Evictable(
-        Generic(["a", "b"], dtype=DType.Any),
-        Generic([None, None], dtype=DType.Any),
+        Generic([1.0, 2.0], dtype=DType.Float32),
+        Generic([0.0, 0.0], dtype=DType.Float32),
     )
 
     carrier.evict()
     carrier.promote()
 
-    assert [carrier[i] for i in range(2)] == ["a", "b"]
+    assert [carrier[i] for i in range(2)] == [1.0, 2.0]
 
 
 def test_transition_reallocates_an_undersized_secondary_tier():
-    carrier = Evictable(Generic([1.0, 2.0]), Generic([0.0]))
+    carrier = Evictable(
+        Generic([1.0, 2.0], dtype=DType.Float32), Generic([0.0], dtype=DType.Float32)
+    )
 
     carrier.evict()
 
@@ -295,8 +309,8 @@ def test_failed_eviction_preserves_state_and_can_be_retried():
                 raise OSError("boom")
             super()._copy(tensor, destination, output, element_count)
 
-    primary = Generic([1.0, 2.0])
-    secondary = Generic([])
+    primary = Generic([1.0, 2.0], dtype=DType.Float32)
+    secondary = Generic([], dtype=DType.Float32)
     carrier = Evictable(primary, secondary)
 
     with registered_move_operation(Generic, Generic, FailFirstMove):
@@ -331,7 +345,9 @@ def test_failed_promotion_preserves_state_and_can_be_retried():
                 raise OSError("boom")
             super()._copy(tensor, destination, output, element_count)
 
-    carrier = Evictable(Generic([1.0, 2.0]), Generic([]))
+    carrier = Evictable(
+        Generic([1.0, 2.0], dtype=DType.Float32), Generic([], dtype=DType.Float32)
+    )
     original_primary = carrier.primary
     carrier.evict()
     evicted_secondary = carrier.secondary
@@ -372,7 +388,9 @@ def test_transitions_use_lowered_execution_not_autograd_forward():
             return super()._forward(tensor, destination)
 
     with registered_move_operation(Generic, Generic, SpyMove):
-        carrier = Evictable(Generic([1.0]), Generic([0.0]))
+        carrier = Evictable(
+            Generic([1.0], dtype=DType.Float32), Generic([0.0], dtype=DType.Float32)
+        )
         carrier.evict()
         carrier.promote()
 
@@ -396,7 +414,11 @@ def test_adapter_uses_sealed_lowered_execution_when_subclass_shadows_method():
         def backward(self, gradient):
             return (gradient,)
 
-    tensor = make_tensor(Evictable(Generic([1.0]), Generic([0.0])))
+    tensor = make_tensor(
+        Evictable(
+            Generic([1.0], dtype=DType.Float32), Generic([0.0], dtype=DType.Float32)
+        )
+    )
     adapter = EvictableOperation(ShadowedLoweredOperation())
 
     result = adapter.forward(tensor)
@@ -414,13 +436,17 @@ def test_transitions_resolve_move_registry_when_each_transition_runs():
             calls.append("spy")
             return super()._forward(tensor, destination)
 
-    carrier = Evictable(Generic([1.0]), Generic([0.0]))
+    carrier = Evictable(
+        Generic([1.0], dtype=DType.Float32), Generic([0.0], dtype=DType.Float32)
+    )
     with registered_move_operation(Generic, Generic, SpyMove):
         carrier.evict()
     carrier.promote()
 
     with registered_move_operation(Generic, Generic, SpyMove):
-        later = Evictable(Generic([2.0]), Generic([0.0]))
+        later = Evictable(
+            Generic([2.0], dtype=DType.Float32), Generic([0.0], dtype=DType.Float32)
+        )
     later.evict()
 
     assert calls == ["spy"]
@@ -450,8 +476,8 @@ def test_immutable_promotion_keeps_the_move_destination_without_copying():
             return result
 
     carrier = Evictable(
-        Generic([1.0, 2.0], mutable=False),
-        Generic([]),
+        Generic([1.0, 2.0], mutable=False, dtype=DType.Float32),
+        Generic([], dtype=DType.Float32),
     )
     with registered_move_operation(Generic, Generic, CaptureDestinationMove):
         carrier.evict()
@@ -561,7 +587,12 @@ def test_cpu_operation_adapter_owns_primary_operation_and_original_inputs():
 
 
 def test_generic_operation_adapter_owns_generic_operation():
-    tensor = make_tensor(Evictable(Generic([-1.0, 2.0]), Generic([0.0, 0.0])))
+    tensor = make_tensor(
+        Evictable(
+            Generic([-1.0, 2.0], dtype=DType.Float32),
+            Generic([0.0, 0.0], dtype=DType.Float32),
+        )
+    )
 
     result = sw.relu(tensor)
 
@@ -645,7 +676,11 @@ def test_no_grad_uses_adapter_without_attaching_graph():
 
 
 def test_adapter_preserves_generic_ctx_and_cpu_native_state():
-    generic = make_tensor(Evictable(Generic([0.0]), Generic([0.0])))
+    generic = make_tensor(
+        Evictable(
+            Generic([0.0], dtype=DType.Float32), Generic([0.0], dtype=DType.Float32)
+        )
+    )
     sigmoid = sw.sigmoid(generic)
     saved = adapter_for(sigmoid).primary_operation.ctx["saved_values"]
     assert saved == [0.5]
@@ -724,14 +759,20 @@ def test_mutation_after_forward_still_fails_version_validation():
 
 
 def test_primary_alias_cannot_silently_change_saved_autograd_input():
-    primary = Generic([2.0])
-    tensor = make_tensor(Evictable(primary, Generic([0.0])))
+    primary = Generic([2.0], dtype=DType.Float32)
+    tensor = make_tensor(Evictable(primary, Generic([0.0], dtype=DType.Float32)))
     result = sw.pow(tensor, 3)
 
     with pytest.raises(RuntimeError, match="not mutable"):
         primary[0] = 4.0
 
-    result.backward(make_tensor(Evictable(Generic([1.0]), Generic([0.0]))))
+    result.backward(
+        make_tensor(
+            Evictable(
+                Generic([1.0], dtype=DType.Float32), Generic([0.0], dtype=DType.Float32)
+            )
+        )
+    )
 
     assert tensor.grad is not None
     assert values(tensor.grad) == pytest.approx([12.0])
@@ -1048,6 +1089,26 @@ def test_an_unadvertised_plan_is_refused_before_any_work():
     assert hierarchy.is_evicted() is False
 
 
+@pytest.mark.parametrize("category", [DType.Any, DType.Floating])
+def test_category_tensor_rejection_precedes_evictable_lowering(category):
+    def category_hierarchy():
+        primary = _SingleDTypeCarrier(category, 2)
+        secondary = _SingleDTypeCarrier(category, 2)
+        hierarchy = Evictable(primary, secondary)
+        primary.allocations.clear()
+        secondary.allocations.clear()
+        return hierarchy, primary, secondary
+
+    hierarchy, primary, secondary = category_hierarchy()
+
+    with pytest.raises(ValueError, match="abstract dtype category"):
+        Tensor(hierarchy, 0, flat_layout(2))
+
+    assert primary.allocations == []
+    assert secondary.allocations == []
+    assert hierarchy.version == 0
+
+
 def test_float64_accumulation_is_forwarded_through_evictable_lowering():
     # The primary decides which accumulator plans the hierarchy advertises, so
     # this uses a Generic primary: native CPU declares only the Float32
@@ -1098,24 +1159,20 @@ def test_results_and_gradients_advertise_their_own_capabilities():
     assert evictable_carrier(tensor.grad).operation_capabilities() == expected
 
 
-def test_a_legacy_opaque_hierarchy_keeps_its_documented_behavior():
-    # Legacy opaque storage is outside simple-dtype planning: this hierarchy
-    # resolves no plan for its own tensors, so the gate does not apply and the
-    # documented legacy path still runs. Its advertised set still describes the
-    # implementation rather than the dtype this instance happens to hold.
-    primary = Generic([1.0, 2.0])
-    secondary = Generic([0.0, 0.0])
+def test_a_concrete_hierarchy_keeps_its_documented_behavior():
+    primary = Generic([1.0, 2.0], dtype=DType.Float32)
+    secondary = Generic([0.0, 0.0], dtype=DType.Float32)
     expected = keepable(primary, secondary)
     hierarchy = Evictable(primary, secondary)
     tensor = Tensor(hierarchy, 0, flat_layout(2))
 
-    assert hierarchy.dtype() is DType.Floating
+    assert hierarchy.dtype() is DType.Float32
     assert hierarchy.operation_capabilities() == expected
 
     result = sw.relu(tensor)
 
     assert isinstance(result.carrier, Evictable)
-    assert result.dtype() is DType.Floating
+    assert result.dtype() is DType.Float32
     assert values(result) == [1.0, 2.0]
 
 

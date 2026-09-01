@@ -20,13 +20,11 @@ extensions without changing the built-in namespace.
 | --- | --- |
 | descriptor | An immutable, canonically registered `DType` singleton that is the process-local identity of one dtype category or representation and is compared by object identity. |
 | registered name | The unique non-empty string by which a descriptor is discovered. |
-| category | A `DTypeCategory` descriptor that places dtypes in a supertype hierarchy and may carry the legacy opaque-storage disposition, but defines neither a fixed-width scalar encoding nor a compound physical representation. |
+| category | A `DTypeCategory` descriptor that places dtypes in a supertype hierarchy and defines neither a fixed-width scalar encoding nor a compound physical representation; whether a carrier accepts a descriptor as storage is defined separately by `carrier-storage`. |
 | simple dtype | A `SimpleDType` descriptor for one fixed-width scalar encoding; being simple classifies the encoding and does not imply that any carrier can store or execute it. |
 | structure | The immutable canonical identity record captured at descriptor finalization, recursively incorporating every representation-defining field, referenced descriptor structure, and extension contribution; it determines pickle compatibility and any kind-specific structural uniqueness. |
 | extension descriptor | A non-built-in descriptor registered after the built-in graph is installed, discoverable through registry APIs without adding an attribute to the frozen `DType` namespace. |
-
 ## Requirements
-
 ### Requirement: Every dtype has one registered descriptor identity
 
 Constructing a concrete descriptor SHALL atomically register that descriptor
@@ -71,9 +69,10 @@ categories from nearest to outermost. `is_subtype_of(other)` SHALL return
 `True` when the descriptor is `other` or reaches `other` through that category
 chain, and SHALL fail with `TypeError` when `other` is not a `DType`.
 
-`is_opaque_storage()` SHALL report only a category's legacy opaque-storage
-disposition. It SHALL NOT imply support by any carrier; carrier-specific
-storage support is defined by `carrier-storage`.
+The public descriptor surface SHALL provide no `is_opaque_storage` attribute.
+Reading or calling that removed attribute SHALL fail with `AttributeError`.
+Carrier-specific storage support remains defined by `carrier-storage` rather
+than by a descriptor kind or category property.
 
 #### Scenario: Query a hierarchy
 
@@ -87,25 +86,10 @@ storage support is defined by `carrier-storage`.
 - **WHEN** `is_subtype_of` receives an object that is not a `DType`
 - **THEN** it fails with `TypeError`
 
-### Requirement: Categories describe relationships and legacy disposition
+#### Scenario: Observe removal of the opaque-storage query
 
-`DTypeCategory(name, *, supertype=None, opaque_storage=False)` SHALL construct
-and return a category descriptor. `name` names the category's unique registry
-key and SHALL satisfy the registered-name contract. `supertype` names the
-category's immediately enclosing category; it SHALL be optional, SHALL default
-to `None` for a root category, and when provided SHALL be a `DTypeCategory`.
-When `supertype` is neither `None` nor a `DTypeCategory`, construction SHALL
-fail with `TypeError`. `opaque_storage` states whether the category has the
-legacy opaque-storage disposition; it SHALL be optional, SHALL default to
-`False`, and SHALL determine the result of `is_opaque_storage()` without making
-the category simple or compound.
-
-#### Scenario: Construct a category extension
-
-- **WHEN** a caller constructs a category with a unique name and a registered
-  category as its supertype
-- **THEN** the result is registered, reports `is_category() == True`, and joins
-  the supplied category chain
+- **WHEN** a caller reads `is_opaque_storage` from any descriptor
+- **THEN** the read fails with `AttributeError`
 
 ### Requirement: Simple dtypes declare one exact positive width
 
@@ -137,9 +121,9 @@ supports that encoding.
 ### Requirement: The built-in descriptor graph is stable
 
 The built-in categories SHALL be `Any`, `Floating`, and `Integer`. `Any` SHALL
-be the root; `Floating` and `Integer` SHALL have `Any` as their supertype.
-`Any` and `Floating` SHALL report the legacy opaque-storage disposition, while
-`Integer` SHALL not.
+be the root; `Floating` and `Integer` SHALL have `Any` as their supertype. All
+three SHALL remain relationship-only categories that may serve as supertypes
+for registered simple or compound descriptors.
 
 The built-in simple dtypes and widths SHALL be:
 
@@ -157,6 +141,13 @@ the object returned by `DType.from_name(<name>)`.
 - **WHEN** a caller reads `DType.Float32` and calls
   `DType.from_name("Float32")`
 - **THEN** both expressions return the same descriptor object
+
+#### Scenario: Retain categories as extension supertypes
+
+- **WHEN** a caller registers a valid `SimpleDType` whose supertype is
+  `DType.Floating`
+- **THEN** the descriptor joins the Floating and Any hierarchy even though
+  those categories are not physical storage representations
 
 ### Requirement: Registry discovery is class-narrowed
 
@@ -211,7 +202,9 @@ class member later SHALL fail with `AttributeError`.
 finalization. It SHALL include the descriptor contracts, the complete
 structures of every referenced descriptor, and the result of
 `structure_extension()`. Referenced descriptors SHALL already be canonical
-registered identities.
+registered identities. A category's canonical contract structure SHALL
+describe its relationship kind and supertype and SHALL contain no storage
+disposition field or value.
 
 `structure_extension()` SHALL default to `()`. An extension implementation MAY
 override it to return a tuple of exact strings, numbers, `None`, `Whole`, and
@@ -233,6 +226,13 @@ uniqueness rule imposed by the descriptor kind.
   as its supertype or representation component
 - **THEN** construction fails with `ValueError` and registers nothing
 
+#### Scenario: Record a category without storage disposition
+
+- **WHEN** a caller reads `structure()` from `DType.Any`, `DType.Floating`, or
+  an extension category
+- **THEN** the returned canonical structure contains its category hierarchy
+  and no opaque-storage field or value
+
 ### Requirement: Pickle reconstruction preserves receiving-process identity
 
 Serializing a descriptor SHALL record its registered name and complete
@@ -243,7 +243,9 @@ complete structure matches.
 If the name is not registered in the receiving process, deserialization SHALL
 fail with `LookupError`. If the name is registered to a descriptor with a
 different structure, deserialization SHALL fail with `ValueError` rather than
-substituting that descriptor.
+substituting that descriptor. A payload whose category structure contains the
+removed opaque-storage disposition SHALL therefore be incompatible with the
+new relationship-only category structure and SHALL fail with `ValueError`.
 
 #### Scenario: Unpickle a registered extension
 
@@ -256,6 +258,13 @@ substituting that descriptor.
 - **WHEN** the receiving process registered the serialized name with a
   different width, hierarchy, plane, rule, scale, or extension structure
 - **THEN** deserialization fails with `ValueError`
+
+#### Scenario: Reject a legacy category structure
+
+- **WHEN** a serialized descriptor recursively contains a category structure
+  with the removed opaque-storage disposition
+- **THEN** deserialization against the relationship-only registered graph
+  fails with `ValueError` rather than substituting a descriptor
 
 ### Requirement: The DType class namespace contains only built-ins
 
@@ -270,3 +279,53 @@ attribute SHALL fail with `AttributeError`.
 - **WHEN** a caller registers an extension named `Float16`
 - **THEN** `DType.from_name("Float16")` returns it and `DType.Float16` remains
   unavailable
+
+### Requirement: Categories describe hierarchy relationships
+
+Within the dtype descriptor model, a category SHALL mean a `DTypeCategory`
+that organizes descriptors in an abstract supertype hierarchy. A category
+SHALL be a relationship identity rather than a physical storage
+representation; `DType.Any`, `DType.Floating`, `DType.Integer`, and registered
+extension categories SHALL all follow that same definition.
+
+`DTypeCategory(name, *, supertype=None)` SHALL construct and return a category
+descriptor. `name` names the category's unique registry key and SHALL satisfy
+the registered-name contract. `supertype` names the category's immediately
+enclosing category; it SHALL be optional, SHALL default to `None` for a root
+category, and when provided SHALL be a registered `DTypeCategory`. When
+`supertype` is neither `None` nor a `DTypeCategory`, construction SHALL fail
+with `TypeError` before registering `name`. When `supertype` is a
+`DTypeCategory` object but is unfinished, was rejected during registration, or
+is not the canonical identity registered under its name, construction SHALL
+fail with `ValueError` before registering `name`.
+
+The constructor SHALL accept `supertype` only as a keyword argument. Supplying
+the removed `opaque_storage` keyword SHALL fail with `TypeError` identifying an
+unexpected keyword and SHALL register nothing.
+
+#### Scenario: Construct a category extension
+
+- **WHEN** a caller constructs a category with a unique name and a registered
+  category as its `supertype`
+- **THEN** the result is registered, reports `is_category() == True`, and joins
+  the supplied category chain
+
+#### Scenario: Reject the removed storage disposition
+
+- **WHEN** a caller supplies `opaque_storage` to `DTypeCategory`
+- **THEN** construction fails with `TypeError` before the requested name is
+  registered
+
+#### Scenario: Reject a non-category supertype
+
+- **WHEN** a caller supplies a non-category descriptor or another non-category
+  value as `supertype`
+- **THEN** construction fails with `TypeError` before the requested name is
+  registered
+
+#### Scenario: Reject a noncanonical category supertype
+
+- **WHEN** a caller supplies an unfinished, rejected, or noncanonical
+  `DTypeCategory` object as `supertype`
+- **THEN** construction fails with `ValueError` before the requested name is
+  registered

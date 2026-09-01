@@ -18,9 +18,9 @@ def validate_storage_dtype(
     """Validate a dtype supplied as one carrier's homogeneous storage.
 
     A carrier holds elements of exactly one dtype, so it accepts a fixed set of
-    simple or legacy opaque descriptors. Compound descriptors are rejected with
-    a message naming the deferred capability rather than partially constructing
-    a carrier that could only hold one of their planes.
+    concrete simple descriptors. Compound descriptors are rejected with a
+    message naming the deferred capability rather than partially constructing a
+    carrier that could only hold one of their planes.
 
     Args:
         dtype: Candidate descriptor supplied to a carrier constructor.
@@ -86,8 +86,8 @@ def storage_zero(dtype: DType) -> object:
     Concrete simple storage is always representable, so an allocation that has
     not been written to, and a physical slot no logical index of a layout
     addresses, both hold that dtype's zero rather than a placeholder object.
-    Legacy opaque storage (``DType.Any``, ``DType.Floating``) stores arbitrary
-    Python objects and has no zero, so it keeps ``None``.
+    A descriptor without a defined concrete stored zero returns ``None``. That
+    result does not make the descriptor supported carrier storage.
 
     Args:
         dtype: The storage dtype whose zero is wanted.
@@ -100,7 +100,7 @@ def storage_zero(dtype: DType) -> object:
         >>> from strideweave.carriers.dtype import DType, storage_zero
         >>> storage_zero(DType.Int32)
         0
-        >>> storage_zero(DType.Floating) is None
+        >>> storage_zero(DType.Float64) is None
         True
     """
     # Descriptors are identity singletons (SW002), and the built-in registry is

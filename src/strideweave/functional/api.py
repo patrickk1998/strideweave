@@ -339,7 +339,7 @@ def no_grad() -> Iterator[None]:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([1, 2]), 0, Layout(Shape(2), Stride(1)))
+        >>> x = Tensor(Generic([1, 2], dtype=sw.DType.Float32), 0, Layout(Shape(2), Stride(1)))
         >>> with sw.no_grad():
         ...     y = sw.mul(x, 2)
         >>> y.autograd_ctx is None
@@ -373,10 +373,10 @@ def add(lhs: Any, rhs: Any) -> Any:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
         >>> layout = Layout(Shape(2), Stride(1))
-        >>> x = Tensor(Generic([1, 2]), 0, layout)
-        >>> y = Tensor(Generic([3, 4]), 0, layout)
+        >>> x = Tensor(Generic([1, 2], dtype=sw.DType.Float32), 0, layout)
+        >>> y = Tensor(Generic([3, 4], dtype=sw.DType.Float32), 0, layout)
         >>> sw.add(x, y)[1]
-        6
+        6.0
     """
 
     return _dispatch_binary("add", lhs, rhs).forward(lhs, rhs)
@@ -401,7 +401,7 @@ def broadcast_to(tensor: Any, target: Shape) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> layout = sw.Layout(sw.Shape([1, 2]), sw.Stride([1, 1]))
-        >>> x = sw.Tensor(sw.Generic([3.0, 4.0]), 0, layout)
+        >>> x = sw.Tensor(sw.Generic([3.0, 4.0], dtype=sw.DType.Float32), 0, layout)
         >>> y = sw.broadcast_to(x, sw.Shape([3, 2]))
         >>> [y[i, 1] for i in range(3)]
         [4.0, 4.0, 4.0]
@@ -458,7 +458,7 @@ def as_strided(tensor: Any, shape: Shape, stride: Stride) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> layout = sw.Layout(sw.Shape([5, 4]), sw.Stride([4, 1]))
-        >>> x = sw.Tensor(sw.Generic([float(i) for i in range(20)]), 0, layout)
+        >>> x = sw.Tensor(sw.Generic([float(i) for i in range(20)], dtype=sw.DType.Float32), 0, layout)
         >>> y = sw.as_strided(x, sw.Shape([2, 2]), sw.Stride([1, 2]))
         >>> y.layout == sw.Layout(sw.Shape([2, 2]), sw.Stride([4, 8]))
         True
@@ -517,7 +517,7 @@ def unsqueeze(tensor: Any, dim: Any) -> Any:
 
     Examples:
         >>> import strideweave as sw
-        >>> x = sw.Tensor(sw.Generic([1.0, 2.0]), 0,
+        >>> x = sw.Tensor(sw.Generic([1.0, 2.0], dtype=sw.DType.Float32), 0,
         ...               sw.Layout(sw.Shape(2), sw.Stride(1)))
         >>> sw.unsqueeze(x, 0).layout.shape
         Shape<(1, 2)>
@@ -544,7 +544,7 @@ def squeeze(tensor: Any, dim: Any) -> Any:
 
     Examples:
         >>> import strideweave as sw
-        >>> x = sw.Tensor(sw.Generic([1.0, 2.0]), 0,
+        >>> x = sw.Tensor(sw.Generic([1.0, 2.0], dtype=sw.DType.Float32), 0,
         ...               sw.Layout(sw.Shape([1, 2]), sw.Stride([0, 1])))
         >>> sw.squeeze(x, 0).layout.shape
         Shape<(2,)>
@@ -578,7 +578,7 @@ def broadcast_in_dim(
 
     Examples:
         >>> import strideweave as sw
-        >>> x = sw.Tensor(sw.Generic([1.0, 2.0]), 0,
+        >>> x = sw.Tensor(sw.Generic([1.0, 2.0], dtype=sw.DType.Float32), 0,
         ...               sw.Layout(sw.Shape(2), sw.Stride(1)))
         >>> y = sw.broadcast_in_dim(x, sw.Shape([3, 2]), (1,))
         >>> y.layout.stride
@@ -636,10 +636,10 @@ def sub(lhs: Any, rhs: Any) -> Any:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
         >>> layout = Layout(Shape(2), Stride(1))
-        >>> x = Tensor(Generic([5, 7]), 0, layout)
-        >>> y = Tensor(Generic([3, 4]), 0, layout)
+        >>> x = Tensor(Generic([5, 7], dtype=sw.DType.Float32), 0, layout)
+        >>> y = Tensor(Generic([3, 4], dtype=sw.DType.Float32), 0, layout)
         >>> sw.sub(x, y)[1]
-        3
+        3.0
     """
 
     return _dispatch_binary("sub", lhs, rhs).forward(lhs, rhs)
@@ -661,9 +661,9 @@ def neg(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([2, -3]), 0, Layout(Shape(2), Stride(1)))
+        >>> x = Tensor(Generic([2, -3], dtype=sw.DType.Float32), 0, Layout(Shape(2), Stride(1)))
         >>> sw.neg(x)[1]
-        3
+        3.0
     """
 
     tensor = _as_tensor(tensor, "tensor")
@@ -688,10 +688,10 @@ def elementwise_mul(lhs: Any, rhs: Any) -> Any:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
         >>> layout = Layout(Shape(2), Stride(1))
-        >>> x = Tensor(Generic([2, 3]), 0, layout)
-        >>> y = Tensor(Generic([4, 5]), 0, layout)
+        >>> x = Tensor(Generic([2, 3], dtype=sw.DType.Float32), 0, layout)
+        >>> y = Tensor(Generic([4, 5], dtype=sw.DType.Float32), 0, layout)
         >>> sw.elementwise_mul(x, y)[1]
-        15
+        15.0
     """
 
     return _dispatch_binary("elementwise_mul", lhs, rhs).forward(lhs, rhs)
@@ -715,9 +715,9 @@ def mul(lhs: Any, rhs: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([2, 3]), 0, Layout(Shape(2), Stride(1)))
+        >>> x = Tensor(Generic([2, 3], dtype=sw.DType.Float32), 0, Layout(Shape(2), Stride(1)))
         >>> sw.mul(x, 10)[1]
-        30
+        30.0
     """
 
     from ..core.tensor import Tensor
@@ -754,8 +754,8 @@ def div(lhs: Any, rhs: Any) -> Any:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
         >>> layout = Layout(Shape(2), Stride(1))
-        >>> x = Tensor(Generic([8, 9]), 0, layout)
-        >>> y = Tensor(Generic([2, 3]), 0, layout)
+        >>> x = Tensor(Generic([8, 9], dtype=sw.DType.Float32), 0, layout)
+        >>> y = Tensor(Generic([2, 3], dtype=sw.DType.Float32), 0, layout)
         >>> sw.div(x, y)[1]
         3.0
     """
@@ -974,7 +974,7 @@ def exp(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> x = Tensor(Generic([0], dtype=sw.DType.Float32), 0, Layout(Shape(1), Stride(1)))
         >>> sw.exp(x)[0]
         1.0
     """
@@ -1264,9 +1264,9 @@ def relu(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([-1, 2]), 0, Layout(Shape(2), Stride(1)))
+        >>> x = Tensor(Generic([-1, 2], dtype=sw.DType.Float32), 0, Layout(Shape(2), Stride(1)))
         >>> sw.relu(x)[1]
-        2
+        2.0
     """
 
     return _dispatch_unary("relu", tensor).forward(tensor)
@@ -1288,7 +1288,7 @@ def sigmoid(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> x = Tensor(Generic([0], dtype=sw.DType.Float32), 0, Layout(Shape(1), Stride(1)))
         >>> sw.sigmoid(x)[0]
         0.5
     """
@@ -1311,7 +1311,7 @@ def tanh(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> x = Tensor(Generic([0], dtype=sw.DType.Float32), 0, Layout(Shape(1), Stride(1)))
         >>> sw.tanh(x)[0]
         0.0
     """
@@ -1336,7 +1336,7 @@ def gelu(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> x = Tensor(Generic([0], dtype=sw.DType.Float32), 0, Layout(Shape(1), Stride(1)))
         >>> sw.gelu(x)[0]
         0.0
     """
@@ -1360,7 +1360,7 @@ def silu(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> x = Tensor(Generic([0], dtype=sw.DType.Float32), 0, Layout(Shape(1), Stride(1)))
         >>> sw.silu(x)[0]
         0.0
     """
@@ -1384,7 +1384,7 @@ def softplus(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> x = Tensor(Generic([0], dtype=sw.DType.Float32), 0, Layout(Shape(1), Stride(1)))
         >>> f"{sw.softplus(x)[0]:.6f}"
         '0.693147'
     """
@@ -1409,7 +1409,7 @@ def elu(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([0]), 0, Layout(Shape(1), Stride(1)))
+        >>> x = Tensor(Generic([0], dtype=sw.DType.Float32), 0, Layout(Shape(1), Stride(1)))
         >>> sw.elu(x)[0]
         0.0
     """
@@ -1434,9 +1434,9 @@ def leaky_relu(tensor: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([-2]), 0, Layout(Shape(1), Stride(1)))
-        >>> sw.leaky_relu(x)[0]
-        -0.02
+        >>> x = Tensor(Generic([-2], dtype=sw.DType.Float32), 0, Layout(Shape(1), Stride(1)))
+        >>> f"{sw.leaky_relu(x)[0]:.2f}"
+        '-0.02'
     """
 
     return _dispatch_unary("leaky_relu", tensor).forward(tensor)
@@ -1455,9 +1455,9 @@ def pow(base: Any, exponent: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([2, 3]), 0, Layout(Shape(2), Stride(1)))
+        >>> x = Tensor(Generic([2, 3], dtype=sw.DType.Float32), 0, Layout(Shape(2), Stride(1)))
         >>> sw.pow(x, 3)[1]
-        27
+        27.0
     """
 
     from ..core.tensor import Tensor
@@ -1987,10 +1987,10 @@ def matmul(lhs: Any, rhs: Any, *, accumulator_dtype: SimpleDType | None = None) 
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
-        >>> rhs = Tensor(Generic([1, 1, 1, 2, 2, 2]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> lhs = Tensor(Generic([1, 2, 3, 4, 5, 6], dtype=sw.DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> rhs = Tensor(Generic([1, 1, 1, 2, 2, 2], dtype=sw.DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> sw.matmul(lhs, rhs)[1, 1]
-        22
+        22.0
     """
 
     return _matmul_2mode(lhs, rhs, accumulator_dtype=accumulator_dtype)
@@ -2031,7 +2031,7 @@ def move(tensor: Any, destination: Any) -> Any:
     Args:
         tensor: Tensor whose values should be moved.
         destination: Pre-constructed mutable ``Carrier`` instance with the
-            tensor's dtype that receives the values, such as ``FileBacked()``
+            tensor's dtype that receives the values, such as ``FileBacked(dtype=sw.DType.Float32)``
             or ``CPU(6)``.
 
     Returns:
@@ -2040,8 +2040,8 @@ def move(tensor: Any, destination: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import FileBacked, Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([1, 2]), 0, Layout(Shape(2), Stride(1)))
-        >>> moved = sw.move(x, FileBacked())
+        >>> x = Tensor(Generic([1, 2], dtype=sw.DType.Float32), 0, Layout(Shape(2), Stride(1)))
+        >>> moved = sw.move(x, FileBacked(dtype=sw.DType.Float32))
         >>> moved[1]
         2.0
     """
@@ -2084,10 +2084,10 @@ def einsum(lhs: Any, rhs: Any, description: str) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
-        >>> rhs = Tensor(Generic([1, 1, 1, 2, 2, 2]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> lhs = Tensor(Generic([1, 2, 3, 4, 5, 6], dtype=sw.DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> rhs = Tensor(Generic([1, 1, 1, 2, 2, 2], dtype=sw.DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> sw.einsum(lhs, rhs, "a b, c b -> a c")[1, 1]
-        22
+        22.0
     """
 
     if not isinstance(description, str):
@@ -2124,13 +2124,13 @@ def rearrange(tensor: Any, output: Tree | str, selection: Tree | None = None) ->
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Node, Shape, Stride, Tensor, Tree
-        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6], dtype=sw.DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> sw.rearrange(x, "a b -> b a")[2, 1]
-        6
+        6.0
         >>> output = Tree(Node.id(1), Node.id(0))
         >>> selection = Tree(Node.Leaf, Node.Leaf)
         >>> sw.rearrange(x, output, selection)[2, 1]
-        6
+        6.0
     """
 
     if isinstance(output, str):
@@ -2157,9 +2157,9 @@ def permute(tensor: Any, *order: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6], dtype=sw.DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> sw.permute(x, 1, 0)[2, 1]
-        6
+        6.0
     """
 
     return _dispatch_unary("permute", tensor).forward(tensor, *order)
@@ -2181,10 +2181,10 @@ def _view(tensor: Any, key: Any) -> Any:
     Examples:
         >>> import strideweave as sw
         >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+        >>> x = Tensor(Generic([1, 2, 3, 4, 5, 6], dtype=sw.DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2])))
         >>> row = x[1, :]
         >>> row[2]
-        6
+        6.0
     """
 
     return _dispatch_unary("view", tensor).forward(tensor, key)

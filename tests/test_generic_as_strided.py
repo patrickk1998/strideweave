@@ -9,7 +9,7 @@ from strideweave.core._representation import Subtensor, TensorRepresentation
 
 def _tensor(values: list[float], shape: sw.Shape, stride: sw.Stride) -> sw.Tensor:
     return sw.Tensor(
-        sw.Generic(values, dtype=sw.DType.Floating),
+        sw.Generic(values, dtype=sw.DType.Float32),
         0,
         sw.Layout(shape, stride),
     )
@@ -72,7 +72,9 @@ def test_as_strided_composes_a_mapping_inside_a_noncanonical_leading_mode(
 ) -> None:
     layout = sw.Layout(sw.Shape([5, 4]), sw.Stride([4, 1]))
     if backend == "generic":
-        carrier = sw.Generic([float(index) for index in range(layout.cosize)])
+        carrier = sw.Generic(
+            [float(index) for index in range(layout.cosize)], dtype=sw.DType.Float32
+        )
     else:
         carrier = sw.CPU(layout.cosize)
         for index in range(layout.cosize):
@@ -90,7 +92,9 @@ def test_as_strided_large_logical_extent_does_not_enumerate_coordinates(
     backend: str,
 ) -> None:
     extent = 10**9
-    carrier = sw.Generic([1.0]) if backend == "generic" else sw.CPU(1)
+    carrier = (
+        sw.Generic([1.0], dtype=sw.DType.Float32) if backend == "generic" else sw.CPU(1)
+    )
     source = sw.Tensor(
         carrier,
         0,

@@ -405,7 +405,9 @@ def test_scatter_rejects_non_tensor_and_foreign_template_before_work() -> None:
 
     with pytest.raises(TypeError):
         carrier.scatter(object(), template, selection)
-    foreign = sw.Tensor(sw.Generic([0.0] * FULL_SIZE), 0, _layout(FULL_SHAPE))
+    foreign = sw.Tensor(
+        sw.Generic([0.0] * FULL_SIZE, dtype=sw.DType.Float32), 0, _layout(FULL_SHAPE)
+    )
     with pytest.raises(TypeError):
         carrier.scatter(compact, foreign, selection)
 

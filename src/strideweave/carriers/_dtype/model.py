@@ -585,10 +585,6 @@ class DType(metaclass=_DTypeNamespace):
         """Return whether this descriptor needs several simple-dtype planes."""
         return False
 
-    def is_opaque_storage(self) -> bool:
-        """Return whether legacy carriers may store this descriptor opaquely."""
-        return False
-
     def is_subtype_of(self, other: DType) -> bool:
         """Return whether this descriptor is ``other`` or is enclosed by it."""
         if not isinstance(other, DType):
@@ -734,19 +730,12 @@ class DTypeCategory(DType, abstract=False):
     """Abstract dtype category such as ``Floating`` or ``Integer``.
 
     A category expresses a relationship between descriptors. It has no bit
-    width and is not itself a representation, simple or compound. ``Any`` and ``Floating``
-    additionally carry the legacy opaque-storage disposition: ``Generic``
-    accepts both, and ``FileBacked`` accepts ``Floating``. ``Integer`` carries
-    no such disposition, and neither does a category registered later, so no
-    carrier accepts it.
+    width and is not itself a representation, simple or compound. Carrier
+    storage support is defined by each carrier rather than by categories.
 
     Args:
         name: Unique registered name, such as ``"Integer"``.
         supertype: Enclosing category, or ``None`` for a root category.
-        opaque_storage: Whether legacy carriers may store values tagged with
-            this category as Python objects or width-unspecified numbers. It
-            records the disposition only; a carrier still accepts exactly the
-            descriptors its own documented set names.
 
     Examples:
         >>> import strideweave as sw
@@ -756,30 +745,25 @@ class DTypeCategory(DType, abstract=False):
         False
     """
 
-    __slots__ = ("_opaque_storage",)
+    __slots__ = ()
 
     def __init__(
         self,
         name: str,
         *,
         supertype: DTypeCategory | None = None,
-        opaque_storage: bool = False,
     ) -> None:
         super().__init__(name, supertype=supertype)
-        self._opaque_storage = bool(opaque_storage)
 
     def is_category(self) -> bool:
         """Return ``True``: every category is abstract."""
         return True
 
-    def is_opaque_storage(self) -> bool:
-        """Return whether legacy carriers may store this category opaquely."""
-        return self._opaque_storage
-
 
 def _category_layer(dtype: DTypeCategory) -> tuple[object, ...]:
     """Return the category contract's own fragment of a structure."""
-    return (_encoded_leaf("DTypeCategory"), _encoded_leaf(dtype._opaque_storage))
+    del dtype
+    return (_encoded_leaf("DTypeCategory"),)
 
 
 _declare_contract(DTypeCategory, _ContractSpec(_CATEGORY_OWNED, layer=_category_layer))

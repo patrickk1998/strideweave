@@ -15,7 +15,7 @@ class FileBacked(Carrier):
         filename: str | None = None,
         *,
         mutable: bool = True,
-        dtype: DType = ...,
+        dtype: DType,
     ) -> None: ...
     @property
     def path(self) -> Path: ...

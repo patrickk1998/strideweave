@@ -8,8 +8,8 @@ storage must remain a logical (non-numeric) representation.
 
 NumPy supplies the binary32 mechanics. It is imported lazily, on the first
 concrete ``Float32`` use, so importing StrideWeave — or using only ``CPU``,
-``Int32``, or the legacy opaque dtypes — never pays for it. Floating-point error
-state is scoped around whole operation loops rather than set up per element:
+or ``Int32`` — never pays for it. Floating-point error state is scoped around
+whole operation loops rather than set up per element:
 IEEE singularities are results, not exceptions, so division by zero and
 overflow produce ``inf``/``NaN`` and never raise.
 """
@@ -31,7 +31,6 @@ __all__ = [
     "checked_int32",
     "float32_errstate",
     "float32_scalar",
-    "is_concrete_simple_dtype",
     "normalize_storage_value",
     "normalize_storage_values",
     "safe_abs",
@@ -270,7 +269,7 @@ def _numpy_binary(name: str, lhs: Any, rhs: Any) -> Any:
 
 
 def _nan_or_inf_result(value: Any, *, nan: bool = False) -> float | None:
-    """Return a Python IEEE result for legacy exceptional scalar paths."""
+    """Return a Python IEEE result for non-binary32 exceptional scalars."""
     numeric = float(value)
     if math.isnan(numeric):
         return math.nan
@@ -544,29 +543,6 @@ def safe_trunc(value: Any) -> Any:
     return math.trunc(value)
 
 
-def is_concrete_simple_dtype(dtype: DType) -> bool:
-    """Report whether ``dtype`` is one of the concrete simple storage dtypes.
-
-    The legacy opaque categories ``DType.Any`` and ``DType.Floating`` are not
-    concrete, so they stay on Generic's legacy arithmetic path.
-
-    Args:
-        dtype: The dtype to classify.
-
-    Returns:
-        ``True`` for ``DType.Float32``, ``DType.Int32``, and ``DType.Bool``.
-
-    Examples:
-        >>> from strideweave.carriers.dtype import DType
-        >>> from strideweave.carriers.generic.numerics import (
-        ...     is_concrete_simple_dtype,
-        ... )
-        >>> is_concrete_simple_dtype(DType.Floating)
-        False
-    """
-    return dtype is DType.Float32 or dtype is DType.Int32 or dtype is DType.Bool
-
-
 def _normalize_float32(value: Any, name: str) -> float:
     # NumPy converts several non-numbers (None among them) to NaN rather than
     # raising, so the type is checked here instead of relying on the cast.
@@ -603,7 +579,8 @@ def normalize_storage_value(dtype: DType, value: Any, name: str = "value") -> An
     A ``Float32`` carrier stores binary32-exact Python floats, an ``Int32``
     carrier stores in-range Python integers, and a ``Bool`` carrier stores
     Python booleans, so every stored value is already the value its encoding can
-    hold. Storage on the legacy opaque dtypes is returned unchanged.
+    hold. Unsupported dtypes are rejected rather than acquiring an alternate
+    untyped storage representation.
 
     Args:
         dtype: The carrier's storage dtype.
@@ -627,7 +604,7 @@ def normalize_storage_value(dtype: DType, value: Any, name: str = "value") -> An
     """
     normalizer = _NORMALIZERS.get(dtype)
     if normalizer is None:
-        return value
+        raise TypeError(f"DType.{dtype.name} is not a Generic storage dtype")
     if dtype is DType.Float32:
         # One error-state scope for this conversion, so an out-of-range
         # magnitude becomes an infinity without emitting a warning.
@@ -660,7 +637,7 @@ def normalize_storage_values(dtype: DType, values: list[Any], name: str) -> list
     """
     normalizer = _NORMALIZERS.get(dtype)
     if normalizer is None:
-        return list(values)
+        raise TypeError(f"DType.{dtype.name} is not a Generic storage dtype")
     scope = float32_errstate() if dtype is DType.Float32 else nullcontext()
     with scope:
         return [normalizer(value, name) for value in values]

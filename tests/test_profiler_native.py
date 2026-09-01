@@ -74,7 +74,7 @@ def generic_tensor(
 ) -> Tensor:
     if layout is None:
         layout = Layout(Shape(len(values)), Stride(1))
-    return Tensor(Generic(values), 0, layout)
+    return Tensor(Generic(values, dtype=DType.Float32), 0, layout)
 
 
 def cpu_tensor(values: list[float]) -> Tensor:
@@ -86,7 +86,9 @@ def cpu_tensor(values: list[float]) -> Tensor:
 
 def evictable_tensor(values: list[float]) -> Tensor:
     return Tensor(
-        Evictable(Generic(values), Generic([])),
+        Evictable(
+            Generic(values, dtype=DType.Float32), Generic([], dtype=DType.Float32)
+        ),
         0,
         Layout(Shape(len(values)), Stride(1)),
     )
@@ -188,7 +190,7 @@ def test_raw_profiler_records_failure_and_restores_execution_stack():
 
 def test_raw_profiler_excludes_unannotated_operations_and_move_registry_work():
     tensor = generic_tensor([1.0])
-    destination = Generic([0.0])
+    destination = Generic([0.0], dtype=DType.Float32)
 
     with record() as session:
         sw.GenericReLUOperation().forward(tensor)
@@ -265,7 +267,7 @@ def test_abandoned_profiler_finalization_recovers_without_process_failure():
         gc.collect()
 
         tensor = sw.Tensor(
-            sw.Generic([1.0]),
+            sw.Generic([1.0], dtype=sw.DType.Float32),
             0,
             sw.Layout(sw.Shape(1), sw.Stride(1)),
         )

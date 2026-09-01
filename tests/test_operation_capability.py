@@ -958,7 +958,9 @@ def test_a_malformed_capability_is_rejected(overrides, error, message):
 # execution is accepted against, without running a kernel.
 
 
-@pytest.mark.parametrize("carrier", [sw.CPU(1), sw.Generic([1.0])])
+@pytest.mark.parametrize(
+    "carrier", [sw.CPU(1), sw.Generic([1.0], dtype=sw.DType.Float32)]
+)
 def test_a_carrier_reports_its_backend_capabilities(carrier):
     reported = carrier.operation_capabilities()
 
@@ -1478,7 +1480,9 @@ def test_an_unfinalized_dependent_carrier_answers_no_public_query(query):
         query(unfinalized)
 
 
-@pytest.mark.parametrize("carrier", [sw.CPU(1, dtype=I32), sw.Generic([1])])
+@pytest.mark.parametrize(
+    "carrier", [sw.CPU(1, dtype=I32), sw.Generic([1], dtype=sw.DType.Float32)]
+)
 def test_an_independent_carrier_still_answers_from_its_exact_class(carrier):
     assert carrier.operation_capabilities() == capabilities_for_carrier_class(
         type(carrier)

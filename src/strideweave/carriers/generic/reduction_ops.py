@@ -25,7 +25,7 @@ from ..operation_helpers import (
     _tensor_with_layout_like,
 )
 from ..operation_policy import OperationExecutionOptions
-from .execution import executing, extrema_total, gradient_arithmetic, unary_arithmetic
+from .execution import executing, gradient_arithmetic, unary_arithmetic
 
 __all__ = [
     "GenericArgMaxOperation",
@@ -53,7 +53,7 @@ def _product_values(arithmetic: Any, values: Iterable[Any]) -> Any:
     result = arithmetic.convert(1.0)
     for value in values:
         # Store every intermediate so planned Float32 arithmetic rounds each
-        # multiplication in binary32; legacy Generic storage remains unchanged.
+        # multiplication in binary32.
         result = arithmetic.store(result * value)
     return result
 
@@ -95,7 +95,6 @@ def _reduce_forward(
     operation: str,
     combine: Callable[[Any, list[Any]], Any],
     *,
-    output_dtype: DType | None = None,
     options: OperationExecutionOptions | None = None,
 ) -> Any:
     tensor = _require_two_mode_tensor(tensor, "tensor")
@@ -104,15 +103,16 @@ def _reduce_forward(
     _require_nonempty_fiber(m_size)
     output_layout = _canonical_layout_for_shape(Shape(_mode_shape(tensor.layout, 0)))
     owner.ctx["output_layout"] = output_layout
-    arithmetic = unary_arithmetic(operation, tensor, None, options=options)
+    arithmetic = unary_arithmetic(operation, tensor, options=options)
     with executing(arithmetic):
         values = []
         for i in range(n_size):
             fiber = [arithmetic.convert(tensor[i, j]) for j in range(m_size)]
             result = combine(arithmetic, fiber)
             values.append(arithmetic.store(result))
-    dtype = arithmetic.result_dtype if output_dtype is None else output_dtype
-    return _tensor_with_layout_like(tensor, output_layout, values, dtype)
+    return _tensor_with_layout_like(
+        tensor, output_layout, values, arithmetic.result_dtype
+    )
 
 
 class GenericReduceSumOperation(Operation):
@@ -194,7 +194,7 @@ class _GenericExtremeOperation(Operation):
             Shape(_mode_shape(tensor.layout, 0))
         )
         self.ctx["output_layout"] = output_layout
-        arithmetic = unary_arithmetic(self.operation, tensor, None)
+        arithmetic = unary_arithmetic(self.operation, tensor)
         winners: list[int] = []
         nan_results: list[bool] = []
         with executing(arithmetic):
@@ -204,11 +204,7 @@ class _GenericExtremeOperation(Operation):
                 # The resolved plan owns extrema ordering, NaN payload, and
                 # signed-zero semantics.  Keep VJP metadata derived from that
                 # exact result instead of maintaining a second reduction here.
-                result = (
-                    arithmetic.total(fiber)
-                    if arithmetic.is_planned
-                    else extrema_total(fiber, maximum=self.maximum)
-                )
+                result = arithmetic.total(fiber)
                 result_is_nan = _is_nan(result)
                 count = 0 if result_is_nan else sum(value == result for value in fiber)
                 values.append(arithmetic.store(result))
@@ -279,7 +275,7 @@ class _GenericArgOperation(Operation):
             Shape(_mode_shape(tensor.layout, 0))
         )
         self.ctx["output_layout"] = output_layout
-        arithmetic = unary_arithmetic(self.operation, tensor, None)
+        arithmetic = unary_arithmetic(self.operation, tensor)
         with executing(arithmetic):
             values = []
             for i in range(n_size):
@@ -367,7 +363,7 @@ class GenericCumsumOperation(Operation):
         output_layout = _canonical_layout_for_shape(tensor.layout.shape)
         self.ctx["output_layout"] = output_layout
         self.ctx["dimension"] = axis
-        arithmetic = unary_arithmetic("cumsum", tensor, None)
+        arithmetic = unary_arithmetic("cumsum", tensor)
         values: list[Any] = [None] * tensor.size()
         with executing(arithmetic):
             for keys in _fiber_keys(extents, axis):

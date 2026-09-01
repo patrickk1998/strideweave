@@ -12,7 +12,6 @@ from typing import Any, Final
 _KIND_PREDICATES: Final = (
     "is_category",
     "is_compound",
-    "is_opaque_storage",
     "is_simple",
 )
 
@@ -54,6 +53,10 @@ _ROOT_OWNED: Final = frozenset(
         "_structural_key",
         "_structure_conflict",
         "_validate_finalized",
+        # The removed public query stays reserved at the root contract. It has
+        # no implementation or state, but a supported extension must not
+        # recreate a descriptor attribute the public model promises is absent.
+        "is_opaque_storage",
         "is_subtype_of",
         "name",
         "representation_rules",
@@ -63,7 +66,7 @@ _ROOT_OWNED: Final = frozenset(
         "value",
     }
 )
-_CATEGORY_OWNED: Final = frozenset({"_opaque_storage", *_KIND_PREDICATES})
+_CATEGORY_OWNED: Final = frozenset(_KIND_PREDICATES)
 _SIMPLE_OWNED: Final = frozenset({"_bits", "bits", *_KIND_PREDICATES})
 _COMPOUND_OWNED: Final = frozenset(
     {

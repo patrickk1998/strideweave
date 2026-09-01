@@ -66,4 +66,8 @@ def test_tensor_placement_remains_layout_only(index_map: sw.IndexMap):
     tensor_type = cast(Any, sw.Tensor)
 
     with pytest.raises(TypeError, match="placement must be a Layout"):
-        tensor_type(sw.Generic([0.0] * index_map.codomain_size), 0, index_map)
+        tensor_type(
+            sw.Generic([0.0] * index_map.codomain_size, dtype=sw.DType.Float32),
+            0,
+            index_map,
+        )

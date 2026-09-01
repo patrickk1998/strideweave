@@ -4,19 +4,18 @@ This module is the single executable statement of the policy specified in
 ``design/SimpleDType-operation-policy.md``. For one operation and its operand
 dtypes it decides which operands are converted, what arithmetic runs, how terms
 combine, and what dtype the result carries. Autograd participation follows from
-the tensor layer's floating-dtype rule. ``Generic``, native ``CPU``, and future accelerator carriers
-resolve a plan here and execute it; a backend never carries a promotion table of
-its own.
+the tensor layer's exact-``DType.Float32`` rule. ``Generic``, native ``CPU``,
+and future accelerator carriers resolve a plan here and execute it; a backend
+never carries a promotion table of its own.
 
 The policy is an intentional starting point rather than a compatibility
 promise. Revising it means changing the specification, this resolver, its
 expected-plan fixtures, and every backend conformance expectation together; a
 change that lands in one backend first is a policy fork.
 
-Only ``SimpleDType`` operands are planned. Legacy opaque categories
-(``DType.Any``, ``DType.Floating``), compound descriptors, and registered but
-unimplemented simple encodings each raise their own documented error rather
-than resolving to a guessed plan.
+Only ``SimpleDType`` operands are planned. Abstract categories, compound
+descriptors, and registered but unimplemented simple encodings each raise their
+documented error rather than resolving to a guessed plan.
 
 Native operations resolve a plan while still holding the GIL and then release it
 to run the kernel loop (``CPP001``). Every error this module raises is
@@ -167,8 +166,9 @@ class OperationPlan:
             integer accumulation.
         output: The dtype the result carrier reports. Autograd eligibility is
             not a separate field: a result participates in autograd exactly
-            when its dtype is floating, which is the framework-wide rule the
-            tensor layer already applies to every tensor, plan-produced or not.
+            when its dtype is ``DType.Float32``, which is the framework-wide
+            rule the tensor layer already applies to every tensor, plan-produced
+            or not.
     """
 
     operation: str
@@ -350,15 +350,9 @@ def _require_tensor_dtype(value: object, name: str) -> SimpleDType:
     if value.is_compound():
         raise NotImplementedError(_DEFERRED_COMPOUND_MESSAGE.format(name=value.name))
     if not isinstance(value, SimpleDType):
-        if value.is_opaque_storage():
-            raise TypeError(
-                f"{name} is the legacy opaque storage category DType.{value.name}, "
-                "which is not a simple dtype and takes no part in simple "
-                "promotion; legacy Generic arithmetic is a separate path"
-            )
         raise TypeError(
-            f"{name} is the abstract category DType.{value.name}, which describes "
-            "a relationship rather than a representation"
+            f"{name} is the abstract category DType.{value.name}, which is not "
+            "an operation storage dtype"
         )
     if not _is_supported_tensor_dtype(value):
         raise NotImplementedError(
@@ -1435,8 +1429,8 @@ def resolve_operation_plan(
         NotImplementedError: If ``operation`` is not registered, or an operand is
             a compound dtype or a registered but unimplemented simple dtype.
         TypeError: If the operand count is wrong, an operand is not a ``DType``
-            where a tensor is expected, an operand is an abstract or legacy
-            opaque category, or a weak scalar is not a real Python number.
+            where a tensor is expected, an operand is an abstract category, or
+            a weak scalar is not a real Python number.
         OverflowError: If a weak integer scalar an integer plan would use is
             outside ``Int32`` range.
 

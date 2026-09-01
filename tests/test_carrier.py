@@ -85,7 +85,9 @@ class PythonMutableCarrier(PythonCarrier):
 
 class DispatchOperation(sw.Operation):
     def _forward(self, *inputs: Any) -> Tensor:
-        return Tensor(Generic([1.0]), 0, Layout(Shape(1), Stride(1)))
+        return Tensor(
+            Generic([1.0], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1))
+        )
 
     def backward(self, gradient: Any) -> tuple[Any, ...]:
         return ()
@@ -297,7 +299,7 @@ def test_the_carrier_base_stays_open_to_implementation():
 
 
 def test_generic_data_dispatch_op_returns_supported_operations():
-    carrier = Generic([])
+    carrier = Generic([], dtype=DType.Float32)
     cases = {
         "add": sw.GenericAddOperation,
         "argmax": sw.GenericArgMaxOperation,
@@ -356,7 +358,7 @@ def test_generic_data_dispatch_op_returns_supported_operations():
 
 def test_generic_data_dispatch_op_rejects_unknown_operation():
     with pytest.raises(NotImplementedError):
-        Generic([]).dispatch_op("unknown")
+        Generic([], dtype=DType.Float32).dispatch_op("unknown")
 
 
 @pytest.mark.parametrize("carrier_class", [Carrier, Generic, CPU])
@@ -366,12 +368,12 @@ def test_data_operation_dispatch_is_instance_only(carrier_class):
 
 
 def test_generic_allocate_like_allocates_requested_storage_and_dtype():
-    result = Generic([], dtype=DType.Any).allocate_like(
-        3, mutable=False, dtype=DType.Floating, empty=True
+    result = Generic([], dtype=DType.Float32).allocate_like(
+        3, mutable=False, dtype=DType.Int32, empty=True
     )
 
     assert result.size() == 3
-    assert result.dtype() is DType.Floating
+    assert result.dtype() is DType.Int32
     assert not result.is_mutable()
 
 
@@ -490,36 +492,37 @@ def test_native_carrier_subclass_rejects_setitem_by_default():
     assert carrier[0] == "alpha"
 
 
-def test_generic_data_wraps_indexable_iterable():
-    values = ["alpha", 2, None]
-    carrier = Generic(values, dtype=DType.Any)
+def test_generic_data_owns_and_normalizes_an_indexable_iterable():
+    values = [1, 2, 3]
+    carrier = Generic(values, dtype=DType.Float32)
 
     assert isinstance(carrier, Carrier)
     assert carrier.is_mutable()
     assert carrier.size() == 3
-    assert carrier.dtype() is DType.Any
-    assert carrier.get_value(1) == 2
-    assert carrier[0] == "alpha"
-    assert carrier[2] is None
+    assert carrier.dtype() is DType.Float32
+    assert carrier.get_value(1) == 2.0
+    assert carrier[0] == 1.0
+    assert carrier[2] == 3.0
 
-    values[1] = "updated"
-    assert carrier[1] == "updated"
+    values[1] = 99
+    assert carrier[1] == 2.0
 
 
-def test_generic_data_defaults_to_floating_dtype():
-    carrier = Generic([1, 2, 3])
-
-    assert carrier.dtype() is DType.Floating
+def test_generic_data_requires_a_keyword_only_dtype():
+    with pytest.raises(TypeError, match="required keyword-only argument: 'dtype'"):
+        Generic([1, 2, 3])  # pyright: ignore[reportCallIssue]
+    with pytest.raises(TypeError, match="positional argument"):
+        Generic([1, 2, 3], DType.Float32)  # type: ignore[misc]
 
 
 def test_generic_data_new_like_preserves_or_overrides_dtype():
-    carrier = Generic([1, 2, 3])
+    carrier = Generic([1, 2, 3], dtype=DType.Float32)
 
     preserved = carrier.new_like([4, 5])
-    overridden = carrier.new_like(["alpha"], dtype=DType.Any)
+    overridden = carrier.new_like([6], dtype=DType.Int32)
 
-    assert preserved.dtype() is DType.Floating
-    assert overridden.dtype() is DType.Any
+    assert preserved.dtype() is DType.Float32
+    assert overridden.dtype() is DType.Int32
 
 
 def test_generic_data_rejects_invalid_dtype():
@@ -530,62 +533,62 @@ def test_generic_data_rejects_invalid_dtype():
         Generic([1], dtype="Floating")  # type: ignore[arg-type]
 
 
-def test_generic_data_mutates_backing_list_by_default():
-    values = ["alpha", "beta"]
-    carrier = Generic(values)
+def test_generic_data_never_mutates_the_callers_backing_list():
+    values = [1.0, 2.0]
+    carrier = Generic(values, dtype=DType.Float32)
 
-    carrier[1] = "updated"
+    carrier[1] = 3.0
 
-    assert values[1] == "updated"
-    assert carrier[1] == "updated"
+    assert values[1] == 2.0
+    assert carrier[1] == 3.0
 
 
 def test_generic_data_can_be_immutable():
-    values = ["alpha", "beta"]
-    carrier = Generic(values, mutable=False)
+    values = [1.0, 2.0]
+    carrier = Generic(values, mutable=False, dtype=DType.Float32)
 
     assert not carrier.is_mutable()
 
     with pytest.raises(RuntimeError):
-        carrier[1] = "updated"
+        carrier[1] = 3.0
 
-    assert values[1] == "beta"
-    assert carrier[1] == "beta"
+    assert values[1] == 2.0
+    assert carrier[1] == 2.0
 
 
 def test_generic_data_materializes_non_settable_inputs_when_mutable():
-    tuple_carrier = Generic(("alpha", "beta"))
-    range_carrier = Generic(range(3))
-    iterator = iter(["left", "right"])
-    iterator_carrier = Generic(iterator)
+    tuple_carrier = Generic((1.0, 2.0), dtype=DType.Float32)
+    range_carrier = Generic(range(3), dtype=DType.Float32)
+    iterator = iter([3.0, 4.0])
+    iterator_carrier = Generic(iterator, dtype=DType.Float32)
 
-    tuple_carrier[1] = "updated"
-    range_carrier[2] = "updated"
-    iterator_carrier[0] = "updated"
+    tuple_carrier[1] = 5.0
+    range_carrier[2] = 6.0
+    iterator_carrier[0] = 7.0
 
-    assert tuple_carrier[1] == "updated"
-    assert range_carrier[2] == "updated"
-    assert iterator_carrier[0] == "updated"
+    assert tuple_carrier[1] == 5.0
+    assert range_carrier[2] == 6.0
+    assert iterator_carrier[0] == 7.0
     assert list(iterator) == []
 
 
 def test_generic_data_wraps_tuple_and_range():
-    tuple_carrier = Generic(("alpha", "beta"))
-    range_carrier = Generic(range(3))
+    tuple_carrier = Generic((1.0, 2.0), dtype=DType.Float32)
+    range_carrier = Generic(range(3), dtype=DType.Float32)
 
     assert tuple_carrier.size() == 2
-    assert tuple_carrier[1] == "beta"
+    assert tuple_carrier[1] == 2.0
     assert range_carrier.size() == 3
     assert range_carrier[2] == 2
 
 
 def test_generic_data_materializes_one_pass_iterable():
-    iterator = iter(["alpha", "beta", "gamma"])
-    carrier = Generic(iterator)
+    iterator = iter([1.0, 2.0, 3.0])
+    carrier = Generic(iterator, dtype=DType.Float32)
 
     assert carrier.size() == 3
-    assert carrier[0] == "alpha"
-    assert carrier[2] == "gamma"
+    assert carrier[0] == 1.0
+    assert carrier[2] == 3.0
     assert list(iterator) == []
 
 
@@ -593,11 +596,11 @@ def test_generic_data_requires_iterable_input():
     non_iterable: Any = 1
 
     with pytest.raises(TypeError):
-        Generic(non_iterable)
+        Generic(non_iterable, dtype=DType.Float32)
 
 
 def test_generic_data_getitem_validates_index():
-    carrier = Generic(["alpha"])
+    carrier = Generic([1.0], dtype=DType.Float32)
     non_int_index: Any = "0"
 
     with pytest.raises(IndexError):
@@ -611,21 +614,21 @@ def test_generic_data_getitem_validates_index():
 
 
 def test_generic_data_setitem_validates_index():
-    carrier = Generic(["alpha"])
+    carrier = Generic([1.0], dtype=DType.Float32)
     non_int_index: Any = "0"
 
     with pytest.raises(IndexError):
-        carrier[-1] = "negative"
+        carrier[-1] = 2.0
 
     with pytest.raises(IndexError):
-        carrier[1] = "large"
+        carrier[1] = 2.0
 
     with pytest.raises(TypeError):
-        carrier[non_int_index] = "non-int"
+        carrier[non_int_index] = 2.0
 
 
 def test_generic_public_write_paths_increment_version():
-    carrier = Generic([0, 0])
+    carrier = Generic([0, 0], dtype=DType.Float32)
 
     carrier[0] = 1
     assert carrier.version == 1
@@ -635,24 +638,28 @@ def test_generic_public_write_paths_increment_version():
 
 
 def test_generic_data_scatter_maps_source_values_into_destination_storage():
-    source = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
+    source = Tensor(
+        Generic([10, 20, 30], dtype=DType.Float32), 0, Layout(Shape(3), Stride(1))
+    )
     destination_values = [0] * 50
-    destination_carrier = Generic(destination_values)
+    destination_carrier = Generic(destination_values, dtype=DType.Float32)
     destination = Tensor(destination_carrier, 0, Layout(Shape([5, 10]), Stride([1, 5])))
     mapping = Layout(Shape(3), Stride(5))
 
     destination_carrier.scatter(source, destination, mapping, 12)
 
-    assert destination_values[12] == 10
-    assert destination_values[17] == 20
-    assert destination_values[22] == 30
-    assert sum(destination_values) == 60
+    assert destination_values == [0] * 50
+    assert destination_carrier[12] == 10.0
+    assert destination_carrier[17] == 20.0
+    assert destination_carrier[22] == 30.0
     assert destination_carrier.version > 0
 
 
 def test_generic_data_scatter_validates_mapping_shape():
-    source = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
-    destination_carrier = Generic([0] * 50)
+    source = Tensor(
+        Generic([10, 20, 30], dtype=DType.Float32), 0, Layout(Shape(3), Stride(1))
+    )
+    destination_carrier = Generic([0] * 50, dtype=DType.Float32)
     destination = Tensor(destination_carrier, 0, Layout(Shape([5, 10]), Stride([1, 5])))
     mapping = Layout(Shape(4), Stride(5))
 
@@ -661,9 +668,11 @@ def test_generic_data_scatter_validates_mapping_shape():
 
 
 def test_generic_data_scatter_uses_destination_mutability():
-    source = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
+    source = Tensor(
+        Generic([10, 20, 30], dtype=DType.Float32), 0, Layout(Shape(3), Stride(1))
+    )
     mapping = Layout(Shape(3), Stride(5))
-    immutable_carrier = Generic([0] * 50, mutable=False)
+    immutable_carrier = Generic([0] * 50, mutable=False, dtype=DType.Float32)
     immutable_destination = Tensor(
         immutable_carrier, 0, Layout(Shape([5, 10]), Stride([1, 5]))
     )

@@ -137,9 +137,12 @@ takes it over.
   coordinate space `c_i` into carrier `i`, while adjacent layout `S_i` maps
   `c_i` to an integer decoded in `c_(i+1).shape`. Both are ordinary CuTe-style
   `Layout` values; their structural positions distinguish physical placement
-  from logical grouping. Universal validation checks that structure — storage
-  schema, carrier dtypes and classes, offsets, `cosize` bounds, adjacent
-  compatibility — before any dtype-specific rule runs.
+  from logical grouping. A `SimpleDType` has exactly one same-dtype storage
+  subtensor, a `CompoundDType` uses its ordered `simple_types` planes, and a
+  `DTypeCategory` has no storage schema. Universal validation checks that
+  structure — storage schema, carrier dtypes and classes, offsets, `cosize`
+  bounds, adjacent compatibility — before any dtype-specific rule or carrier
+  side effect can run.
 - Current Tensor operations take a structural one-subtensor fast path, and
   native CPU access, views, results, movement, scatter, autograd, and DLPack all
   read carrier, offset, layout, dtype, and version state through the
@@ -162,7 +165,10 @@ layout = sw.Layout(
     sw.Stride([1, 2]),
 )
 tensor = sw.Tensor(
-    sw.Generic([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+    sw.Generic(
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        dtype=sw.DType.Float32,
+    ),
     0,
     layout,
 )
@@ -189,12 +195,11 @@ zero-copy views and their reverse-mode behavior. Dispatch itself is
 
 StrideWeave currently provides seven carrier implementations:
 
-- `Generic(values, mutable=True, dtype=DType.Floating)` stores Python
-  objects. It supports differentiable `Floating` values, non-differentiable
-  arbitrary `Any` values, and the concrete simple dtypes `Float32`, `Int32`,
-  and `Bool`, for which it is StrideWeave's behavioral reference
-  implementation. Concrete `Bool` values are normalized to Python `bool` and
-  never participate in numeric promotion or autograd.
+- `Generic(values, *, mutable=True, dtype)` owns normalized Python values in
+  exactly one required concrete dtype: `Float32`, `Int32`, or `Bool`. It is
+  StrideWeave's behavioral reference implementation. `Bool` values are
+  normalized to Python `bool` and never participate in numeric promotion or
+  autograd.
 - `CPU(size, pointer=None, *, mutable=True, dtype=DType.Float32, empty=False)`
   owns native memory or references a caller-provided address. It supports
   `Float32`, `Int32`, and `Bool` (one byte per Boolean). Owned storage is
@@ -217,9 +222,9 @@ StrideWeave currently provides seven carrier implementations:
   Metal performs one actionable availability check. The first implementation
   uses immutable logical-to-physical address plans and deliberately simple
   serial kernels to prioritize faithful plan coverage over optimization.
-- `FileBacked(filename=None, mutable=True, dtype=DType.Floating)` stores raw
-  numeric values in a temporary binary file. It is intended for storage and
-  movement rather than direct tensor computation.
+- `FileBacked(filename=None, *, mutable=True, dtype)` stores required concrete
+  `Float32` or `Int32` values in a temporary raw numeric file. It is intended
+  for storage and movement rather than direct tensor computation.
 - `BlockDevice(path)` owns one synchronous native handle and process-local
   allocation arena over the exact block-device node the caller supplied. Its
   `allocate` method returns fixed-size `BlockDeviceCarrier` extents: Float32-only
@@ -306,15 +311,15 @@ partly initialized descriptor, and claiming a name is thread-atomic.
 identity, registration, extension, and serialization contract exactly.
 
 Descriptors expose `name`, `supertype`, `supertypes()`, `is_simple()`,
-`is_category()`, `is_compound()`, `is_opaque_storage()`, and
-`is_subtype_of(other)`, and the registry is queried through `DType.registered()`
+`is_category()`, `is_compound()`, and `is_subtype_of(other)`, and the registry
+is queried through `DType.registered()`
 and `DType.from_name(name)`, both narrowed to the receiving class. The kind
 predicates classify the *representation*, not backend availability: there is
 deliberately no global "is this storable" predicate, because storability is a
 decision of an exact carrier class together with a dtype. `E4M3` is a
 well-formed simple dtype that no carrier accepts today.
 
-The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
+The hierarchy has three descriptor kinds:
 
 - `SimpleDType` is one fixed-width scalar encoding rather than a composition
   of subtensors, so a single carrier could store it homogeneously, and each
@@ -328,13 +333,8 @@ The hierarchy has three descriptor kinds, plus the legacy opaque disposition:
   carrier support.
 - `DTypeCategory` is an abstract relationship with no bit width. `DType.Any` is
   the root category, and `DType.Floating` and `DType.Integer` enclose the
-  matching simple dtypes. A category is not itself a representation.
-- `DType.Any` and `DType.Floating` additionally carry the legacy *opaque
-  storage* disposition, which is the one way a category is accepted as storage:
-  `Generic` accepts exactly those two for Python-object and width-unspecified
-  numeric values, and `FileBacked` accepts `Floating` alongside the concrete
-  simple dtypes. `DType.Integer` carries no such disposition, so no carrier
-  accepts it.
+  matching simple dtypes. Every category, including an extension category, is
+  hierarchy-only: it is not a physical representation or carrier storage.
 - `CompoundDType` describes a logical value whose physical representation is
   composed from several simple-dtype planes. It is never carrier storage
   itself; its ordered `simple_types` are the per-plane storage dtypes a
@@ -613,17 +613,14 @@ stored, and the carrier copies the supplied sequence — so no caller-held alias
 can place an unrepresentable value or change stored values without the version
 counter observing it. NumPy supplies the binary32 mechanics and is imported
 lazily on first concrete `Float32` use, so importing StrideWeave, or using only
-`CPU`, `Int32`, or the legacy dtypes, never loads it.
+`CPU`, Generic `Int32`, or Generic `Bool`, never loads it.
 [`carrier-storage`](openspec/specs/carrier-storage/spec.md) and
 [`operation-dtype-policy`](openspec/specs/operation-dtype-policy/spec.md) state
 these encodings and their arithmetic exactly.
 
-The legacy dtypes are outside this policy. An operation whose operands mix
-legacy `Any`/`Floating` storage with concrete storage stays on Generic's
-historical Python arithmetic rather than silently selecting a concrete plan,
-which means the concrete operand's binary32 semantics are downgraded to
-binary64 for that operation. Legacy `Any` values are never routed through
-checked integer arithmetic.
+There is no category-backed or alternate Python arithmetic path. Categories
+cannot become Tensor storage, and direct planner calls reject every category
+uniformly. Generic executes only central plans over concrete storage dtypes.
 
 ### Carrier Storage Dtypes
 
@@ -632,10 +629,10 @@ set of descriptors:
 
 | Carrier | Accepted storage dtypes |
 | --- | --- |
-| `Generic` | `Any`, `Floating` (legacy opaque storage), `Float32`, `Int32`, `Bool` |
+| `Generic` | `Float32`, `Int32`, `Bool` |
 | `CPU` | `Float32`, `Int32`, `Bool` |
 | `Metal` | `Float32`, `Int32`, `Bool` |
-| `FileBacked` | `Floating`, `Float32`, `Int32` |
+| `FileBacked` | `Float32`, `Int32` |
 | `BlockDeviceCarrier` | `Float32` |
 | `Evictable` | Whatever both composed tiers accept, which must match |
 | `TiledEvictable` | Whatever both configured tiers can store |
@@ -674,9 +671,8 @@ for size-based allocation, where `empty=True` permits a backend to skip
 initialization so callers must write every element they read, and `new_like` for
 materializing supplied values.
 
-Only `Floating` and `Float32` tensors participate in autograd. That set is an
-explicit pair rather than a `Floating` category query, because the narrow
-floating encodings have no numerical semantics yet.
+Only exact `Float32` tensors participate in autograd. Categories have no Tensor
+storage schema, while other simple and compound dtypes are non-differentiable.
 
 Carriers may be mutable or immutable, mutation increments a version counter
 visible through `tensor.version`, and `release()` permanently releases storage.
@@ -701,8 +697,11 @@ residency contract.
 ```python
 import strideweave as sw
 
-primary = sw.Generic([1.0])
-carrier = sw.Evictable(primary, sw.Generic([0.0]))
+primary = sw.Generic([1.0], dtype=sw.DType.Float32)
+carrier = sw.Evictable(
+    primary,
+    sw.Generic([0.0], dtype=sw.DType.Float32),
+)
 
 assert carrier.is_mutable()
 assert primary.is_owned()
@@ -959,8 +958,8 @@ Operations attach an autograd context when gradient construction is enabled,
 the result is differentiable, and at least one tensor input is differentiable.
 Backward traversal is iterative and topological, so shared subgraphs accumulate
 their pending gradients before their operation runs. Differentiability follows
-the logical dtype — only `Floating` and `Float32` tensors participate, and `Any`
-and `Int32` tensors reject the gradient APIs.
+the logical dtype: only exact `Float32` tensors participate, and every other
+dtype rejects the gradient APIs.
 
 Three properties are worth carrying in your head; the rest is contract:
 
@@ -1161,9 +1160,10 @@ ownership valid and retryable.
 
 Ownership guards apply to carrier interfaces, not to memory. Explicit
 external-memory escape hatches — `CPU.pointer()`, direct writes to a
-`FileBacked` path or an opened block-device node, mutation of the container
-originally handed to `Generic` — remain the caller's responsibility and cannot
-participate in version tracking.
+`FileBacked` path, or direct access to an opened block-device node — remain the
+caller's responsibility and cannot participate in version tracking. Generic
+copies and normalizes its supplied values, so the caller retains no storage
+alias through the input container.
 
 [`interop-movement`](openspec/specs/interop-movement/spec.md) states the export
 structure, versioning, mutability advisory, capsule lifetime, dtype eligibility,

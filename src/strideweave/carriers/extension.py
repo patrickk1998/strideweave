@@ -562,7 +562,7 @@ class ProviderResult:
         >>> import strideweave as sw
         >>> from strideweave.carriers.extension import ProviderResult
         >>> tensor = sw.Tensor(
-        ...     sw.Generic([1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ...     sw.Generic([1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
         ... )
         >>> ProviderResult([tensor]).outputs == (tensor,)
         True
@@ -663,9 +663,9 @@ class TransferRequest:
         >>> import strideweave as sw
         >>> from strideweave.carriers.extension import TransferRequest
         >>> tensor = sw.Tensor(
-        ...     sw.Generic([1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ...     sw.Generic([1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
         ... )
-        >>> destination = sw.Generic([None])
+        >>> destination = sw.Generic([0.0], dtype=sw.DType.Float32)
         >>> request = TransferRequest(
         ...     tensor, destination, sw.Generic, sw.Generic,
         ...     tensor.dtype(), tensor.layout, tensor.layout.cosize,
@@ -756,7 +756,7 @@ def register_carrier_definition(
         ...     lambda carrier, index, value: carrier.values.__setitem__(index, value),
         ... )
         >>> register_carrier_definition(EmptyStorage, CarrierDefinition(storage))
-        >>> EmptyStorage(1, dtype=sw.DType.Any).size()
+        >>> EmptyStorage(1, dtype=sw.DType.Float32).size()
         1
     """
 

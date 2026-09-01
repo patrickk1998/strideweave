@@ -12,6 +12,7 @@ import strideweave as sw
 import strideweave.functional.api as functional_api
 from strideweave import (
     CPU,
+    DType,
     Generic,
     GenericMatmulOperation,
     GenericReduceSumOperation,
@@ -91,7 +92,7 @@ def make_backend_tensor_from_torch(tensor: Any, backend: str) -> Tensor:
         physical[layout.index(coordinate)] = tensor[coordinate].item()
     if backend == "cpu":
         return make_cpu_tensor(physical, layout)
-    return Tensor(Generic(physical), 0, layout)
+    return Tensor(Generic(physical, dtype=DType.Float32), 0, layout)
 
 
 def coordinate_values(tensor: Tensor, extents: tuple[int, ...]) -> list[Any]:
@@ -514,7 +515,9 @@ def test_einops_parse_einsum_rejects_invalid_syntax(command: str):
 
 
 def test_einops_rearrange_string_api_returns_rearranged_tensor_view():
-    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    tensor = Tensor(
+        Generic(range(6), dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
 
     result = rearrange(tensor, "a b -> b a")
 
@@ -525,7 +528,9 @@ def test_einops_rearrange_string_api_returns_rearranged_tensor_view():
 
 
 def test_top_level_rearrange_accepts_einops_string_descriptions():
-    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    tensor = Tensor(
+        Generic(range(6), dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
 
     result = sw.rearrange(tensor, "a b -> b a")
 
@@ -534,7 +539,9 @@ def test_top_level_rearrange_accepts_einops_string_descriptions():
 
 
 def test_top_level_rearrange_preserves_existing_tree_api():
-    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    tensor = Tensor(
+        Generic(range(6), dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
 
     result = sw.rearrange(tensor, Tree(Node.id(1), Node.id(0)))
 
@@ -543,7 +550,9 @@ def test_top_level_rearrange_preserves_existing_tree_api():
 
 
 def test_top_level_rearrange_rejects_string_description_with_explicit_selection():
-    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    tensor = Tensor(
+        Generic(range(6), dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
 
     with pytest.raises(TypeError):
         sw.rearrange(
@@ -554,9 +563,13 @@ def test_top_level_rearrange_rejects_string_description_with_explicit_selection(
 
 
 def test_einops_rearrange_string_api_backpropagates_through_existing_operation():
-    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    tensor = Tensor(
+        Generic(range(6), dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
     result = rearrange(tensor, "a b -> b a")
-    gradient = Tensor(Generic([10, 40, 20, 50, 30, 60]), 0, result.layout)
+    gradient = Tensor(
+        Generic([10, 40, 20, 50, 30, 60], dtype=DType.Float32), 0, result.layout
+    )
 
     result.backward(gradient)
     tensor_grad = require_grad(tensor)
@@ -569,7 +582,9 @@ def test_einops_rearrange_string_api_backpropagates_through_existing_operation()
 
 def test_einops_reduce_string_api_reduces_omitted_dimensions():
     layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
-    tensor = Tensor(Generic(range(layout.shape.logical_size)), 0, layout)
+    tensor = Tensor(
+        Generic(range(layout.shape.logical_size), dtype=DType.Float32), 0, layout
+    )
 
     result = einops_reduce(tensor, "a (c d) b -> a c")
 
@@ -584,7 +599,9 @@ def test_einops_reduce_string_api_reduces_omitted_dimensions():
 
 def test_top_level_reduce_sum_accepts_einops_string_descriptions():
     layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
-    tensor = Tensor(Generic(range(layout.shape.logical_size)), 0, layout)
+    tensor = Tensor(
+        Generic(range(layout.shape.logical_size), dtype=DType.Float32), 0, layout
+    )
 
     result = sw.reduce_sum(tensor, "a (c d) b -> a c")
 
@@ -593,7 +610,9 @@ def test_top_level_reduce_sum_accepts_einops_string_descriptions():
 
 
 def test_top_level_reduce_sum_rejects_non_string_description():
-    tensor = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    tensor = Tensor(
+        Generic(range(6), dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
     description: Any = object()
 
     with pytest.raises(TypeError):
@@ -603,7 +622,11 @@ def test_top_level_reduce_sum_rejects_non_string_description():
 
 
 def test_einops_reduce_string_api_preserves_nested_output_structure():
-    tensor = Tensor(Generic(range(24)), 0, Layout(Shape([2, 3, 4]), Stride([1, 2, 6])))
+    tensor = Tensor(
+        Generic(range(24), dtype=DType.Float32),
+        0,
+        Layout(Shape([2, 3, 4]), Stride([1, 2, 6])),
+    )
 
     result = einops_reduce(tensor, "a b c -> (a c)")
 
@@ -615,9 +638,13 @@ def test_einops_reduce_string_api_preserves_nested_output_structure():
 
 def test_einops_reduce_string_api_backpropagates_through_existing_operations():
     layout = Layout(Shape([2, [3, 4], 5]), Stride([1, [2, 6], 24]))
-    tensor = Tensor(Generic(range(layout.shape.logical_size)), 0, layout)
+    tensor = Tensor(
+        Generic(range(layout.shape.logical_size), dtype=DType.Float32), 0, layout
+    )
     result = einops_reduce(tensor, "a (c d) b -> a c")
-    gradient = Tensor(Generic([10, 20, 30, 40, 50, 60]), 0, result.layout)
+    gradient = Tensor(
+        Generic([10, 20, 30, 40, 50, 60], dtype=DType.Float32), 0, result.layout
+    )
 
     result.backward(gradient)
     tensor_grad = require_grad(tensor)
@@ -652,9 +679,13 @@ def test_einops_reduce_string_api_works_with_cpu_tensors():
 
 
 def test_einops_einsum_string_api_matches_manual_dot_products():
-    lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    lhs = Tensor(
+        Generic([1, 2, 3, 4, 5, 6], dtype=DType.Float32),
+        0,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+    )
     rhs = Tensor(
-        Generic([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]),
+        Generic([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1], dtype=DType.Float32),
         0,
         Layout(Shape([4, 3]), Stride([1, 4])),
     )
@@ -674,8 +705,14 @@ def test_einops_einsum_string_api_matches_manual_dot_products():
 def test_einops_einsum_no_batch_invokes_matmul_fast_path(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    lhs = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
-    rhs = Tensor(Generic(range(12)), 0, Layout(Shape([4, 3]), Stride([1, 4])))
+    lhs = Tensor(
+        Generic(range(6), dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
+    rhs = Tensor(
+        Generic(range(12), dtype=DType.Float32),
+        0,
+        Layout(Shape([4, 3]), Stride([1, 4])),
+    )
     original_matmul = functional_api._matmul_2mode
     calls = 0
 
@@ -694,8 +731,16 @@ def test_einops_einsum_no_batch_invokes_matmul_fast_path(
 def test_einops_einsum_batch_symbol_bypasses_matmul_fast_path(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    lhs = Tensor(Generic(range(12)), 0, Layout(Shape([2, 2, 3]), Stride([1, 2, 4])))
-    rhs = Tensor(Generic(range(18)), 0, Layout(Shape([2, 3, 3]), Stride([1, 2, 6])))
+    lhs = Tensor(
+        Generic(range(12), dtype=DType.Float32),
+        0,
+        Layout(Shape([2, 2, 3]), Stride([1, 2, 4])),
+    )
+    rhs = Tensor(
+        Generic(range(18), dtype=DType.Float32),
+        0,
+        Layout(Shape([2, 3, 3]), Stride([1, 2, 6])),
+    )
     original_matmul = functional_api._matmul_2mode
     calls = 0
 
@@ -796,9 +841,13 @@ def test_einops_einsum_batch_only_outer_product_matches_torch(
 
 
 def test_top_level_einsum_accepts_einops_string_descriptions():
-    lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    lhs = Tensor(
+        Generic([1, 2, 3, 4, 5, 6], dtype=DType.Float32),
+        0,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+    )
     rhs = Tensor(
-        Generic([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]),
+        Generic([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1], dtype=DType.Float32),
         0,
         Layout(Shape([4, 3]), Stride([1, 4])),
     )
@@ -810,8 +859,14 @@ def test_top_level_einsum_accepts_einops_string_descriptions():
 
 
 def test_top_level_einsum_rejects_non_string_description():
-    lhs = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
-    rhs = Tensor(Generic(range(12)), 0, Layout(Shape([4, 3]), Stride([1, 4])))
+    lhs = Tensor(
+        Generic(range(6), dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
+    rhs = Tensor(
+        Generic(range(12), dtype=DType.Float32),
+        0,
+        Layout(Shape([4, 3]), Stride([1, 4])),
+    )
     description: Any = object()
 
     with pytest.raises(TypeError):
@@ -822,12 +877,12 @@ def test_top_level_einsum_rejects_non_string_description():
 
 def test_einops_einsum_reorders_rhs_shared_dimensions():
     lhs = Tensor(
-        Generic(range(24)),
+        Generic(range(24), dtype=DType.Float32),
         0,
         Layout(Shape([2, 3, 4]), Stride([1, 2, 6])),
     )
     rhs = Tensor(
-        Generic(range(60)),
+        Generic(range(60), dtype=DType.Float32),
         0,
         Layout(Shape([5, 4, 3]), Stride([1, 5, 20])),
     )
@@ -843,9 +898,13 @@ def test_einops_einsum_reorders_rhs_shared_dimensions():
 
 
 def test_einops_einsum_preserves_nested_output_structure():
-    lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    lhs = Tensor(
+        Generic([1, 2, 3, 4, 5, 6], dtype=DType.Float32),
+        0,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+    )
     rhs = Tensor(
-        Generic([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]),
+        Generic([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1], dtype=DType.Float32),
         0,
         Layout(Shape([4, 3]), Stride([1, 4])),
     )
@@ -859,8 +918,14 @@ def test_einops_einsum_preserves_nested_output_structure():
 
 
 def test_einops_einsum_supports_one_sided_outer_singleton():
-    lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
-    rhs = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
+    lhs = Tensor(
+        Generic([1, 2, 3, 4, 5, 6], dtype=DType.Float32),
+        0,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+    )
+    rhs = Tensor(
+        Generic([10, 20, 30], dtype=DType.Float32), 0, Layout(Shape(3), Stride(1))
+    )
 
     result = einops_einsum(lhs, rhs, "a b, b -> a")
 
@@ -871,8 +936,12 @@ def test_einops_einsum_supports_one_sided_outer_singleton():
 
 
 def test_einops_einsum_supports_dot_product_singleton_output():
-    lhs = Tensor(Generic([1, 2, 3]), 0, Layout(Shape(3), Stride(1)))
-    rhs = Tensor(Generic([10, 20, 30]), 0, Layout(Shape(3), Stride(1)))
+    lhs = Tensor(
+        Generic([1, 2, 3], dtype=DType.Float32), 0, Layout(Shape(3), Stride(1))
+    )
+    rhs = Tensor(
+        Generic([10, 20, 30], dtype=DType.Float32), 0, Layout(Shape(3), Stride(1))
+    )
 
     result = einops_einsum(lhs, rhs, "b, b -> 1")
 
@@ -882,11 +951,15 @@ def test_einops_einsum_supports_dot_product_singleton_output():
 
 def test_einops_einsum_supports_hierarchical_layouts():
     lhs = Tensor(
-        Generic(range(24)),
+        Generic(range(24), dtype=DType.Float32),
         0,
         Layout(Shape([2, [3, 4]]), Stride([1, [2, 6]])),
     )
-    rhs = Tensor(Generic(range(20)), 0, Layout(Shape([5, 4]), Stride([1, 5])))
+    rhs = Tensor(
+        Generic(range(20), dtype=DType.Float32),
+        0,
+        Layout(Shape([5, 4]), Stride([1, 5])),
+    )
 
     result = einops_einsum(lhs, rhs, "a (b k), c k -> a b c")
 
@@ -900,8 +973,12 @@ def test_einops_einsum_supports_hierarchical_layouts():
 
 
 def test_einops_einsum_rejects_mismatched_shared_dimension_sizes():
-    lhs = Tensor(Generic(range(6)), 0, Layout(Shape([2, 3]), Stride([1, 2])))
-    rhs = Tensor(Generic(range(8)), 0, Layout(Shape([4, 2]), Stride([1, 4])))
+    lhs = Tensor(
+        Generic(range(6), dtype=DType.Float32), 0, Layout(Shape([2, 3]), Stride([1, 2]))
+    )
+    rhs = Tensor(
+        Generic(range(8), dtype=DType.Float32), 0, Layout(Shape([4, 2]), Stride([1, 4]))
+    )
 
     with pytest.raises(ValueError, match="shared dimension 'b' has mismatched"):
         einops_einsum(lhs, rhs, "a b, c b -> a c")
@@ -931,14 +1008,20 @@ def test_einops_einsum_string_api_works_with_cpu_tensors():
 
 
 def test_einops_einsum_backpropagates_through_existing_operations():
-    lhs = Tensor(Generic([1, 2, 3, 4, 5, 6]), 0, Layout(Shape([2, 3]), Stride([1, 2])))
+    lhs = Tensor(
+        Generic([1, 2, 3, 4, 5, 6], dtype=DType.Float32),
+        0,
+        Layout(Shape([2, 3]), Stride([1, 2])),
+    )
     rhs = Tensor(
-        Generic([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]),
+        Generic([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1], dtype=DType.Float32),
         0,
         Layout(Shape([4, 3]), Stride([1, 4])),
     )
     result = einops_einsum(lhs, rhs, "a b, c b -> a c")
-    gradient = Tensor(Generic([10, 20, 30, 40, 50, 60, 70, 80]), 0, result.layout)
+    gradient = Tensor(
+        Generic([10, 20, 30, 40, 50, 60, 70, 80], dtype=DType.Float32), 0, result.layout
+    )
 
     result.backward(gradient)
     lhs_grad = require_grad(lhs)
