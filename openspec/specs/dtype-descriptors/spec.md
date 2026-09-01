@@ -20,7 +20,7 @@ extensions without changing the built-in namespace.
 | --- | --- |
 | descriptor | An immutable, canonically registered `DType` singleton that is the process-local identity of one dtype category or representation and is compared by object identity. |
 | registered name | The unique non-empty string by which a descriptor is discovered. |
-| category | A `DTypeCategory` descriptor that places dtypes in a supertype hierarchy and may carry the legacy opaque-storage disposition, but defines neither a fixed-width scalar encoding nor a compound physical representation. |
+| category | A `DTypeCategory` descriptor that places dtypes in a supertype hierarchy and defines neither a fixed-width scalar encoding nor a compound physical representation; whether a carrier accepts a descriptor as storage is defined separately by `carrier-storage`. |
 | simple dtype | A `SimpleDType` descriptor for one fixed-width scalar encoding; being simple classifies the encoding and does not imply that any carrier can store or execute it. |
 | structure | The immutable canonical identity record captured at descriptor finalization, recursively incorporating every representation-defining field, referenced descriptor structure, and extension contribution; it determines pickle compatibility and any kind-specific structural uniqueness. |
 | extension descriptor | A non-built-in descriptor registered after the built-in graph is installed, discoverable through registry APIs without adding an attribute to the frozen `DType` namespace. |
