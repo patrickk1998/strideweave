@@ -541,9 +541,9 @@ def test_move_api_is_single_tensor_and_blocking_only() -> None:
     assert not hasattr(sw, "move_batch")
     assert not hasattr(sw, "move_many")
     tensor = sw.Tensor(
-        sw.Generic([1.0]),
+        sw.Generic([1.0], dtype=sw.DType.Float32),
         0,
         sw.Layout(sw.Shape(1), sw.Stride(1)),
     )
     with pytest.raises(TypeError):
-        sw.move_async([tensor], sw.Generic([0.0]))  # type: ignore[arg-type]
+        sw.move_async([tensor], sw.Generic([0.0], dtype=sw.DType.Float32))  # type: ignore[arg-type]

@@ -198,8 +198,7 @@ def _physical_values_for_layout(
 
     A layout whose strides leave gaps has physical slots no logical index
     addresses. Those slots still have to hold something the storage dtype can
-    represent, so concrete storage fills them with that dtype's zero; legacy
-    opaque storage keeps ``None``.
+    represent, so concrete storage fills them with that dtype's zero.
     """
     values = list(logical_values)
     if len(values) != layout.shape.logical_size:

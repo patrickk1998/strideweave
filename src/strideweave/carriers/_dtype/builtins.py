@@ -13,10 +13,8 @@ def _install(name: str, dtype: DType) -> None:
     DType._install_builtin(name, dtype)
 
 
-_install("Any", DTypeCategory("Any", opaque_storage=True))
-_install(
-    "Floating", DTypeCategory("Floating", supertype=DType.Any, opaque_storage=True)
-)
+_install("Any", DTypeCategory("Any"))
+_install("Floating", DTypeCategory("Floating", supertype=DType.Any))
 _install("Integer", DTypeCategory("Integer", supertype=DType.Any))
 _install("Float32", SimpleDType("Float32", bits=32, supertype=DType.Floating))
 _install("Float64", SimpleDType("Float64", bits=64, supertype=DType.Floating))

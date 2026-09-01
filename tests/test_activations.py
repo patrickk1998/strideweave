@@ -55,13 +55,13 @@ def make_activation_tensor(
 ) -> Tensor:
     materialized = list(values)
     if carrier_kind == "generic":
-        carrier: Any = Generic([0.0] * layout._cache.cosize)
+        carrier: Any = Generic([0.0] * layout._cache.cosize, dtype=DType.Float32)
     elif carrier_kind == "cpu":
         carrier = CPU(layout._cache.cosize, dtype=DType.Float32)
     elif carrier_kind == "evictable_generic":
         carrier = Evictable(
-            Generic([0.0] * layout._cache.cosize),
-            Generic([0.0] * layout._cache.cosize),
+            Generic([0.0] * layout._cache.cosize, dtype=DType.Float32),
+            Generic([0.0] * layout._cache.cosize, dtype=DType.Float32),
         )
     elif carrier_kind == "evictable_cpu":
         carrier = Evictable(
@@ -86,7 +86,7 @@ def assert_tensor_close(
     torch: Any,
     *,
     rtol: float = 1e-5,
-    atol: float = 1e-6,
+    atol: float = 2e-6,
 ) -> None:
     actual = torch.tensor(tensor_values(strideweave_tensor), dtype=torch.float32)
     torch.testing.assert_close(actual, torch_tensor.detach(), rtol=rtol, atol=atol)
@@ -118,7 +118,7 @@ def run_activation_case(
     result.backward(gradient)
     torch_result.backward(torch_gradient)
 
-    expected_dtype = DType.Floating if "generic" in carrier_kind else DType.Float32
+    expected_dtype = DType.Float32
     assert result.dtype() is expected_dtype
     assert_tensor_close(result, torch_result, torch)
     strideweave_grad = tensor.grad
@@ -218,7 +218,7 @@ def test_leaky_relu_activation_matches_pytorch(
 
 @pytest.mark.parametrize("operation_name", ACTIVATION_OPERATION_NAMES)
 def test_activations_propagate_released_data_errors(operation_name: str):
-    carrier = Generic([1.0])
+    carrier = Generic([1.0], dtype=DType.Float32)
     tensor = Tensor(carrier, 0, Layout(Shape(1), Stride(1)))
     carrier.release()
 

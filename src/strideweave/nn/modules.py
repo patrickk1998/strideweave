@@ -197,10 +197,10 @@ class ReLU(Module):
 
         Examples:
             >>> import strideweave.nn as nn
-            >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-            >>> x = Tensor(Generic([-1.0, 2.0]), 0, Layout(Shape(2), Stride(1)))
+            >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
+            >>> x = Tensor(Generic([-1.0, 2.0], dtype=DType.Float32), 0, Layout(Shape(2), Stride(1)))
             >>> nn.ReLU()(x)[0]
-            0
+            0.0
         """
 
         return relu(tensor)
@@ -229,8 +229,8 @@ class Sigmoid(Module):
 
         Examples:
             >>> import strideweave.nn as nn
-            >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-            >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
+            >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
+            >>> x = Tensor(Generic([0.0], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1)))
             >>> nn.Sigmoid()(x)[0]
             0.5
         """
@@ -261,8 +261,8 @@ class Tanh(Module):
 
         Examples:
             >>> import strideweave.nn as nn
-            >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-            >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
+            >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
+            >>> x = Tensor(Generic([0.0], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1)))
             >>> nn.Tanh()(x)[0]
             0.0
         """
@@ -293,8 +293,8 @@ class GELU(Module):
 
         Examples:
             >>> import strideweave.nn as nn
-            >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-            >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
+            >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
+            >>> x = Tensor(Generic([0.0], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1)))
             >>> nn.GELU()(x)[0]
             0.0
         """
@@ -325,8 +325,8 @@ class SiLU(Module):
 
         Examples:
             >>> import strideweave.nn as nn
-            >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-            >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
+            >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
+            >>> x = Tensor(Generic([0.0], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1)))
             >>> nn.SiLU()(x)[0]
             0.0
         """
@@ -357,8 +357,8 @@ class Softplus(Module):
 
         Examples:
             >>> import strideweave.nn as nn
-            >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-            >>> x = Tensor(Generic([0.0]), 0, Layout(Shape(1), Stride(1)))
+            >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
+            >>> x = Tensor(Generic([0.0], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1)))
             >>> round(nn.Softplus()(x)[0], 4)
             0.6931
         """
@@ -389,8 +389,8 @@ class ELU(Module):
 
         Examples:
             >>> import strideweave.nn as nn
-            >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-            >>> x = Tensor(Generic([1.0]), 0, Layout(Shape(1), Stride(1)))
+            >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
+            >>> x = Tensor(Generic([1.0], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1)))
             >>> nn.ELU()(x)[0]
             1.0
         """
@@ -421,8 +421,8 @@ class LeakyReLU(Module):
 
         Examples:
             >>> import strideweave.nn as nn
-            >>> from strideweave import Generic, Layout, Shape, Stride, Tensor
-            >>> x = Tensor(Generic([2.0]), 0, Layout(Shape(1), Stride(1)))
+            >>> from strideweave import DType, Generic, Layout, Shape, Stride, Tensor
+            >>> x = Tensor(Generic([2.0], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1)))
             >>> nn.LeakyReLU()(x)[0]
             2.0
         """

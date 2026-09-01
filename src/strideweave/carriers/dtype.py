@@ -22,12 +22,8 @@ descriptors that describe *how one carrier stores it*:
   to canonical dtype identity and may be empty. :class:`LevelExtent` is the
   shared rule for requiring a fixed or :data:`Whole` source-to-target grouping
   extent on one adjacent level edge.
-- ``DType.Any`` and ``DType.Floating`` additionally carry the legacy *opaque
-  storage* disposition, the one way a category is accepted as storage:
-  ``Generic`` accepts both for Python-object and width-unspecified numeric
-  values, and ``FileBacked`` accepts ``Floating``. They are explicitly opaque
-  rather than fixed-size, so they never claim a bit width. Each carrier's
-  accepted set is exact, and ``Integer`` belongs to none of them.
+Categories organize the subtype graph only. Carrier storage support is an exact
+carrier-specific set of concrete simple descriptor identities.
 
 Every registered descriptor is an immutable singleton, which keeps the ``SW002``
 identity-comparison invariant valid. Constructing one is a single transaction
@@ -99,7 +95,7 @@ contract the descriptor's class inherits contributes its own fields, and every
 descriptor it names —
 supertype, compound plane, block element, or scale — is expanded into that
 descriptor's own structure recursively. A receiver that registered the same
-names over different widths, categories, opaque dispositions, planes, or scale
+names over different widths, categories, planes, or scale
 levels is therefore rejected rather than silently substituted. An
 implementation that carries state beyond its contract adds it through
 :meth:`DType.structure_extension`.

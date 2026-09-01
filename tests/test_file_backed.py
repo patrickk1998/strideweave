@@ -8,7 +8,7 @@ from strideweave.carriers.file_backed.carrier import _session_directory
 
 
 def test_file_backed_named_file_is_created_in_hidden_session_directory():
-    carrier = FileBacked("named.bin")
+    carrier = FileBacked("named.bin", dtype=DType.Float32)
 
     assert carrier.path.name == "named.bin"
     assert carrier.path.parent == _session_directory()
@@ -17,8 +17,8 @@ def test_file_backed_named_file_is_created_in_hidden_session_directory():
 
 
 def test_file_backed_random_filename_is_generated_when_omitted():
-    first = FileBacked()
-    second = FileBacked()
+    first = FileBacked(dtype=DType.Float32)
+    second = FileBacked(dtype=DType.Float32)
 
     assert first.path != second.path
     assert first.path.exists()
@@ -26,16 +26,16 @@ def test_file_backed_random_filename_is_generated_when_omitted():
 
 
 def test_file_backed_rejects_duplicate_filenames():
-    existing = FileBacked("duplicate.bin")
+    existing = FileBacked("duplicate.bin", dtype=DType.Float32)
 
     with pytest.raises(FileExistsError):
-        FileBacked("duplicate.bin")
+        FileBacked("duplicate.bin", dtype=DType.Float32)
     assert existing.path.exists()
 
 
 def test_file_backed_rejects_filenames_with_path_separators():
     with pytest.raises(ValueError, match="bare file name"):
-        FileBacked("nested/name.bin")
+        FileBacked("nested/name.bin", dtype=DType.Float32)
 
 
 def test_file_backed_rejects_unsupported_dtypes():
@@ -46,10 +46,21 @@ def test_file_backed_rejects_unsupported_dtypes():
         FileBacked(dtype="Floating")  # type: ignore[arg-type]
 
 
+def test_file_backed_requires_a_keyword_only_dtype_before_creating_a_file():
+    session_directory = _session_directory()
+
+    with pytest.raises(TypeError, match="required keyword-only argument: 'dtype'"):
+        FileBacked("missing-dtype.bin")  # pyright: ignore[reportCallIssue]
+    with pytest.raises(TypeError, match="positional argument"):
+        FileBacked("positional-dtype.bin", DType.Float32)  # type: ignore[misc]
+
+    assert not (session_directory / "missing-dtype.bin").exists()
+    assert not (session_directory / "positional-dtype.bin").exists()
+
+
 @pytest.mark.parametrize(
     ("dtype", "values", "expected"),
     [
-        (DType.Floating, [1.5, -2.0, 3.0], [1.5, -2.0, 3.0]),
         (DType.Float32, [1.5, -2.0, 3.0], [1.5, -2.0, 3.0]),
         (DType.Int32, [1, -2, 3], [1, -2, 3]),
     ],
@@ -67,10 +78,10 @@ def test_file_backed_get_set_roundtrip(dtype, values, expected):
 
 
 def test_file_backed_allocation_zero_fills_storage():
-    carrier = FileBacked()
+    carrier = FileBacked(dtype=DType.Float32)
     carrier._allocate(4)
 
-    assert carrier.path.stat().st_size == 4 * struct.calcsize("d")
+    assert carrier.path.stat().st_size == 4 * struct.calcsize("f")
     assert [carrier[index] for index in range(4)] == [0.0, 0.0, 0.0, 0.0]
 
 
@@ -83,7 +94,7 @@ def test_file_backed_int32_set_value_requires_integers():
 
 
 def test_file_backed_immutable_rejects_writes():
-    carrier = FileBacked(mutable=False)
+    carrier = FileBacked(mutable=False, dtype=DType.Float32)
     carrier._allocate(1)
 
     assert not carrier.is_mutable()
@@ -92,7 +103,7 @@ def test_file_backed_immutable_rejects_writes():
 
 
 def test_file_backed_index_out_of_range_raises():
-    carrier = FileBacked()
+    carrier = FileBacked(dtype=DType.Float32)
     carrier._allocate(2)
 
     with pytest.raises(IndexError):
@@ -102,7 +113,7 @@ def test_file_backed_index_out_of_range_raises():
 
 
 def test_file_backed_new_like_writes_values_and_zeroes_holes():
-    carrier = FileBacked()
+    carrier = FileBacked(dtype=DType.Float32)
 
     copy = carrier.new_like([1.0, None, 3.0])
 
@@ -112,7 +123,7 @@ def test_file_backed_new_like_writes_values_and_zeroes_holes():
 
 
 def test_file_backed_deleting_data_removes_file():
-    carrier = FileBacked()
+    carrier = FileBacked(dtype=DType.Float32)
     path = carrier.path
 
     del carrier
@@ -122,7 +133,7 @@ def test_file_backed_deleting_data_removes_file():
 
 
 def test_file_backed_release_removes_file_and_blocks_access():
-    carrier = FileBacked()
+    carrier = FileBacked(dtype=DType.Float32)
     carrier._allocate(1)
     path = carrier.path
 
@@ -138,7 +149,7 @@ def test_file_backed_release_removes_file_and_blocks_access():
 
 
 def test_file_backed_does_not_support_dispatched_operations():
-    carrier = FileBacked()
+    carrier = FileBacked(dtype=DType.Float32)
     for operation_name in ["add", "matmul", "relu", "view", "rearrange"]:
         with pytest.raises(NotImplementedError):
             carrier.dispatch_op(operation_name)
@@ -155,7 +166,7 @@ def test_file_backed_allocate_like_allocates_storage_without_values():
 
 
 def test_file_backed_does_not_support_scatter():
-    carrier = FileBacked()
+    carrier = FileBacked(dtype=DType.Float32)
 
     with pytest.raises(NotImplementedError):
         carrier.scatter(None, None, None)

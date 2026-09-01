@@ -35,9 +35,6 @@ from .helpers import (
     _elu_value,
     _gelu_derivative,
     _gelu_value,
-    _generic_binary_dtype,
-    _generic_pow_dtype,
-    _generic_scalar_mul_dtype,
     _leaky_relu_derivative,
     _leaky_relu_value,
     _sigmoid_value,
@@ -76,7 +73,6 @@ def _unary_elementwise_operation(
     operation: str,
     compute: Callable[[Any], tuple[Any, Any]],
     gradient_multiplier: Callable[[Any, Any], Any],
-    result_dtype: DType | None = DType.Floating,
 ) -> type[Any]:
     """Build a Generic unary elementwise operation class.
 
@@ -84,13 +80,13 @@ def _unary_elementwise_operation(
     saved values are stored in the autograd context for the backward pass.
     ``gradient_multiplier`` maps ``(input_value, saved_value)`` to the local
     derivative that scales the incoming gradient. Both run through the
-    arithmetic resolved for the operand, so a concrete operand computes in
-    binary32 or exact ``Int32`` while legacy storage keeps Python arithmetic.
+    arithmetic resolved for the operand, so the central plan controls binary32
+    or exact ``Int32`` computation and the concrete result dtype.
     """
 
     def _forward(self: Any, tensor: Any) -> Any:
         tensor = _require_live_tensor(tensor, "tensor")
-        arithmetic = unary_arithmetic(operation, tensor, result_dtype)
+        arithmetic = unary_arithmetic(operation, tensor)
 
         values = []
         saved_values = []
@@ -142,22 +138,15 @@ def _binary_elementwise_result(
     *,
     operation: str,
     compute: Callable[[Any, Any], Any],
-    legacy_dtype: DType | None = None,
 ) -> Any:
-    """Validate Generic binary operands and construct their detached result.
-
-    ``legacy_dtype`` overrides the dtype Generic reports on its legacy path;
-    by default the operands' historical promotion decides it.
-    """
+    """Validate Generic binary operands and construct their detached result."""
     lhs = _require_live_tensor(lhs, "lhs")
     rhs = _require_live_tensor(rhs, "rhs")
     lhs, rhs, result_layout = _align_binary_operands(lhs, rhs)
     if owner.inputs():
         owner.store_inputs(lhs, rhs)
 
-    if legacy_dtype is None:
-        legacy_dtype = _generic_binary_dtype(lhs, rhs)
-    arithmetic = binary_arithmetic(operation, lhs, rhs, legacy_dtype)
+    arithmetic = binary_arithmetic(operation, lhs, rhs)
     with executing(arithmetic):
         values = [
             arithmetic.store(
@@ -308,7 +297,6 @@ GenericNegOperation = _unary_elementwise_operation(
     operation="neg",
     compute=_neg_compute,
     gradient_multiplier=lambda _value, _saved: -1,
-    result_dtype=None,
 )
 
 GenericAbsOperation = _unary_elementwise_operation(
@@ -317,7 +305,6 @@ GenericAbsOperation = _unary_elementwise_operation(
     operation="abs",
     compute=_abs_compute,
     gradient_multiplier=lambda value, _saved: 0 if value == 0 else safe_sign(value),
-    result_dtype=None,
 )
 
 GenericSignOperation = _unary_elementwise_operation(
@@ -326,7 +313,6 @@ GenericSignOperation = _unary_elementwise_operation(
     operation="sign",
     compute=_sign_compute,
     gradient_multiplier=lambda _value, _saved: 0,
-    result_dtype=None,
 )
 
 GenericRecipOperation = _unary_elementwise_operation(
@@ -409,7 +395,6 @@ GenericFloorOperation = _unary_elementwise_operation(
     operation="floor",
     compute=_floor_compute,
     gradient_multiplier=lambda _value, _saved: 0,
-    result_dtype=None,
 )
 
 GenericCeilOperation = _unary_elementwise_operation(
@@ -418,7 +403,6 @@ GenericCeilOperation = _unary_elementwise_operation(
     operation="ceil",
     compute=_ceil_compute,
     gradient_multiplier=lambda _value, _saved: 0,
-    result_dtype=None,
 )
 
 GenericRoundOperation = _unary_elementwise_operation(
@@ -427,7 +411,6 @@ GenericRoundOperation = _unary_elementwise_operation(
     operation="round",
     compute=_round_compute,
     gradient_multiplier=lambda _value, _saved: 0,
-    result_dtype=None,
 )
 
 
@@ -445,7 +428,6 @@ GenericReLUOperation = _unary_elementwise_operation(
     operation="relu",
     compute=lambda value: (max(0, value), None),
     gradient_multiplier=lambda value, _saved: 1 if value > 0 else 0,
-    result_dtype=None,
 )
 
 GenericSigmoidOperation = _unary_elementwise_operation(
@@ -567,18 +549,12 @@ class GenericScalarMulOperation(Operation):
                 compute=lambda x, y: x * y,
             )
 
-        # The scalar is validated inside `scalar_arithmetic`, by the policy for
-        # concrete storage and by the legacy check otherwise, so both backends
-        # reject the same scalars with the same message.
-        arithmetic = scalar_arithmetic(
-            "mul", tensor, scalar, _generic_scalar_mul_dtype(tensor, scalar), "scalar"
-        )
+        arithmetic = scalar_arithmetic("mul", tensor, scalar)
         # The scalar is materialized once, before the loop, and the materialized
         # value is what backward reuses. Saving the original object instead
         # would convert it a second time, so a scalar whose numeric conversion
         # is not stable could scale the gradient by a different value than the
-        # forward pass used. On the legacy path conversion is the identity, so
-        # this stores the supplied object exactly as before.
+        # forward pass used.
         materialized = arithmetic.convert(scalar)
         self.ctx["scalar"] = materialized
         with executing(arithmetic):
@@ -682,15 +658,12 @@ class GenericDivOperation(Operation):
     """
 
     def _forward(self, lhs: Any, rhs: Any) -> Any:
-        # Division is floating on both paths, so legacy storage reports
-        # Floating rather than the operands' promoted category.
         return _binary_elementwise_result(
             self,
             lhs,
             rhs,
             operation="div",
             compute=lambda x, y: x / y,
-            legacy_dtype=DType.Floating,
         )
 
     def backward(self, gradient: Any) -> tuple[Any, Any]:
@@ -858,23 +831,11 @@ class GenericPowOperation(Operation):
         # tensor-base scalar exponent path below because their VJPs differ.
         if isinstance(exponent, Tensor) and not isinstance(tensor, Tensor):
             exponent = _require_live_tensor(exponent, "exponent")
-            exponent_dtype = exponent.carrier.dtype()
-            if exponent_dtype in (DType.Float32, DType.Int32, DType.Bool):
-                # ``scalar_arithmetic`` resolves only the tensor-weak-scalar
-                # overload.  Reverse power has the weak-scalar-tensor role
-                # order, so ask the shared policy for that overload directly.
-                plan = resolve_operation_plan("pow", tensor, exponent_dtype)
-                arithmetic = arithmetic_for_plan(plan, type(exponent.carrier))
-            else:
-                # Legacy opaque storage has no policy plan and retains Generic's
-                # historical number validation and Python arithmetic.
-                arithmetic = scalar_arithmetic(
-                    "pow",
-                    exponent,
-                    tensor,
-                    _generic_pow_dtype(exponent, tensor),
-                    "base",
-                )
+            # ``scalar_arithmetic`` resolves only the tensor-weak-scalar
+            # overload. Reverse power has the weak-scalar-tensor role order, so
+            # ask the shared policy for that overload directly.
+            plan = resolve_operation_plan("pow", tensor, exponent.carrier.dtype())
+            arithmetic = arithmetic_for_plan(plan, type(exponent.carrier))
             materialized = arithmetic.convert(tensor)
             self.ctx["scalar_base"] = materialized
             self.ctx["output_values"] = []
@@ -899,9 +860,7 @@ class GenericPowOperation(Operation):
 
         tensor = _require_live_tensor(tensor, "tensor")
 
-        arithmetic = scalar_arithmetic(
-            "pow", tensor, exponent, _generic_pow_dtype(tensor, exponent), "exponent"
-        )
+        arithmetic = scalar_arithmetic("pow", tensor, exponent)
         # Materialized once and reused by backward, for the reason given in
         # GenericScalarMulOperation.
         materialized = arithmetic.convert(exponent)
@@ -1010,11 +969,10 @@ class GenericMatmulOperation(Operation):
             "matmul",
             lhs,
             rhs,
-            _generic_binary_dtype(lhs, rhs),
             options=self._execution_options,
         )
-        if arithmetic.plan is not None:
-            self.ctx["accumulator_dtype"] = arithmetic.plan.accumulator_dtype
+        assert arithmetic.plan is not None
+        self.ctx["accumulator_dtype"] = arithmetic.plan.accumulator_dtype
         with executing(arithmetic):
             values = [
                 arithmetic.store(

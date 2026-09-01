@@ -197,7 +197,7 @@ PYBIND11_MODULE(_carrier, module) {
             "False.\n\n"
             "Examples:\n"
             "    >>> import strideweave as sw\n"
-            "    >>> carrier = sw.Generic([1.0], mutable=False)\n"
+            "    >>> carrier = sw.Generic([1.0], mutable=False, dtype=sw.DType.Float32)\n"
             "    >>> carrier.is_mutable()\n"
             "    False")
         .def("is_owned", &Carrier::is_owned,
@@ -209,9 +209,9 @@ PYBIND11_MODULE(_carrier, module) {
              "    True when this carrier has an exclusive owner; otherwise False.\n\n"
              "Examples:\n"
              "    >>> import strideweave as sw\n"
-             "    >>> primary = sw.Generic([1.0])\n"
+             "    >>> primary = sw.Generic([1.0], dtype=sw.DType.Float32)\n"
              "    >>> hierarchy = sw.Evictable(\n"
-             "    ...     primary, sw.Generic([0.0])\n"
+             "    ...     primary, sw.Generic([0.0], dtype=sw.DType.Float32)\n"
              "    ... )\n"
              "    >>> primary.is_owned()\n"
              "    True")

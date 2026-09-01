@@ -7,7 +7,16 @@ import pytest
 
 import strideweave as sw
 import strideweave.functional.api as functional_api
-from strideweave import FileBacked, Generic, Layout, Operation, Shape, Stride, Tensor
+from strideweave import (
+    DType,
+    FileBacked,
+    Generic,
+    Layout,
+    Operation,
+    Shape,
+    Stride,
+    Tensor,
+)
 from strideweave.carriers.operation_policy import operation_execution_options
 from strideweave.operation import is_grad_enabled, set_grad_enabled
 
@@ -49,7 +58,9 @@ class MissingBackwardOperation(Operation):
 
 
 def make_tensor(values: list[Any]) -> Tensor:
-    return Tensor(Generic(values), 0, Layout(Shape(len(values)), Stride(1)))
+    return Tensor(
+        Generic(values, dtype=DType.Float32), 0, Layout(Shape(len(values)), Stride(1))
+    )
 
 
 def test_operation_public_api_imports():
@@ -226,6 +237,19 @@ def test_no_grad_skips_input_storage_and_autograd_context():
     assert operation.inputs() == ()
     assert operation.ctx["input_count"] == 3
     assert is_grad_enabled()
+
+
+@pytest.mark.parametrize(("dtype", "value"), [(DType.Int32, 1), (DType.Bool, True)])
+def test_concrete_nondifferentiable_inputs_do_not_build_an_autograd_node(dtype, value):
+    operation = EchoOperation()
+    tensor = Tensor(Generic([value], dtype=dtype), 0, Layout(Shape(1), Stride(1)))
+
+    result = operation.forward(tensor)
+
+    assert result.dtype() is DType.Float32
+    assert result.autograd_ctx is None
+    assert operation.inputs() == ()
+    assert operation.input_versions() == ()
 
 
 def test_no_grad_nested_contexts_restore_previous_state():

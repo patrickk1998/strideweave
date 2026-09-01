@@ -2,8 +2,7 @@
 
 These tests pin what makes Generic a reference rather than merely a Python
 fallback: genuine IEEE-754 binary32 for ``Float32`` in forward *and* backward,
-exact ``Int32`` with checked narrowing, normalized owned storage, and the
-documented boundary where legacy opaque storage keeps its own arithmetic.
+exact ``Int32`` with checked narrowing, and normalized owned storage.
 """
 
 from __future__ import annotations
@@ -16,7 +15,16 @@ import numpy
 import pytest
 
 import strideweave as sw
-from strideweave import CPU, DType, Generic, Layout, Shape, Stride, Tensor
+from strideweave import (
+    CPU,
+    Carrier,
+    DType,
+    Generic,
+    Layout,
+    Shape,
+    Stride,
+    Tensor,
+)
 from strideweave.carriers.generic.capabilities import generic_capabilities
 from strideweave.carriers.generic.execution import (
     arithmetic_for_plan,
@@ -60,7 +68,45 @@ def binary32(value):
     return float(numpy.float32(value))
 
 
+class _CategoryCarrier(Carrier):
+    def __init__(self, values, dtype):
+        super().__init__()
+        self.values = list(values)
+        self._dtype = dtype
+        self.allocations = 0
+
+    def size(self):
+        return len(self.values)
+
+    def dtype(self):
+        return self._dtype
+
+    def get_value(self, index):
+        return self.values[index]
+
+    def new_like(self, values, *, mutable=True, dtype=None):
+        self.allocations += 1
+        raise AssertionError("category planning must fail before allocation")
+
+    def allocate_like(self, size, *, mutable=True, dtype=None, empty=False):
+        self.allocations += 1
+        raise AssertionError("category planning must fail before allocation")
+
+    def scatter(self, to_scatter, scatter_onto, mapping, mapping_offset=0):
+        raise NotImplementedError
+
+
 # --- Storage normalization -------------------------------------------------
+
+
+@pytest.mark.parametrize("category", [DType.Any, DType.Floating, DType.Integer])
+def test_categories_cannot_reach_generic_operation_planning(category):
+    lhs_carrier = _CategoryCarrier([1.0, 2.0], category)
+
+    with pytest.raises(ValueError, match="abstract dtype category"):
+        Tensor(lhs_carrier, 0, ONE_MODE)
+
+    assert lhs_carrier.allocations == 0
 
 
 def test_float32_storage_holds_binary32_values():
@@ -89,13 +135,13 @@ def test_concrete_storage_is_owned_rather_than_aliased():
     assert carrier[0] == 1.0
 
 
-def test_legacy_storage_keeps_its_documented_aliasing():
+def test_immutable_concrete_storage_is_also_owned():
     supplied = [1.0, 2.0]
-    carrier = Generic(supplied, dtype=DType.Floating)
+    carrier = Generic(supplied, mutable=False, dtype=DType.Float32)
 
     supplied[0] = 99.0
 
-    assert carrier[0] == 99.0
+    assert carrier[0] == 1.0
 
 
 def test_mutation_normalizes_and_bumps_the_version():
@@ -358,30 +404,25 @@ def test_matmul_backward_reuses_the_forward_accumulator_dtype():
     assert require_grad(lhs)[0, 0] == 2.0
 
 
-# --- The legacy boundary ---------------------------------------------------
+# --- Concrete promotion boundary ------------------------------------------
 
 
-def test_mixing_legacy_and_concrete_storage_stays_on_the_legacy_path():
-    # Documented behavior, not a promotion result: a legacy Floating operand
-    # keeps Generic's historical Python arithmetic, so the concrete operand's
-    # binary32 semantics are downgraded to binary64 for this operation.
-    legacy = generic_tensor([0.1, 0.1], DType.Floating)
+def test_mixing_int32_and_float32_storage_uses_the_concrete_plan():
+    integer = generic_tensor([1, 1], DType.Int32)
     concrete = generic_tensor([0.2, 0.2], DType.Float32)
 
-    result = legacy + concrete
+    result = integer + concrete
 
-    assert result.dtype() is DType.Floating
-    assert result[0] == 0.1 + binary32(0.2)
+    assert result.dtype() is DType.Float32
+    assert result[0] == binary32(1.0 + binary32(0.2))
 
 
-def test_legacy_any_storage_is_never_routed_through_checked_integer():
-    huge = 2**40
-    legacy = generic_tensor([huge, huge], DType.Any)
+def test_int32_storage_is_routed_through_checked_integer_arithmetic():
+    maximum = generic_tensor([2**31 - 1, 2**31 - 1], DType.Int32)
+    one = generic_tensor([1, 1], DType.Int32)
 
-    result = legacy + legacy
-
-    assert result.dtype() is DType.Any
-    assert result[0] == 2 * huge
+    with pytest.raises(OverflowError, match="out of int32 range"):
+        _ = maximum + one
 
 
 def test_generic_and_cpu_agree_on_concrete_results():

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from operator import index as operator_index
-from typing import Any, Protocol, final, runtime_checkable
+from typing import Any, final
 
 from ..base import Carrier, reject_carrier_subclass
 from ..dtype import (
@@ -11,91 +11,36 @@ from ..dtype import (
     storage_zero,
     validate_storage_dtype,
 )
-from .numerics import (
-    is_concrete_simple_dtype,
-    normalize_storage_value,
-    normalize_storage_values,
-)
+from .numerics import normalize_storage_value, normalize_storage_values
 
-
-@runtime_checkable
-class _SizedIndexable(Protocol):
-    def __len__(self) -> int: ...
-    def __getitem__(self, index: int, /) -> Any: ...
-
-
-@runtime_checkable
-class _MutableSizedIndexable(_SizedIndexable, Protocol):
-    def __setitem__(self, index: int, value: Any, /) -> None: ...
-
-
-def _as_sized_indexable(
-    values: Iterable[Any], class_name: str, *, mutable: bool
-) -> _SizedIndexable:
-    try:
-        iter(values)
-    except TypeError as exc:
-        raise TypeError(f"{class_name} requires an iterable object") from exc
-
-    if mutable:
-        if isinstance(values, _MutableSizedIndexable):
-            return values
-        return list(values)
-
-    if isinstance(values, _SizedIndexable):
-        return values
-    return list(values)
-
-
-# Generic stores Python objects, so it accepts the legacy opaque-storage
-# descriptors, and it is the behavioral reference for the concrete simple
-# dtypes, so it accepts those too.
-_GENERIC_DTYPES = (DType.Any, DType.Floating, DType.Float32, DType.Int32, DType.Bool)
+# Generic is the behavioral reference for these concrete storage dtypes.
+_GENERIC_DTYPES = (DType.Float32, DType.Int32, DType.Bool)
 
 
 def _validate_generic_dtype(dtype: DType) -> DType:
     return validate_storage_dtype(dtype, carrier="Generic", accepted=_GENERIC_DTYPES)
 
 
-# A fresh concrete allocation starts at its dtype's zero, per RT004's
-# initialized storage contract; `storage_zero` is that rule's single source and
-# returns None for legacy opaque storage, which keeps its historical fill.
-
-
-def _normalized_storage(
-    values: Iterable[Any], dtype: DType, class_name: str, *, mutable: bool
-) -> _SizedIndexable:
-    """Build this carrier's backing storage for ``dtype``.
-
-    Concrete simple dtypes are normalized into a list this carrier owns, so no
-    caller-held alias can later place a value the encoding cannot represent, or
-    change stored values without the version counter observing it. Legacy opaque
-    storage keeps its documented aliasing behavior.
-    """
-    if not is_concrete_simple_dtype(dtype):
-        return _as_sized_indexable(values, class_name, mutable=mutable)
+def _normalized_storage(values: Iterable[Any], dtype: DType) -> list[Any]:
+    """Build normalized backing storage owned by this carrier."""
     try:
         supplied = list(values)
     except TypeError as exc:
-        raise TypeError(f"{class_name} requires an iterable object") from exc
-    return normalize_storage_values(dtype, supplied, f"{class_name} value")
+        raise TypeError("Generic requires an iterable object") from exc
+    return normalize_storage_values(dtype, supplied, "Generic value")
 
 
 @final
 class Generic(Carrier):
     """Python-backed carrier storage for generic StrideWeave tensors.
 
-    Generic accepts the legacy opaque-storage descriptors — ``DType.Floating``
-    for differentiable numeric values and ``DType.Any`` for arbitrary objects —
-    and the concrete simple dtypes ``DType.Float32``, ``DType.Int32``, and
-    ``DType.Bool``, for which it is StrideWeave's behavioral reference
-    implementation.
-
-    Concrete storage is normalized and owned: a ``Float32`` carrier holds
+    Generic accepts the concrete simple dtypes ``DType.Float32``,
+    ``DType.Int32``, and ``DType.Bool``, for which it is StrideWeave's
+    behavioral reference implementation. Storage is normalized and owned: a
+    ``Float32`` carrier holds
     binary32-exact floats, an ``Int32`` carrier holds in-range integers, and a
     ``Bool`` carrier holds normalized Python booleans, copied into storage this
-    carrier owns. Legacy opaque storage continues to alias a mutable container
-    the caller supplied.
+    carrier owns.
 
     Generic is a closed implementation: extend StrideWeave with a sibling
     ``Carrier`` rather than a specialization of this one.
@@ -109,16 +54,14 @@ class Generic(Carrier):
         values: Iterable[Any],
         *,
         mutable: bool = True,
-        dtype: DType = DType.Floating,
+        dtype: DType,
     ):
         super().__init__()
         self._mutable = bool(mutable)
         self._dtype = _validate_generic_dtype(dtype)
-        self._values: _SizedIndexable | None = _normalized_storage(
-            values, self._dtype, "Generic", mutable=self._mutable
-        )
+        self._values: list[Any] | None = _normalized_storage(values, self._dtype)
 
-    def _require_values(self) -> _SizedIndexable:
+    def _require_values(self) -> list[Any]:
         if self._values is None:
             if self.is_released():
                 raise RuntimeError("Carrier is released")
@@ -128,12 +71,10 @@ class Generic(Carrier):
     def _release(self) -> None:
         self._values = None
 
-    def _require_mutable_values(self) -> _MutableSizedIndexable:
+    def _require_mutable_values(self) -> list[Any]:
         if not self.is_mutable():
             raise RuntimeError("Carrier is not mutable")
         values = self._require_values()
-        if not isinstance(values, _MutableSizedIndexable):
-            raise RuntimeError("Carrier is not mutable")
         return values
 
     def size(self) -> int:

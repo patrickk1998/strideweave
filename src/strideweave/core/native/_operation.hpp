@@ -28,8 +28,7 @@ inline py::object dtype_object(const char* name) {
 }
 
 inline bool is_differentiable_dtype(py::handle dtype) {
-    return objects_equal(dtype, dtype_object("Float32")) ||
-           objects_equal(dtype, dtype_object("Floating"));
+    return dtype.is(dtype_object("Float32"));
 }
 
 inline bool is_differentiable_tensor(py::handle tensor) {

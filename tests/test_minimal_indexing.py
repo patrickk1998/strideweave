@@ -147,17 +147,17 @@ def test_scatter_add_vjp_passes_base_gradient_and_gathers_each_update() -> None:
 
 @pytest.mark.parametrize("operation", [GenericGatherOperation, GenericScatterOperation])
 def test_indexing_requires_declared_float32_or_int32_dtypes(operation: type) -> None:
-    float_tensor = _tensor([1.0, 2.0], Shape(2), DType.Floating)
+    bool_tensor = _tensor([True, False], Shape(2), DType.Bool)
     int_indices = _tensor([0], Shape(1), DType.Int32)
     updates = _tensor([1.0], Shape(1), DType.Float32)
     if operation is GenericGatherOperation:
 
         def invoke() -> object:
-            return operation().forward(float_tensor, int_indices, 0)
+            return operation().forward(bool_tensor, int_indices, 0)
     else:
 
         def invoke() -> object:
-            return operation().forward(float_tensor, int_indices, updates, 0)
+            return operation().forward(bool_tensor, int_indices, updates, 0)
 
     with pytest.raises(TypeError, match="Float32"):
         invoke()

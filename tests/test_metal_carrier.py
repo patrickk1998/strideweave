@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Any
 
 import pytest
@@ -264,8 +265,9 @@ def test_metal_carrier_scatter_is_synchronized_versioned_and_atomic() -> None:
     assert [destination_carrier[index] for index in range(4)] == before
     assert destination_carrier.version == version
 
+    native_carrier = import_module("strideweave._carrier")
     invalid_source = sw.Tensor(
-        sw.Generic(["not-a-float", 2.0], dtype=sw.DType.Any),
+        native_carrier._VectorCarrierForTest(["not-a-float", 2.0]),
         0,
         sw.Layout(sw.Shape(2), sw.Stride(1)),
     )

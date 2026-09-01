@@ -14,10 +14,7 @@ from uuid import uuid4
 from ..base import Carrier, reject_carrier_subclass
 from ..dtype import DType, accepts_storage_dtype, validate_storage_dtype
 
-# FileBacked packs raw numeric values, so it accepts the legacy width-unspecified
-# Floating storage alongside the fixed-size simple dtypes it can pack.
-_STRUCT_FORMATS = {
-    DType.Floating: "d",
+_STRUCT_FORMATS: dict[DType, str] = {
     DType.Float32: "f",
     DType.Int32: "i",
 }
@@ -63,12 +60,13 @@ class FileBacked(Carrier):
         filename: Bare file name inside the hidden session directory, or
             ``None`` to generate a random name.
         mutable: Whether values may be written after creation.
-        dtype: Numeric element type; one of ``DType.Floating``,
-            ``DType.Float32``, or ``DType.Int32``.
+        dtype: Required numeric element type; either ``DType.Float32`` or
+            ``DType.Int32``.
 
     Examples:
         >>> from strideweave import FileBacked
-        >>> carrier = FileBacked("weights.bin")
+        >>> from strideweave import DType
+        >>> carrier = FileBacked("weights.bin", dtype=DType.Float32)
         >>> carrier.size()
         0
     """
@@ -81,7 +79,7 @@ class FileBacked(Carrier):
         filename: str | None = None,
         *,
         mutable: bool = True,
-        dtype: DType = DType.Floating,
+        dtype: DType,
     ):
         super().__init__()
         self._mutable = bool(mutable)

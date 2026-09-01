@@ -109,9 +109,9 @@ class AwaitMove(AwaitResult[T]):
     Examples:
         >>> import strideweave as sw
         >>> source = sw.Tensor(
-        ...     sw.Generic([1.0]), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
+        ...     sw.Generic([1.0], dtype=sw.DType.Float32), 0, sw.Layout(sw.Shape(1), sw.Stride(1))
         ... )
-        >>> handle = sw.move_async(source, sw.Generic([0.0]))
+        >>> handle = sw.move_async(source, sw.Generic([0.0], dtype=sw.DType.Float32))
         >>> handle.wait()[0]
         1.0
     """

@@ -1,5 +1,3 @@
-import struct
-
 import pytest
 
 import strideweave as sw
@@ -144,10 +142,10 @@ def test_move_under_no_grad_builds_no_graph():
 
 def test_move_from_generic_source():
     layout = Layout(Shape(2), Stride(1))
-    generic = Generic([4.0, 5.0])
+    generic = Generic([4.0, 5.0], dtype=DType.Float32)
     tensor = Tensor(generic, 0, layout)
 
-    moved = sw.move(tensor, FileBacked(dtype=DType.Floating))
+    moved = sw.move(tensor, FileBacked(dtype=DType.Float32))
 
     assert tensor_values(moved) == [4.0, 5.0]
     assert generic.is_released()
@@ -230,7 +228,6 @@ def test_move_rejects_released_destination():
 @pytest.mark.parametrize(
     ("source_dtype", "destination_dtype"),
     [
-        (DType.Float32, DType.Floating),
         (DType.Float32, DType.Int32),
         (DType.Int32, DType.Float32),
     ],
@@ -247,7 +244,7 @@ def test_move_rejects_mismatched_dtypes(source_dtype, destination_dtype):
 
 def test_move_rejects_generic_to_cpu_dtype_mismatch():
     layout = Layout(Shape(2), Stride(1))
-    tensor = Tensor(Generic([1.0, 2.0]), 0, layout)
+    tensor = Tensor(Generic([1, 2], dtype=DType.Int32), 0, layout)
 
     with pytest.raises(TypeError, match="dtype must match"):
         sw.move(tensor, CPU(2, dtype=DType.Float32))
@@ -256,11 +253,16 @@ def test_move_rejects_generic_to_cpu_dtype_mismatch():
 
 def test_move_failed_copy_leaves_source_intact():
     layout = Layout(Shape(2), Stride(1))
-    generic = Generic([1.0, "not a number"])
+    generic = Generic([1.0, 2.0], dtype=DType.Float32)
     tensor = Tensor(generic, 0, layout)
 
-    with pytest.raises(struct.error, match="required argument is not a float"):
-        sw.move(tensor, FileBacked(dtype=DType.Floating))
+    class FailingMoveOperation(ElementwiseMoveOperation):
+        def _copy(self, tensor, destination, output, element_count):
+            raise RuntimeError("injected copy failure")
+
+    with registered_move_operation(Generic, Generic, FailingMoveOperation):
+        with pytest.raises(RuntimeError, match="injected copy failure"):
+            sw.move(tensor, Generic([0.0, 0.0], dtype=DType.Float32))
 
     assert not generic.is_released()
     assert tensor[0] == 1.0
@@ -339,8 +341,8 @@ def test_registered_move_operation_is_used_by_public_move():
 
     with registered_move_operation(Generic, Generic, SpyMoveOperation):
         layout = Layout(Shape(2), Stride(1))
-        tensor = Tensor(Generic([1.0, 2.0]), 0, layout)
-        moved = sw.move(tensor, Generic([0.0, 0.0]))
+        tensor = Tensor(Generic([1.0, 2.0], dtype=DType.Float32), 0, layout)
+        moved = sw.move(tensor, Generic([0.0, 0.0], dtype=DType.Float32))
 
     assert calls == [2]
     assert tensor_values(moved) == [1.0, 2.0]
@@ -390,8 +392,8 @@ def test_registered_move_operation_unregisters_when_block_raises():
 
 def test_concrete_move_operation_rejects_wrong_source_class():
     layout = Layout(Shape(2), Stride(1))
-    tensor = Tensor(Generic([1.0, 2.0]), 0, layout)
-    destination = FileBacked(dtype=DType.Floating)
+    tensor = Tensor(Generic([1.0, 2.0], dtype=DType.Float32), 0, layout)
+    destination = FileBacked(dtype=DType.Float32)
 
     with pytest.raises(TypeError, match="requires a CPU source"):
         CpuToFileBackedMoveOperation().forward(tensor, destination)

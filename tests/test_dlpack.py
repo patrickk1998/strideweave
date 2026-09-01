@@ -102,7 +102,9 @@ def test_cpu_int32_dlpack_exports_int32_storage():
 
 
 def test_generic_dlpack_export_is_not_supported():
-    tensor = Tensor(Generic([1.0, 2.0]), 0, Layout(Shape(2), Stride(1)))
+    tensor = Tensor(
+        Generic([1.0, 2.0], dtype=DType.Float32), 0, Layout(Shape(2), Stride(1))
+    )
 
     with pytest.raises(BufferError, match="DLPack is not supported"):
         tensor.__dlpack_device__()

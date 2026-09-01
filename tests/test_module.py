@@ -3,14 +3,14 @@ from typing import Any
 import pytest
 
 import strideweave as sw
-from strideweave import Generic, Layout, Module, Parameter, Shape, Stride, Tensor
+from strideweave import DType, Generic, Layout, Module, Parameter, Shape, Stride, Tensor
 
 
-def make_tensor(value: Any) -> Tensor:
-    return Tensor(Generic([value]), 0, Layout(Shape(1), Stride(1)))
+def make_tensor(value: float) -> Tensor:
+    return Tensor(Generic([value], dtype=DType.Float32), 0, Layout(Shape(1), Stride(1)))
 
 
-def make_parameter(value: Any) -> Parameter:
+def make_parameter(value: float) -> Parameter:
     return Parameter(make_tensor(value))
 
 
@@ -32,7 +32,7 @@ def test_module_public_api_imports():
 
 
 def test_parameter_is_tensor_and_can_wrap_existing_tensor():
-    tensor = make_tensor("value")
+    tensor = make_tensor(1.0)
 
     parameter = Parameter(tensor)
 
@@ -40,11 +40,11 @@ def test_parameter_is_tensor_and_can_wrap_existing_tensor():
     assert parameter.carrier is tensor.carrier
     assert parameter.offset == tensor.offset
     assert parameter.layout == tensor.layout
-    assert parameter[0] == "value"
+    assert parameter[0] == 1.0
 
 
 def test_parameter_supports_direct_tensor_constructor_arguments():
-    carrier = Generic(["value"])
+    carrier = Generic([1.0], dtype=DType.Float32)
     layout = Layout(Shape(1), Stride(1))
 
     parameter = Parameter(carrier, 0, layout)
@@ -53,11 +53,11 @@ def test_parameter_supports_direct_tensor_constructor_arguments():
     assert parameter.carrier is carrier
     assert parameter.offset == 0
     assert parameter.layout == layout
-    assert parameter[0] == "value"
+    assert parameter[0] == 1.0
 
 
 def test_parameter_supports_optional_name_metadata():
-    tensor = make_tensor("value")
+    tensor = make_tensor(1.0)
 
     wrapped = Parameter(tensor, name="wrapped")
     direct = Parameter(tensor.carrier, 0, tensor.layout, name="direct")
@@ -67,7 +67,7 @@ def test_parameter_supports_optional_name_metadata():
 
 
 def test_parameter_rejects_ambiguous_constructor_arguments():
-    tensor = make_tensor("value")
+    tensor = make_tensor(1.0)
 
     with pytest.raises(TypeError):
         Parameter(tensor, 0, tensor.layout)
@@ -77,7 +77,7 @@ def test_parameter_rejects_ambiguous_constructor_arguments():
 
 
 def test_parameter_rejects_invalid_names():
-    tensor = make_tensor("value")
+    tensor = make_tensor(1.0)
 
     with pytest.raises(ValueError, match="name must be non-empty"):
         Parameter(tensor, name="")
@@ -112,13 +112,13 @@ def test_module_base_forward_raises_not_implemented():
 def test_module_registers_direct_parameters_and_submodules():
     root = Module()
     child = Module()
-    root_weight = make_parameter("root")
-    child_weight = make_parameter("child")
+    root_weight = make_parameter(1.0)
+    child_weight = make_parameter(2.0)
     root.weight = root_weight
     child.weight = child_weight
     root.child = child
 
-    assert root_weight[0] == "root"
+    assert root_weight[0] == 1.0
     assert getattr(root, "child") is child
     assert root.modules() == (root, child)
     assert root.parameters() == (root_weight, child_weight)
@@ -133,10 +133,10 @@ def test_module_traversal_preserves_recursive_insertion_order():
     first = Module()
     second = Module()
     nested = Module()
-    root_weight = make_parameter("root")
-    first_weight = make_parameter("first")
-    nested_weight = make_parameter("nested")
-    second_weight = make_parameter("second")
+    root_weight = make_parameter(1.0)
+    first_weight = make_parameter(2.0)
+    nested_weight = make_parameter(3.0)
+    second_weight = make_parameter(4.0)
     root.root_weight = root_weight
     first.first_weight = first_weight
     nested.nested_weight = nested_weight
@@ -162,9 +162,9 @@ def test_module_traversal_preserves_recursive_insertion_order():
 
 def test_module_reassignment_and_deletion_update_registries():
     root = Module()
-    parameter = make_parameter("parameter")
+    parameter = make_parameter(1.0)
     child = Module()
-    raw_tensor = make_tensor("raw")
+    raw_tensor = make_tensor(2.0)
 
     root.slot = parameter
     assert root.parameters() == (parameter,)
@@ -185,8 +185,8 @@ def test_module_reassignment_and_deletion_update_registries():
 
 def test_module_does_not_register_private_or_plain_tensor_attributes():
     root = Module()
-    parameter = make_parameter("parameter")
-    raw_tensor = make_tensor("raw")
+    parameter = make_parameter(1.0)
+    raw_tensor = make_tensor(2.0)
 
     root._private_parameter = parameter
     root.raw_tensor = raw_tensor
@@ -200,7 +200,7 @@ def test_module_does_not_register_private_or_plain_tensor_attributes():
 def test_module_deduplicates_shared_submodules_and_parameters():
     root = Module()
     shared_child = Module()
-    shared_parameter = make_parameter("shared")
+    shared_parameter = make_parameter(1.0)
     shared_child.weight = shared_parameter
 
     root.first = shared_child
@@ -213,7 +213,7 @@ def test_module_deduplicates_shared_submodules_and_parameters():
 
 def test_module_deduplicates_shared_direct_parameters():
     root = Module()
-    shared_parameter = make_parameter("shared")
+    shared_parameter = make_parameter(1.0)
 
     root.first = shared_parameter
     root.second = shared_parameter
@@ -224,7 +224,7 @@ def test_module_deduplicates_shared_direct_parameters():
 
 def test_named_parameters_use_explicit_parameter_names():
     root = Module()
-    parameter = Parameter(make_tensor("value"), name="kernel")
+    parameter = Parameter(make_tensor(1.0), name="kernel")
 
     root.weight = parameter
 
@@ -234,7 +234,7 @@ def test_named_parameters_use_explicit_parameter_names():
 def test_named_parameters_use_explicit_child_module_names():
     root = Module()
     child = Module(name="encoder")
-    parameter = make_parameter("value")
+    parameter = make_parameter(1.0)
     child.weight = parameter
     root.layer = child
 
@@ -245,7 +245,7 @@ def test_named_parameters_compose_nested_explicit_names():
     root = Module(name="root_name")
     child = Module(name="encoder")
     grandchild = Module(name="projection")
-    parameter = Parameter(make_tensor("value"), name="kernel")
+    parameter = Parameter(make_tensor(1.0), name="kernel")
     grandchild.weight = parameter
     child.inner = grandchild
     root.layer = child
@@ -255,7 +255,7 @@ def test_named_parameters_compose_nested_explicit_names():
 
 def test_root_module_name_is_not_prefixed_in_own_named_parameters():
     root = Module(name="root_name")
-    parameter = make_parameter("value")
+    parameter = make_parameter(1.0)
     root.weight = parameter
 
     assert root.get_named_parameters() == (("weight", parameter),)
@@ -264,7 +264,7 @@ def test_root_module_name_is_not_prefixed_in_own_named_parameters():
 def test_mutating_names_updates_later_named_parameter_output():
     root = Module()
     child = Module()
-    parameter = make_parameter("value")
+    parameter = make_parameter(1.0)
     child.weight = parameter
     root.layer = child
 

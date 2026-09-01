@@ -397,12 +397,12 @@ def test_provider_callbacks_do_not_create_nested_autograd_nodes() -> None:
     destination_class = fresh_carrier("NoNestedGraphDestination")
     observed_contexts: list[object | None] = []
     probe = sw.Tensor(
-        sw.Generic([2.0]),
+        sw.Generic([2.0], dtype=sw.DType.Float32),
         0,
         sw.Layout(sw.Shape(1), sw.Stride(1)),
     )
     increment = sw.Tensor(
-        sw.Generic([1.0]),
+        sw.Generic([1.0], dtype=sw.DType.Float32),
         0,
         sw.Layout(sw.Shape(1), sw.Stride(1)),
     )
@@ -696,11 +696,11 @@ def test_definition_route_autograd_uses_captured_exact_reverse_route() -> None:
 
 def test_move_async_is_not_awaitable() -> None:
     source = sw.Tensor(
-        sw.Generic([1.0]),
+        sw.Generic([1.0], dtype=sw.DType.Float32),
         0,
         sw.Layout(sw.Shape(1), sw.Stride(1)),
     )
-    handle = sw.move_async(source, sw.Generic([0.0]))
+    handle = sw.move_async(source, sw.Generic([0.0], dtype=sw.DType.Float32))
 
     async def reject() -> None:
         with pytest.raises(TypeError, match="can't be used in 'await' expression"):

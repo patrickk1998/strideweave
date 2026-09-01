@@ -183,8 +183,8 @@ class Evictable(DependentCarrier):
 
         Examples:
             >>> import strideweave as sw
-            >>> primary = sw.Generic([1.0])
-            >>> hierarchy = sw.Evictable(primary, sw.Generic([0.0]))
+            >>> primary = sw.Generic([1.0], dtype=sw.DType.Float32)
+            >>> hierarchy = sw.Evictable(primary, sw.Generic([0.0], dtype=sw.DType.Float32))
             >>> hierarchy.primary is primary
             True
         """
@@ -202,8 +202,8 @@ class Evictable(DependentCarrier):
 
         Examples:
             >>> import strideweave as sw
-            >>> secondary = sw.Generic([0.0])
-            >>> hierarchy = sw.Evictable(sw.Generic([1.0]), secondary)
+            >>> secondary = sw.Generic([0.0], dtype=sw.DType.Float32)
+            >>> hierarchy = sw.Evictable(sw.Generic([1.0], dtype=sw.DType.Float32), secondary)
             >>> hierarchy.secondary is secondary
             True
         """
@@ -262,7 +262,7 @@ class Evictable(DependentCarrier):
 
         Examples:
             >>> import strideweave as sw
-            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
+            >>> carrier = sw.Evictable(sw.Generic([1.0], dtype=sw.DType.Float32), sw.Generic([0.0], dtype=sw.DType.Float32))
             >>> carrier.evict()
             >>> carrier.is_evicted()
             True
@@ -387,7 +387,7 @@ class Evictable(DependentCarrier):
 
         Examples:
             >>> import strideweave as sw
-            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
+            >>> carrier = sw.Evictable(sw.Generic([1.0], dtype=sw.DType.Float32), sw.Generic([0.0], dtype=sw.DType.Float32))
             >>> carrier.evict()
             >>> carrier.is_evicted()
             True
@@ -437,7 +437,7 @@ class Evictable(DependentCarrier):
 
         Examples:
             >>> import strideweave as sw
-            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
+            >>> carrier = sw.Evictable(sw.Generic([1.0], dtype=sw.DType.Float32), sw.Generic([0.0], dtype=sw.DType.Float32))
             >>> carrier.evict()
             >>> carrier.promote()
             >>> carrier.is_evicted()
@@ -530,7 +530,7 @@ class Evictable(DependentCarrier):
 
         Examples:
             >>> import strideweave as sw
-            >>> carrier = sw.Evictable(sw.Generic([1.0]), sw.Generic([0.0]))
+            >>> carrier = sw.Evictable(sw.Generic([1.0], dtype=sw.DType.Float32), sw.Generic([0.0], dtype=sw.DType.Float32))
             >>> operation = carrier.dispatch_op("relu")
             >>> type(operation).__name__
             'EvictableOperation'

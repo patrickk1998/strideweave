@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from strideweave import CompoundDType, DType, SimpleDType
+from strideweave import CompoundDType, DType, DTypeCategory, SimpleDType
 from strideweave.carriers.operation_policy import (
     INT32_MAX,
     INT32_MIN,
@@ -448,15 +448,44 @@ def test_a_non_dtype_tensor_operand_is_rejected() -> None:
         resolve_operation_plan("add", "Float32", DType.Float32)
 
 
-@pytest.mark.parametrize("category", [DType.Any, DType.Floating])
-def test_legacy_opaque_categories_are_not_simple_promotion(category: Any) -> None:
-    with pytest.raises(TypeError, match="legacy opaque storage category"):
-        resolve_operation_plan("add", category, DType.Float32)
+_EXTENSION_CATEGORY = DTypeCategory(
+    "OperationPolicyExtensionCategory", supertype=DType.Any
+)
+_ABSTRACT_CATEGORIES = (
+    DType.Any,
+    DType.Floating,
+    DType.Integer,
+    _EXTENSION_CATEGORY,
+)
+_CATEGORY_OPERATION_CASES = tuple(
+    (operation, operands, position)
+    for operation, entries in EXPECTED_PLANS.items()
+    for operands in (next(iter(entries)),)
+    for position, operand in enumerate(operands)
+    if isinstance(operand, DType)
+)
 
 
-def test_an_abstract_category_is_rejected_as_a_relationship() -> None:
-    with pytest.raises(TypeError, match="abstract category"):
-        resolve_operation_plan("add", DType.Integer, DType.Float32)
+@pytest.mark.parametrize("category", _ABSTRACT_CATEGORIES, ids=lambda value: value.name)
+@pytest.mark.parametrize(
+    ("operation", "operands", "position"),
+    _CATEGORY_OPERATION_CASES,
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_every_registered_operation_rejects_categories_in_each_tensor_position(
+    category: DTypeCategory,
+    operation: str,
+    operands: tuple[Any, ...],
+    position: int,
+) -> None:
+    category_operands = list(operands)
+    category_operands[position] = category
+
+    with pytest.raises(
+        TypeError,
+        match=rf"abstract category DType\.{category.name}.*operation storage dtype",
+    ):
+        resolve_operation_plan(operation, *category_operands)
 
 
 def test_a_compound_operand_reports_the_deferred_capability() -> None:

@@ -31,7 +31,6 @@ from ..operation_policy import (
     registered_operations,
 )
 from .execution import executable_plan_shape
-from .numerics import is_concrete_simple_dtype
 
 __all__ = ["generic_capabilities"]
 
@@ -39,7 +38,9 @@ __all__ = ["generic_capabilities"]
 # policy plans for, narrowed to those Generic actually stores. An encoding a
 # future policy plans but Generic has no storage for produces no capability.
 _DEFAULT_TENSOR_DTYPES: Final[tuple[SimpleDType, ...]] = tuple(
-    dtype for dtype in SUPPORTED_TENSOR_DTYPES if is_concrete_simple_dtype(dtype)
+    dtype
+    for dtype in SUPPORTED_TENSOR_DTYPES
+    if any(dtype is stored for stored in (DType.Float32, DType.Int32, DType.Bool))
 )
 
 # Generic additionally stores Bool. It participates only where an overload's

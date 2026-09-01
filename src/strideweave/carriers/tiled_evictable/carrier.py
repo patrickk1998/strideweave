@@ -38,8 +38,6 @@ _INVALID = object()
 
 
 def _implicit_zero(dtype: DType) -> object:
-    if dtype is DType.Floating:
-        return 0.0
     return storage_zero(dtype)
 
 
@@ -195,7 +193,7 @@ class TiledEvictable(DependentCarrier):
     Examples:
         >>> import strideweave as sw
         >>> tiled = sw.TiledEvictable(
-        ...     sw.Generic([1.0, 2.0]), sw.Generic([]), (2,), (1,)
+        ...     sw.Generic([1.0, 2.0], dtype=sw.DType.Float32), sw.Generic([], dtype=sw.DType.Float32), (2,), (1,)
         ... )
         >>> tiled.grid_shape
         (2,)
@@ -431,7 +429,7 @@ class TiledEvictable(DependentCarrier):
         Examples:
             >>> import strideweave as sw
             >>> tiled = sw.TiledEvictable(
-            ...     sw.Generic([1.0]), sw.Generic([]), (1,), (1,)
+            ...     sw.Generic([1.0], dtype=sw.DType.Float32), sw.Generic([], dtype=sw.DType.Float32), (1,), (1,)
             ... )
             >>> tiled.tile_state((0,)).location
             'primary'
