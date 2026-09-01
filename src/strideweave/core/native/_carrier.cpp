@@ -197,7 +197,8 @@ PYBIND11_MODULE(_carrier, module) {
             "False.\n\n"
             "Examples:\n"
             "    >>> import strideweave as sw\n"
-            "    >>> carrier = sw.Generic([1.0], mutable=False, dtype=sw.DType.Float32)\n"
+            "    >>> carrier = sw.Generic([1.0], mutable=False, "
+            "dtype=sw.DType.Float32)\n"
             "    >>> carrier.is_mutable()\n"
             "    False")
         .def("is_owned", &Carrier::is_owned,
