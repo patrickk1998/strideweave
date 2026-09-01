@@ -23,9 +23,7 @@ behavior of Generic, CPU, Metal, FileBacked, and Evictable carriers.
 | initialized allocation | Fresh storage whose readable slots contain the storage dtype's zero. |
 | empty allocation | Fresh storage whose initial contents carry no readable-value guarantee because the backend may skip initialization; every slot must be written before it is read. |
 | released carrier | A carrier in the terminal state where its storage has been permanently relinquished and storage-dependent access is unavailable, while dtype identity, structural storage support, and `new_like` prototype construction remain available. |
-
 ## Requirements
-
 ### Requirement: Carrier exposes one homogeneous storage sequence
 
 For a live carrier, `size()` SHALL return its non-negative number of physical
@@ -147,41 +145,6 @@ categories.
 - **WHEN** `storage_zero` receives `DType.Bool`
 - **THEN** it returns the Python boolean `False`
 
-### Requirement: Generic stores legacy objects and normalized concrete values
-
-`Generic(values, *, mutable=True, dtype=DType.Floating)` SHALL consume an
-iterable of stored values and return a Generic carrier. `values` names the
-ordered values to place in storage and SHALL be iterable. `mutable` states the
-carrier's intrinsic mutability, SHALL be optional, and SHALL default to `True`;
-`dtype` names the homogeneous storage dtype, SHALL be optional, and SHALL
-default to `DType.Floating`. When `values` is not iterable, construction SHALL
-fail with `TypeError`.
-
-For `DType.Any` and `DType.Floating`, sized indexable `values` MAY remain
-aliased; when `mutable=True` and `values` cannot be assigned by index, Generic
-SHALL materialize a mutable sequence. For `DType.Float32`,
-`DType.Int32`, and `DType.Bool`, Generic SHALL materialize storage it owns and
-normalize every value before the carrier is returned. Float32 values SHALL be
-binary32-exact Python floats, Int32 values SHALL be integers in
-`[-2**31, 2**31 - 1]`, and Bool values SHALL be Python `bool` values. Invalid
-concrete values SHALL fail with `TypeError` or `OverflowError` as appropriate.
-
-The same concrete normalization SHALL apply to later writes, including indexed
-writes and scatter writes, so a caller-held alias cannot bypass it.
-
-#### Scenario: Own concrete input storage
-
-- **WHEN** a caller constructs a Float32 Generic from a mutable input sequence
-  and later mutates that sequence
-- **THEN** the carrier's stored values do not change
-
-#### Scenario: Preserve legacy aliasing
-
-- **WHEN** a caller constructs mutable legacy opaque Generic storage from a
-  mutable sized indexable sequence
-- **THEN** carrier writes and caller writes remain visible through the shared
-  sequence
-
 ### Requirement: CPU owns or wraps typed host storage
 
 `CPU(size, pointer=None, *, mutable=True, dtype=DType.Float32, empty=False)`
@@ -222,33 +185,55 @@ writes SHALL fail before the slot changes.
 
 ### Requirement: FileBacked owns a temporary raw numeric file
 
-`FileBacked(filename=None, *, mutable=True, dtype=DType.Floating)` SHALL create
-a raw numeric file inside a hidden per-process temporary directory and return
-an initially empty carrier. `filename` names a bare file within that directory
-and SHALL be optional; `filename` SHALL default to `None`, and `None` SHALL
-request a generated unique name. When `filename` contains path components,
-construction SHALL fail with `ValueError`; when `filename` duplicates an
-existing file, construction SHALL fail without replacing that file. `mutable`
-states the carrier's intrinsic mutability, SHALL be optional, and SHALL default
-to `True`. `dtype` names the homogeneous storage dtype, SHALL be optional, and
-SHALL default to `DType.Floating`.
+`FileBacked(filename=None, *, mutable=True, dtype)` SHALL create a raw numeric
+file inside a hidden per-process temporary directory and return an initially
+empty carrier. `filename` names a bare file within that directory and SHALL be
+optional; `filename` SHALL default to `None`, and `None` SHALL request a
+generated unique name. When `filename` contains path components, construction
+SHALL fail with `ValueError`; when `filename` duplicates an existing file,
+construction SHALL fail without replacing that file. `mutable` states the
+carrier's intrinsic mutability, SHALL be optional, and SHALL default to `True`.
+`dtype` names the homogeneous storage dtype, SHALL be required, SHALL be
+keyword-only, and SHALL be exactly `DType.Float32` or `DType.Int32`.
 
-`path` SHALL return the carrier's file path. The file SHALL encode Floating,
-Float32, or Int32 values according to the selected storage dtype. New or
-extended slots SHALL read as zero. Int32 writes SHALL require integer values.
-Deleting or releasing the carrier SHALL remove its file, and process shutdown
-SHALL remove the hidden session directory.
+Omitting `dtype` SHALL fail with `TypeError` identifying the missing required
+keyword-only argument; supplying a dtype positionally SHALL fail with
+`TypeError` identifying a positional-argument mismatch. A non-`DType` value
+SHALL fail with `TypeError`, and any other descriptor identity, including every
+category, SHALL fail with `ValueError`. Each failure SHALL occur before creating
+the requested file.
+
+`path` SHALL return the carrier's file path. The file SHALL encode Float32 or
+Int32 values according to the selected storage dtype. New or extended slots
+SHALL read as zero. Int32 writes SHALL require integer values. Deleting or
+releasing the carrier SHALL remove its file, and process shutdown SHALL remove
+the hidden session directory.
 
 #### Scenario: Generate file-backed storage
 
-- **WHEN** a caller omits `filename`
-- **THEN** the result owns a uniquely named empty file in the hidden session
-  directory
+- **WHEN** a caller invokes `FileBacked(dtype=DType.Float32)` and omits
+  `filename`
+- **THEN** the result owns a uniquely named empty Float32 file in the hidden
+  session directory
+
+#### Scenario: Require the keyword-only dtype before file creation
+
+- **WHEN** a caller invokes `FileBacked()` or supplies a dtype as a positional
+  argument
+- **THEN** construction fails with `TypeError` identifying either the omitted
+  required keyword-only `dtype` or the positional-argument mismatch and creates
+  no file
 
 #### Scenario: Reject a path-like filename
 
 - **WHEN** `filename` contains a directory separator
 - **THEN** construction fails with `ValueError` and creates no requested file
+
+#### Scenario: Reject category-backed file storage
+
+- **WHEN** a caller supplies `DType.Any`, `DType.Floating`, `DType.Integer`, or
+  an extension category as `dtype`
+- **THEN** construction fails with `ValueError` before creating a file
 
 ### Requirement: new_like materializes values in matching storage
 
@@ -291,17 +276,18 @@ fresh carrier of the same concrete carrier kind as the receiver. `size` names
 the requested slot count and SHALL support Python's integer-index protocol; a
 `size` value that does not support that protocol SHALL fail with `TypeError`,
 and a negative `size` SHALL fail with `ValueError`. `mutable` states the fresh
-carrier's intrinsic mutability, SHALL
-be optional, and SHALL default to `True`. `dtype` names the fresh carrier's
-requested storage dtype, SHALL be optional, and SHALL default to `None`; `None`
-SHALL preserve the receiver's dtype. `empty` states whether the backend may
-skip initialization, SHALL be optional, and SHALL default to `False`.
+carrier's intrinsic mutability, SHALL be optional, and SHALL default to `True`.
+`dtype` names the fresh carrier's requested storage dtype, SHALL be optional,
+and SHALL default to `None`; `None` SHALL preserve the receiver's dtype.
+`empty` states whether the backend may skip initialization, SHALL be optional,
+and SHALL default to `False`.
 
 With `empty=False`, every slot SHALL be initialized to `0.0` for Float32, `0`
-for Int32, `False` for Bool, and `None` for legacy opaque Generic storage.
-CPU MAY skip initialization when `empty=True`; callers SHALL write every slot
-before reading it. Generic and FileBacked SHALL accept `empty=True` while
-retaining their initialized behavior.
+for Int32, and `False` for Bool. CPU MAY skip initialization when `empty=True`;
+callers SHALL write every slot before reading it. Generic and FileBacked SHALL
+accept `empty=True` while retaining their initialized behavior. A supplied
+`dtype` outside the receiver implementation's concrete accepted set SHALL fail
+under the common storage validation contract before fresh storage is exposed.
 
 For an Evictable receiver, the result SHALL be promoted, its primary SHALL have
 the requested size, and its fresh mutable secondary SHALL have size zero until
@@ -318,6 +304,12 @@ eviction provisions it.
 - **WHEN** CPU `allocate_like` receives `empty=True`
 - **THEN** it returns writable storage of the requested size without promising
   a readable initial value
+
+#### Scenario: Reject a category override
+
+- **WHEN** a Generic or FileBacked factory receives a category as its explicit
+  `dtype` override
+- **THEN** it fails with `ValueError` before exposing fresh storage
 
 ### Requirement: Public mutability combines storage policy and ownership
 
@@ -471,3 +463,52 @@ construct Metal without them SHALL fail with an actionable `RuntimeError`.
   runtime
 - **THEN** construction fails with `RuntimeError` before exposing partial
   storage
+
+### Requirement: Generic stores normalized concrete values
+
+`Generic(values, *, mutable=True, dtype)` SHALL consume an iterable of stored
+values and return a Generic carrier. `values` names the ordered values to place
+in storage and SHALL be iterable. `mutable` states the carrier's intrinsic
+mutability, SHALL be optional, and SHALL default to `True`. `dtype` names the
+homogeneous storage dtype, SHALL be required, SHALL be keyword-only, and SHALL
+be exactly `DType.Float32`, `DType.Int32`, or `DType.Bool`. Omitting `dtype`
+SHALL fail with `TypeError` identifying the missing required keyword-only
+argument; supplying a dtype positionally SHALL fail with `TypeError`
+identifying a positional-argument mismatch. A non-`DType` value SHALL fail with
+`TypeError`, and any other descriptor identity, including every category,
+SHALL fail with `ValueError`. Each failure SHALL expose no carrier storage.
+
+Generic SHALL consume `values` into storage it owns and normalize every value
+before the carrier is returned. Float32 values SHALL be binary32-exact Python
+floats, Int32 values SHALL be integers in `[-2**31, 2**31 - 1]`, and Bool
+values SHALL be Python `bool` values. When `values` is not iterable,
+construction SHALL fail with `TypeError`. Invalid stored values SHALL fail with
+`TypeError` or `OverflowError` as appropriate.
+
+The same normalization SHALL apply to later writes, including indexed writes
+and scatter writes, so a caller-held alias cannot bypass it.
+
+#### Scenario: Construct with an explicit concrete dtype
+
+- **WHEN** a caller constructs `Generic(values, dtype=DType.Float32)`
+- **THEN** the result owns normalized Float32 storage independent of `values`
+
+#### Scenario: Require the keyword-only dtype
+
+- **WHEN** a caller invokes `Generic(values)` or supplies a dtype as a second
+  positional argument
+- **THEN** construction fails with `TypeError` identifying either the omitted
+  required keyword-only `dtype` or the positional-argument mismatch and exposes
+  no carrier storage
+
+#### Scenario: Own concrete input storage
+
+- **WHEN** a caller constructs a Generic from a mutable input sequence and
+  later mutates that sequence
+- **THEN** the carrier's stored values do not change
+
+#### Scenario: Reject category-backed Generic storage
+
+- **WHEN** a caller supplies `DType.Any`, `DType.Floating`, `DType.Integer`, or
+  an extension category as `dtype`
+- **THEN** construction fails with `ValueError` before storage is exposed
